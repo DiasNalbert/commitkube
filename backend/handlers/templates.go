@@ -7,20 +7,8 @@ import (
 )
 
 func ListTemplates(c *fiber.Ctx) error {
-	userID := uint(c.Locals("user_id").(float64))
-
-	wsIDParam := c.QueryInt("workspace_id", -1)
-	projectKey := c.Query("project_key", "")
-
 	var tmplList []models.YamlTemplate
-	if wsIDParam > 0 {
-		wsID := uint(wsIDParam)
-		db.DB.Where("user_id = ? AND workspace_id = ? AND project_key = ?", userID, wsID, projectKey).
-			Order("type desc, name asc").Find(&tmplList)
-	} else {
-		db.DB.Where("user_id = ? AND workspace_id IS NULL", userID).
-			Order("type desc, name asc").Find(&tmplList)
-	}
+	db.DB.Order("type desc, name asc").Find(&tmplList)
 	return c.JSON(tmplList)
 }
 
@@ -58,10 +46,9 @@ func CreateTemplate(c *fiber.Ctx) error {
 }
 
 func UpdateTemplate(c *fiber.Ctx) error {
-	userID := uint(c.Locals("user_id").(float64))
 	id := c.Params("id")
 	var tmpl models.YamlTemplate
-	if err := db.DB.Where("id = ? AND user_id = ?", id, userID).First(&tmpl).Error; err != nil {
+	if err := db.DB.Where("id = ?", id).First(&tmpl).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "template not found"})
 	}
 	var req struct {
@@ -90,9 +77,8 @@ func UpdateTemplate(c *fiber.Ctx) error {
 }
 
 func DeleteTemplate(c *fiber.Ctx) error {
-	userID := uint(c.Locals("user_id").(float64))
 	id := c.Params("id")
-	if err := db.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.YamlTemplate{}).Error; err != nil {
+	if err := db.DB.Where("id = ?", id).Delete(&models.YamlTemplate{}).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "template not found"})
 	}
 	return c.JSON(fiber.Map{"message": "template deleted"})

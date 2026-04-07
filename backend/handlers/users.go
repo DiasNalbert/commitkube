@@ -130,6 +130,86 @@ func UpdateUserRole(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "Role updated"})
 }
 
+func GetMyKeys(c *fiber.Ctx) error {
+	userID := uint(c.Locals("user_id").(float64))
+	var keys models.UserKeys
+	if err := db.DB.Where("user_id = ?", userID).First(&keys).Error; err != nil {
+		return c.JSON(fiber.Map{
+			"bitbucket_username": "",
+			"ssh_pub_key":        "",
+			"has_app_pass":       false,
+			"has_ssh_key":        false,
+		})
+	}
+	return c.JSON(fiber.Map{
+		"bitbucket_username": keys.BitbucketUsername,
+		"ssh_pub_key":        keys.BitbucketSSHPubKey,
+		"has_app_pass":       keys.BitbucketAppPass != "",
+		"has_ssh_key":        keys.BitbucketSSHKey != "",
+	})
+}
+
+func SaveMyKeys(c *fiber.Ctx) error {
+	userID := uint(c.Locals("user_id").(float64))
+
+	var req struct {
+		BitbucketUsername string `json:"bitbucket_username"`
+		BitbucketAppPass  string `json:"bitbucket_app_pass"`
+		SSHPrivKey        string `json:"ssh_priv_key"`
+		SSHPubKey         string `json:"ssh_pub_key"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
+	}
+
+	var keys models.UserKeys
+	isNew := db.DB.Where("user_id = ?", userID).First(&keys).Error != nil
+	if isNew {
+		keys.UserID = userID
+	}
+
+	if req.BitbucketUsername != "" {
+		keys.BitbucketUsername = req.BitbucketUsername
+	}
+	if req.BitbucketAppPass != "" {
+		keys.BitbucketAppPass = req.BitbucketAppPass
+	}
+	if req.SSHPrivKey != "" {
+		keys.BitbucketSSHKey = req.SSHPrivKey
+	}
+	if req.SSHPubKey != "" {
+		keys.BitbucketSSHPubKey = req.SSHPubKey
+	}
+
+	if isNew {
+		db.DB.Create(&keys)
+	} else {
+		db.DB.Save(&keys)
+	}
+	return c.JSON(fiber.Map{"message": "Credentials saved"})
+}
+
+func ResetUserMFA(c *fiber.Ctx) error {
+	caller, err := currentUser(c)
+	if err != nil || !isAdminOrRoot(caller.Role) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Forbidden"})
+	}
+
+	var target models.User
+	if err := db.DB.First(&target, c.Params("id")).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+	}
+	if target.Role == "root" && caller.Role != "root" {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Cannot reset root MFA"})
+	}
+
+	db.DB.Model(&target).Updates(map[string]interface{}{
+		"mfa_secret":  "",
+		"mfa_enabled": false,
+	})
+	return c.JSON(fiber.Map{"message": "MFA reset. User must re-enroll on next login."})
+}
+
 func ChangePassword(c *fiber.Ctx) error {
 	caller, err := currentUser(c)
 	if err != nil {

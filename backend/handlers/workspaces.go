@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"github.com/gofiber/fiber/v2"
+	"github.com/kubecommit/backend/crypto"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
 )
@@ -13,14 +14,30 @@ func callerIsAdmin(c *fiber.Ctx) bool {
 
 func ListWorkspaces(c *fiber.Ctx) error {
 	var workspaces []models.BitbucketWorkspace
-	db.DB.Find(&workspaces)
-	return c.JSON(workspaces)
+	if callerIsAdmin(c) {
+		db.DB.Find(&workspaces)
+	} else {
+		userID := uint(c.Locals("user_id").(float64))
+		db.DB.Where("user_id = ?", userID).Find(&workspaces)
+	}
+	key := crypto.MasterKey()
+	type wsItem struct {
+		models.BitbucketWorkspace
+		HasAppPass bool `json:"has_app_pass"`
+		HasSSHKey  bool `json:"has_ssh_key"`
+	}
+	out := make([]wsItem, 0, len(workspaces))
+	for _, w := range workspaces {
+		out = append(out, wsItem{
+			BitbucketWorkspace: w,
+			HasAppPass:         crypto.DecryptField(key, w.AppPass) != "",
+			HasSSHKey:          crypto.DecryptField(key, w.SSHPrivKey) != "",
+		})
+	}
+	return c.JSON(out)
 }
 
 func CreateWorkspace(c *fiber.Ctx) error {
-	if !callerIsAdmin(c) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Apenas admin pode criar workspaces"})
-	}
 	userID := uint(c.Locals("user_id").(float64))
 
 	var req struct {
@@ -39,14 +56,15 @@ func CreateWorkspace(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "alias and workspace_id are required"})
 	}
 
+	key := crypto.MasterKey()
 	ws := models.BitbucketWorkspace{
 		UserID:      userID,
 		Alias:       req.Alias,
 		Username:    req.Username,
-		AppPass:     req.AppPass,
+		AppPass:     crypto.EncryptField(key, req.AppPass),
 		WorkspaceID: req.WorkspaceID,
 		ProjectKey:  req.ProjectKey,
-		SSHPrivKey:  req.SSHPrivKey,
+		SSHPrivKey:  crypto.EncryptField(key, req.SSHPrivKey),
 		SSHPubKey:   req.SSHPubKey,
 	}
 	db.DB.Create(&ws)
@@ -54,9 +72,6 @@ func CreateWorkspace(c *fiber.Ctx) error {
 }
 
 func UpdateWorkspace(c *fiber.Ctx) error {
-	if !callerIsAdmin(c) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Apenas admin pode editar workspaces"})
-	}
 	userID := uint(c.Locals("user_id").(float64))
 	id := c.Params("id")
 
@@ -78,6 +93,7 @@ func UpdateWorkspace(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
 
+	key := crypto.MasterKey()
 	if req.Alias != "" {
 		ws.Alias = req.Alias
 	}
@@ -85,7 +101,7 @@ func UpdateWorkspace(c *fiber.Ctx) error {
 		ws.Username = req.Username
 	}
 	if req.AppPass != "" {
-		ws.AppPass = req.AppPass
+		ws.AppPass = crypto.EncryptField(key, req.AppPass)
 	}
 	if req.WorkspaceID != "" {
 		ws.WorkspaceID = req.WorkspaceID
@@ -94,7 +110,7 @@ func UpdateWorkspace(c *fiber.Ctx) error {
 		ws.ProjectKey = req.ProjectKey
 	}
 	if req.SSHPrivKey != "" {
-		ws.SSHPrivKey = req.SSHPrivKey
+		ws.SSHPrivKey = crypto.EncryptField(key, req.SSHPrivKey)
 	}
 	if req.SSHPubKey != "" {
 		ws.SSHPubKey = req.SSHPubKey
@@ -105,9 +121,6 @@ func UpdateWorkspace(c *fiber.Ctx) error {
 }
 
 func DeleteWorkspace(c *fiber.Ctx) error {
-	if !callerIsAdmin(c) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Apenas admin pode excluir workspaces"})
-	}
 	userID := uint(c.Locals("user_id").(float64))
 	id := c.Params("id")
 
@@ -115,7 +128,11 @@ func DeleteWorkspace(c *fiber.Ctx) error {
 	if err := db.DB.Where("id = ? AND user_id = ?", id, userID).First(&ws).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "workspace not found"})
 	}
+	wsID := ws.ID
 	db.DB.Delete(&ws)
+	db.DB.Where("workspace_id = ? AND user_id = ?", wsID, userID).Delete(&models.YamlTemplate{})
+	db.DB.Where("workspace_id = ? AND user_id = ?", wsID, userID).Delete(&models.GlobalVariable{})
+	db.DB.Where("workspace_id = ? AND user_id = ?", wsID, userID).Delete(&models.BitbucketProject{})
 	return c.JSON(fiber.Map{"message": "workspace deleted"})
 }
 
@@ -127,14 +144,17 @@ func ListArgoCDInstances(c *fiber.Ctx) error {
 
 func CreateArgoCDInstance(c *fiber.Ctx) error {
 	if !callerIsAdmin(c) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Apenas admin pode criar instâncias ArgoCD"})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Only admins can create ArgoCD instances"})
 	}
 	userID := uint(c.Locals("user_id").(float64))
 
 	var req struct {
-		Alias     string `json:"alias"`
-		ServerURL string `json:"server_url"`
-		AuthToken string `json:"auth_token"`
+		Alias            string `json:"alias"`
+		ServerURL        string `json:"server_url"`
+		AuthToken        string `json:"auth_token"`
+		DefaultNamespace string `json:"default_namespace"`
+		DefaultProject   string `json:"default_project"`
+		PrometheusURL    string `json:"prometheus_url"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -143,11 +163,24 @@ func CreateArgoCDInstance(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "alias and server_url are required"})
 	}
 
+	ns := req.DefaultNamespace
+	if ns == "" {
+		ns = "default"
+	}
+	proj := req.DefaultProject
+	if proj == "" {
+		proj = "default"
+	}
+
+	key := crypto.MasterKey()
 	inst := models.ArgoCDInstance{
-		UserID:    userID,
-		Alias:     req.Alias,
-		ServerURL: req.ServerURL,
-		AuthToken: req.AuthToken,
+		UserID:           userID,
+		Alias:            req.Alias,
+		ServerURL:        req.ServerURL,
+		AuthToken:        crypto.EncryptField(key, req.AuthToken),
+		DefaultNamespace: ns,
+		DefaultProject:   proj,
+		PrometheusURL:    req.PrometheusURL,
 	}
 	db.DB.Create(&inst)
 	return c.Status(fiber.StatusCreated).JSON(inst)
@@ -155,7 +188,7 @@ func CreateArgoCDInstance(c *fiber.Ctx) error {
 
 func UpdateArgoCDInstance(c *fiber.Ctx) error {
 	if !callerIsAdmin(c) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Apenas admin pode editar instâncias ArgoCD"})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Only admins can edit ArgoCD instances"})
 	}
 	userID := uint(c.Locals("user_id").(float64))
 	id := c.Params("id")
@@ -166,9 +199,12 @@ func UpdateArgoCDInstance(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Alias     string `json:"alias"`
-		ServerURL string `json:"server_url"`
-		AuthToken string `json:"auth_token"`
+		Alias            string `json:"alias"`
+		ServerURL        string `json:"server_url"`
+		AuthToken        string `json:"auth_token"`
+		DefaultNamespace string `json:"default_namespace"`
+		DefaultProject   string `json:"default_project"`
+		PrometheusURL    string `json:"prometheus_url"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -180,9 +216,17 @@ func UpdateArgoCDInstance(c *fiber.Ctx) error {
 	if req.ServerURL != "" {
 		inst.ServerURL = req.ServerURL
 	}
+	key := crypto.MasterKey()
 	if req.AuthToken != "" {
-		inst.AuthToken = req.AuthToken
+		inst.AuthToken = crypto.EncryptField(key, req.AuthToken)
 	}
+	if req.DefaultNamespace != "" {
+		inst.DefaultNamespace = req.DefaultNamespace
+	}
+	if req.DefaultProject != "" {
+		inst.DefaultProject = req.DefaultProject
+	}
+	inst.PrometheusURL = req.PrometheusURL
 
 	db.DB.Save(&inst)
 	return c.JSON(inst)
@@ -190,7 +234,7 @@ func UpdateArgoCDInstance(c *fiber.Ctx) error {
 
 func DeleteArgoCDInstance(c *fiber.Ctx) error {
 	if !callerIsAdmin(c) {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Apenas admin pode excluir instâncias ArgoCD"})
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Only admins can delete ArgoCD instances"})
 	}
 	userID := uint(c.Locals("user_id").(float64))
 	id := c.Params("id")

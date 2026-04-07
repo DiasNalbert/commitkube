@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"github.com/gofiber/fiber/v2"
+	"github.com/kubecommit/backend/crypto"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
 )
@@ -34,24 +35,25 @@ func UpdateSettings(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request"})
 	}
 
+	key := crypto.MasterKey()
 	keys.BitbucketUsername = req.BitbucketUsername
 	keys.BitbucketWorkspace = req.BitbucketWorkspace
 	keys.BitbucketProjectKey = req.BitbucketProjectKey
 	if req.BitbucketAppPass != "" {
-		keys.BitbucketAppPass = req.BitbucketAppPass
+		keys.BitbucketAppPass = crypto.EncryptField(key, req.BitbucketAppPass)
 	}
 	if req.BitbucketSSHKey != "" {
-		keys.BitbucketSSHKey = req.BitbucketSSHKey
+		keys.BitbucketSSHKey = crypto.EncryptField(key, req.BitbucketSSHKey)
 	}
 	if req.BitbucketSSHPubKey != "" {
 		keys.BitbucketSSHPubKey = req.BitbucketSSHPubKey
 	}
 	keys.ArgoCDServerURL = req.ArgoCDServerURL
 	if req.ArgoCDAuthToken != "" {
-		keys.ArgoCDAuthToken = req.ArgoCDAuthToken
+		keys.ArgoCDAuthToken = crypto.EncryptField(key, req.ArgoCDAuthToken)
 	}
 	if req.ArgoCDSSHKey != "" {
-		keys.ArgoCDSSHKey = req.ArgoCDSSHKey
+		keys.ArgoCDSSHKey = crypto.EncryptField(key, req.ArgoCDSSHKey)
 	}
 
 	db.DB.Save(&keys)

@@ -73,6 +73,28 @@ func (client *BitbucketClient) CreateRepository(repoName, projectKey string) err
 	return nil
 }
 
+func (client *BitbucketClient) RegisterWebhook(repoName, callbackURL, secret string) error {
+	path := fmt.Sprintf("repositories/%s/%s/hooks", client.Workspace, repoName)
+	payload := map[string]interface{}{
+		"description": "CommitKube Security Scan",
+		"url":         callbackURL,
+		"active":      true,
+		"secret":      secret,
+		"events":      []string{"repo:push"},
+	}
+	bodyBytes, _ := json.Marshal(payload)
+	res, err := client.request("POST", path, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		body, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("webhook HTTP %d: %s", res.StatusCode, string(body))
+	}
+	return nil
+}
+
 func (client *BitbucketClient) AddDeployKey(repoName, pubKey, label string) error {
 	path := fmt.Sprintf("repositories/%s/%s/deploy-keys", client.Workspace, repoName)
 	payload := map[string]interface{}{
@@ -170,14 +192,15 @@ func (client *BitbucketClient) CreateBranch(repoName, branchName, fromBranch str
 	return nil
 }
 
-func (client *BitbucketClient) ListPipelines(repoName string) ([]byte, error) {
+func (client *BitbucketClient) ListPipelines(repoName string) ([]byte, int, error) {
 	path := fmt.Sprintf("repositories/%s/%s/pipelines/?sort=-created_on&pagelen=20", client.Workspace, repoName)
 	res, err := client.request("GET", path, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer res.Body.Close()
-	return io.ReadAll(res.Body)
+	data, _ := io.ReadAll(res.Body)
+	return data, res.StatusCode, nil
 }
 
 func (client *BitbucketClient) GetPipelineSteps(repoName, pipelineUUID string) ([]byte, error) {
@@ -200,8 +223,12 @@ func (client *BitbucketClient) GetStepLog(repoName, pipelineUUID, stepUUID strin
 	return io.ReadAll(res.Body)
 }
 
-func (client *BitbucketClient) ListSrc(repoName, filePath string) ([]byte, int, string, error) {
-	apiPath := fmt.Sprintf("repositories/%s/%s/src/HEAD/%s", client.Workspace, repoName, filePath)
+func (client *BitbucketClient) ListSrc(repoName, filePath, branch string) ([]byte, int, string, error) {
+	ref := branch
+	if ref == "" {
+		ref = "HEAD"
+	}
+	apiPath := fmt.Sprintf("repositories/%s/%s/src/%s/%s", client.Workspace, repoName, ref, filePath)
 	res, err := client.request("GET", apiPath, nil)
 	if err != nil {
 		return nil, 0, "", err
@@ -209,6 +236,16 @@ func (client *BitbucketClient) ListSrc(repoName, filePath string) ([]byte, int, 
 	defer res.Body.Close()
 	data, _ := io.ReadAll(res.Body)
 	return data, res.StatusCode, res.Header.Get("Content-Type"), nil
+}
+
+func (client *BitbucketClient) ListBranches(repoName string) ([]byte, error) {
+	path := fmt.Sprintf("repositories/%s/%s/refs/branches?pagelen=50", client.Workspace, repoName)
+	res, err := client.request("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	return io.ReadAll(res.Body)
 }
 
 func (client *BitbucketClient) EnablePipelines(repoName string) error {
@@ -225,6 +262,116 @@ func (client *BitbucketClient) EnablePipelines(repoName string) error {
 		return fmt.Errorf("enable pipelines HTTP %d: %s", res.StatusCode, string(resBody))
 	}
 	return nil
+}
+
+func (client *BitbucketClient) GetBranchHash(repoName, branch string) (string, error) {
+	path := fmt.Sprintf("repositories/%s/%s/refs/branches/%s", client.Workspace, repoName, branch)
+	res, err := client.request("GET", path, nil)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	var data struct {
+		Target struct {
+			Hash string `json:"hash"`
+		} `json:"target"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&data); err != nil {
+		return "", err
+	}
+	return data.Target.Hash, nil
+}
+
+func (client *BitbucketClient) CloneURL(workspace, repoName string) string {
+	ws := workspace
+	if ws == "" {
+		ws = client.Workspace
+	}
+	return "git@bitbucket.org:" + ws + "/" + repoName + ".git"
+}
+
+func (client *BitbucketClient) ListRepositoriesByProject(projectKey string) ([]string, error) {
+	path := fmt.Sprintf("repositories/%s?pagelen=100&q=project.key%%3D%%22%s%%22", client.Workspace, projectKey)
+	res, err := client.request("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 400 {
+		body, _ := io.ReadAll(res.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", res.StatusCode, string(body))
+	}
+	var result struct {
+		Values []struct {
+			Slug string `json:"slug"`
+		} `json:"values"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(result.Values))
+	for _, v := range result.Values {
+		names = append(names, v.Slug)
+	}
+	return names, nil
+}
+
+type CommitInfo struct {
+	Hash      string `json:"hash"`
+	Message   string `json:"message"`
+	Author    string `json:"author"`
+	Date      string `json:"date"`
+	ShortHash string `json:"short_hash"`
+}
+
+func (client *BitbucketClient) GetRecentCommits(repoName, branch string, limit int) ([]CommitInfo, error) {
+	if branch == "" {
+		branch = "main"
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	path := fmt.Sprintf("repositories/%s/%s/commits/%s?pagelen=%d", client.Workspace, repoName, branch, limit)
+	res, err := client.request("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	var result struct {
+		Values []struct {
+			Hash    string `json:"hash"`
+			Message string `json:"message"`
+			Date    string `json:"date"`
+			Author  struct {
+				Raw  string `json:"raw"`
+				User struct {
+					DisplayName string `json:"display_name"`
+				} `json:"user"`
+			} `json:"author"`
+		} `json:"values"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	commits := make([]CommitInfo, 0, len(result.Values))
+	for _, v := range result.Values {
+		author := v.Author.Raw
+		if v.Author.User.DisplayName != "" {
+			author = v.Author.User.DisplayName
+		}
+		short := v.Hash
+		if len(short) > 7 {
+			short = short[:7]
+		}
+		commits = append(commits, CommitInfo{
+			Hash:      v.Hash,
+			ShortHash: short,
+			Message:   strings.SplitN(v.Message, "\n", 2)[0],
+			Author:    author,
+			Date:      v.Date,
+		})
+	}
+	return commits, nil
 }
 
 func (client *BitbucketClient) AddRepoVariable(repoName, key, value string, secured bool) error {

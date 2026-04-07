@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 var insecureHTTPClient = &http.Client{
@@ -120,12 +121,304 @@ func (c *ArgoCDClient) CreateProject(projectName string) error {
 	return nil
 }
 
-func (c *ArgoCDClient) CreateApplication(appName, repoURL, project, appPath, targetRevision string) error {
+type ArgoApp struct {
+	Name          string
+	Namespace     string
+	HealthStatus  string
+	SyncStatus    string
+	Image         string
+	Replicas      int
+	ReadyReplicas int
+}
+
+func (c *ArgoCDClient) ListApplications() ([]ArgoApp, error) {
+	res, err := c.request("GET", "applications", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	var result struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Destination struct {
+					Namespace string `json:"namespace"`
+				} `json:"destination"`
+			} `json:"spec"`
+			Status struct {
+				Health struct {
+					Status string `json:"status"`
+				} `json:"health"`
+				Sync struct {
+					Status string `json:"status"`
+				} `json:"sync"`
+				Summary struct {
+					Images []string `json:"images"`
+				} `json:"summary"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var apps []ArgoApp
+	for _, item := range result.Items {
+		image := ""
+		if len(item.Status.Summary.Images) > 0 {
+			image = item.Status.Summary.Images[0]
+		}
+		apps = append(apps, ArgoApp{
+			Name:         item.Metadata.Name,
+			Namespace:    item.Spec.Destination.Namespace,
+			HealthStatus: item.Status.Health.Status,
+			SyncStatus:   item.Status.Sync.Status,
+			Image:        image,
+		})
+	}
+	return apps, nil
+}
+
+type AppStats struct {
+	Replicas        int
+	ReadyReplicas   int
+	MaxRestartCount int
+	RestartingPods  int
+}
+
+func (c *ArgoCDClient) GetApplicationStats(appName string) AppStats {
+	res, err := c.request("GET", "applications/"+appName+"/managed-resources", nil)
+	if err != nil {
+		return AppStats{}
+	}
+	defer res.Body.Close()
+
+	var result struct {
+		Items []struct {
+			Kind      string `json:"kind"`
+			LiveState string `json:"liveState"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return AppStats{}
+	}
+
+	var stats AppStats
+	for _, item := range result.Items {
+		if item.LiveState == "" {
+			continue
+		}
+		switch item.Kind {
+		case "Deployment", "StatefulSet":
+			var obj struct {
+				Status struct {
+					Replicas      int `json:"replicas"`
+					ReadyReplicas int `json:"readyReplicas"`
+				} `json:"status"`
+			}
+			if err := json.Unmarshal([]byte(item.LiveState), &obj); err == nil {
+				stats.Replicas += obj.Status.Replicas
+				stats.ReadyReplicas += obj.Status.ReadyReplicas
+			}
+		case "Pod":
+			var obj struct {
+				Status struct {
+					ContainerStatuses []struct {
+						RestartCount int `json:"restartCount"`
+					} `json:"containerStatuses"`
+				} `json:"status"`
+			}
+			if err := json.Unmarshal([]byte(item.LiveState), &obj); err == nil {
+				podMax := 0
+				for _, cs := range obj.Status.ContainerStatuses {
+					if cs.RestartCount > podMax {
+						podMax = cs.RestartCount
+					}
+				}
+				if podMax > stats.MaxRestartCount {
+					stats.MaxRestartCount = podMax
+				}
+				if podMax > 5 {
+					stats.RestartingPods++
+				}
+			}
+		}
+	}
+	return stats
+}
+
+func (c *ArgoCDClient) GetApplicationReplicas(appName string) (replicas, readyReplicas int) {
+	res, err := c.request("GET", "applications/"+appName+"/managed-resources", nil)
+	if err != nil {
+		return 0, 0
+	}
+	defer res.Body.Close()
+
+	var result struct {
+		Items []struct {
+			Kind      string `json:"kind"`
+			LiveState string `json:"liveState"`
+		} `json:"items"`
+	}
+
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return 0, 0
+	}
+
+	for _, item := range result.Items {
+		if (item.Kind == "Deployment" || item.Kind == "StatefulSet") && item.LiveState != "" {
+			var obj struct {
+				Status struct {
+					Replicas      int `json:"replicas"`
+					ReadyReplicas int `json:"readyReplicas"`
+				} `json:"status"`
+			}
+			if err := json.Unmarshal([]byte(item.LiveState), &obj); err == nil {
+				replicas += obj.Status.Replicas
+				readyReplicas += obj.Status.ReadyReplicas
+			}
+		}
+	}
+	return replicas, readyReplicas
+}
+
+func (c *ArgoCDClient) RestartApplication(appName, namespace string) error {
+	res, err := c.request("GET", "applications/"+appName+"/managed-resources", nil)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	var result struct {
+		Items []struct {
+			Kind      string `json:"kind"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+			Group     string `json:"group"`
+			Version   string `json:"version"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		return err
+	}
+
+	for _, item := range result.Items {
+		if item.Kind != "Deployment" && item.Kind != "StatefulSet" {
+			continue
+		}
+		version := item.Version
+		if version == "" {
+			version = "v1"
+		}
+		group := item.Group
+		if group == "" {
+			group = "apps"
+		}
+		ns := item.Namespace
+		if ns == "" {
+			ns = namespace
+		}
+
+		path := fmt.Sprintf(
+			"applications/%s/resource/actions?namespace=%s&resourceName=%s&version=%s&kind=%s&group=%s",
+			appName, url.QueryEscape(ns), url.QueryEscape(item.Name), url.QueryEscape(version), item.Kind, url.QueryEscape(group),
+		)
+		body := bytes.NewBufferString(`"restart"`)
+		resp, err := c.request("POST", path, body)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+	}
+	return nil
+}
+
+type LogLine struct {
+	Content   string `json:"content"`
+	Timestamp string `json:"timestamp"`
+	PodName   string `json:"pod_name"`
+}
+
+func (c *ArgoCDClient) GetApplicationLogs(appName, namespace string, tailLines int) ([]LogLine, error) {
+	q := fmt.Sprintf("follow=false&tailLines=%d", tailLines)
+	if namespace != "" {
+		q = "namespace=" + url.QueryEscape(namespace) + "&" + q
+	}
+	path := fmt.Sprintf("applications/%s/logs?%s", appName, q)
+	res, err := c.request("GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var lines []LogLine
+	for _, raw := range bytes.Split(body, []byte("\n")) {
+		raw = bytes.TrimSpace(raw)
+		if len(raw) == 0 {
+			continue
+		}
+		var wrapper struct {
+			Result struct {
+				Content   string `json:"content"`
+				Timestamp string `json:"timeStamp"`
+				PodName   string `json:"podName"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(raw, &wrapper); err == nil && wrapper.Result.Content != "" {
+			lines = append(lines, LogLine{
+				Content:   wrapper.Result.Content,
+				Timestamp: wrapper.Result.Timestamp,
+				PodName:   wrapper.Result.PodName,
+			})
+		}
+	}
+	return lines, nil
+}
+
+func (c *ArgoCDClient) StreamApplicationLogs(appName, namespace string, tailLines int) (*http.Response, error) {
+	q := fmt.Sprintf("follow=true&tailLines=%d", tailLines)
+	if namespace != "" {
+		q = "namespace=" + url.QueryEscape(namespace) + "&" + q
+	}
+	path := fmt.Sprintf("applications/%s/logs?%s", appName, q)
+	url := fmt.Sprintf("%s/api/v1/%s", c.ServerURL, path)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Add("Authorization", "Bearer "+c.Token)
+	req.Header.Add("Accept", "text/event-stream")
+	return insecureHTTPClient.Do(req)
+}
+
+func sanitizeK8sName(name string) string {
+	result := strings.ToLower(name)
+	result = strings.ReplaceAll(result, "_", "-")
+	return result
+}
+
+func (c *ArgoCDClient) CreateApplication(appName, repoURL, project, namespace, appPath, targetRevision string) error {
+	appName = sanitizeK8sName(appName)
 	if appPath == "" {
-		appPath = "manifests"
+		appPath = "."
 	}
 	if targetRevision == "" {
 		targetRevision = "HEAD"
+	}
+	if namespace == "" {
+		namespace = "default"
+	}
+	if project == "" {
+		project = "default"
 	}
 	payload := map[string]interface{}{
 		"metadata": map[string]interface{}{
@@ -141,7 +434,7 @@ func (c *ArgoCDClient) CreateApplication(appName, repoURL, project, appPath, tar
 			},
 			"destination": map[string]interface{}{
 				"server":    "https://kubernetes.default.svc",
-				"namespace": "apis",
+				"namespace": namespace,
 			},
 			"syncPolicy": map[string]interface{}{
 				"automated": map[string]interface{}{

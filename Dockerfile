@@ -15,7 +15,13 @@ ENV NEXT_PUBLIC_API_URL=/api
 RUN npm run build
 
 FROM node:20-alpine
-RUN apk add --no-cache ca-certificates sqlite nginx wget
+RUN apk add --no-cache ca-certificates sqlite nginx wget git openssh-client
+
+# Install Trivy
+RUN wget -qO /tmp/trivy-install.sh https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+    && chmod +x /tmp/trivy-install.sh \
+    && /tmp/trivy-install.sh -b /usr/local/bin \
+    && rm /tmp/trivy-install.sh
 
 WORKDIR /app
 

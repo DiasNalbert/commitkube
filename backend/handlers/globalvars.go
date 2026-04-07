@@ -7,7 +7,6 @@ import (
 )
 
 func ListGlobalVars(c *fiber.Ctx) error {
-	userID := uint(c.Locals("user_id").(float64))
 	var vars []models.GlobalVariable
 
 	wsIDParam := c.QueryInt("workspace_id", -1)
@@ -15,10 +14,10 @@ func ListGlobalVars(c *fiber.Ctx) error {
 
 	if wsIDParam > 0 {
 		wsID := uint(wsIDParam)
-		db.DB.Where("user_id = ? AND workspace_id = ? AND project_key = ?", userID, wsID, projectKey).
+		db.DB.Where("workspace_id = ? AND project_key = ?", wsID, projectKey).
 			Order("key asc").Find(&vars)
 	} else {
-		db.DB.Where("user_id = ? AND workspace_id IS NULL AND project_key = ''", userID).
+		db.DB.Where("workspace_id IS NULL AND project_key = ''").
 			Order("key asc").Find(&vars)
 	}
 
@@ -50,10 +49,9 @@ func CreateGlobalVar(c *fiber.Ctx) error {
 }
 
 func UpdateGlobalVar(c *fiber.Ctx) error {
-	userID := uint(c.Locals("user_id").(float64))
 	id := c.Params("id")
 	var v models.GlobalVariable
-	if err := db.DB.Where("id = ? AND user_id = ?", id, userID).First(&v).Error; err != nil {
+	if err := db.DB.Where("id = ?", id).First(&v).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "variable not found"})
 	}
 	var req struct {
@@ -76,9 +74,8 @@ func UpdateGlobalVar(c *fiber.Ctx) error {
 }
 
 func DeleteGlobalVar(c *fiber.Ctx) error {
-	userID := uint(c.Locals("user_id").(float64))
 	id := c.Params("id")
-	if err := db.DB.Where("id = ? AND user_id = ?", id, userID).Delete(&models.GlobalVariable{}).Error; err != nil {
+	if err := db.DB.Where("id = ?", id).Delete(&models.GlobalVariable{}).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "variable not found"})
 	}
 	return c.JSON(fiber.Map{"message": "variable deleted"})
