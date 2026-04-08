@@ -1,0 +1,23 @@
+# Environment variables
+.env
+.env.*
+.claude
+!.env.example
+
+# SQLite database (contains credentials and sensitive data)
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go build artifacts
+backend/kubecommit-api
+backend/*.test
+
+# Editor
+.idea/
+.vscode/
+*.swp

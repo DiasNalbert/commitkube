@@ -1,0 +1,180 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Theme CSS variables ── */
+:root {
+  --color-bg: #f8fafc;
+  --color-fg: #0f172a;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f1f5f9;
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(16, 185, 129, 0.25);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --card-bg: rgba(255, 255, 255, 0.9);
+  --card-border: rgba(0, 0, 0, 0.07);
+  --input-bg: #ffffff;
+  --input-border: #d1d5db;
+  --input-fg: #0f172a;
+  --body-gradient-from: #e2e8f0;
+  --body-gradient-via: #f8fafc;
+}
+
+.dark {
+  --color-bg: #09090b;
+  --color-fg: #fafafa;
+  --color-surface: #18181b;
+  --color-surface-hover: #27272a;
+  --glass-bg: rgba(24, 24, 27, 0.7);
+  --glass-border: rgba(16, 185, 129, 0.2);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --card-bg: rgba(24, 24, 27, 0.4);
+  --card-border: rgba(255, 255, 255, 0.05);
+  --input-bg: #18181b;
+  --input-border: #3f3f46;
+  --input-fg: #fafafa;
+  --body-gradient-from: #18181b;
+  --body-gradient-via: #09090b;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: radial-gradient(ellipse at top, var(--body-gradient-from), var(--body-gradient-via), var(--color-bg));
+  background-attachment: fixed;
+  min-height: 100vh;
+  color: var(--color-fg);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+@layer utilities {
+  .glass-panel {
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+    transition: background 0.3s ease, border-color 0.3s ease;
+  }
+
+  .glass-card {
+    background: var(--card-bg);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--card-border);
+    border-radius: 0.75rem;
+    transition: all 0.2s ease-in-out;
+  }
+
+  .glass-card:hover {
+    border-color: rgba(16, 185, 129, 0.3);
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.12);
+    transform: translateY(-1px);
+  }
+
+  .tech-glow {
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.15);
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-brand-green text-zinc-950 font-semibold px-4 py-2 rounded-lg
+           transition-all duration-150 ease-in-out
+           hover:bg-emerald-400 hover:shadow-[0_0_18px_rgba(16,185,129,0.45)] hover:scale-[1.03]
+           active:scale-[0.97] active:shadow-none
+           focus:outline-none focus:ring-2 focus:ring-brand-green/50;
+  }
+
+  .btn-secondary {
+    @apply font-semibold px-4 py-2 rounded-lg border transition-all duration-150 ease-in-out
+           hover:scale-[1.03] active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-brand-green/30;
+    background: var(--color-surface);
+    color: var(--color-fg);
+    border-color: rgba(16, 185, 129, 0.3);
+  }
+
+  .btn-secondary:hover {
+    background: rgba(16, 185, 129, 0.1);
+    border-color: rgba(16, 185, 129, 0.5);
+  }
+
+  .input-tech {
+    @apply w-full rounded-lg px-3 py-2 transition-all duration-150 ease-in-out
+           focus:outline-none focus:ring-2 focus:ring-brand-green/40 focus:shadow-[0_0_12px_rgba(16,185,129,0.2)];
+    background: var(--input-bg);
+    color: var(--input-fg);
+    border: 1px solid var(--input-border);
+  }
+
+  .input-tech:focus {
+    border-color: #10b981;
+  }
+}
+
+/* ── Light mode: make zinc classes readable ── */
+:root:not(.dark) .text-zinc-100,
+:root:not(.dark) .text-zinc-200,
+:root:not(.dark) .text-zinc-300 {
+  color: #374151 !important;
+}
+
+:root:not(.dark) .text-zinc-400,
+:root:not(.dark) .text-zinc-500,
+:root:not(.dark) .text-zinc-600 {
+  color: #6b7280 !important;
+}
+
+:root:not(.dark) .bg-zinc-800,
+:root:not(.dark) .bg-zinc-900,
+:root:not(.dark) .bg-zinc-950 {
+  background-color: #f3f4f6 !important;
+}
+
+:root:not(.dark) .border-zinc-600,
+:root:not(.dark) .border-zinc-700,
+:root:not(.dark) .border-zinc-800,
+:root:not(.dark) .border-zinc-900 {
+  border-color: #d1d5db !important;
+}
+
+:root:not(.dark) .bg-zinc-800\/30,
+:root:not(.dark) .bg-zinc-800\/50,
+:root:not(.dark) .bg-zinc-900\/30,
+:root:not(.dark) .bg-zinc-900\/50 {
+  background-color: rgba(243, 244, 246, 0.6) !important;
+}
+
+/* Textarea / code editors in light mode */
+:root:not(.dark) textarea.font-mono {
+  background: #f8fafc !important;
+  color: #0f172a !important;
+  border-color: #d1d5db !important;
+}
+
+/* Code blocks */
+:root:not(.dark) code {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+/* Nav link hover animation */
+nav a {
+  position: relative;
+  transition: color 0.2s ease;
+}
+
+nav a::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  width: 0;
+  height: 2px;
+  background: #10b981;
+  transition: width 0.25s ease;
+}
+
+nav a:hover::after {
+  width: 100%;
+}
