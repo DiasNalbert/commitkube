@@ -14,6 +14,11 @@ const IconDashboard = () => (
     <rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" />
   </svg>
 );
+const IconGauge = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="w-5 h-5 shrink-0">
+    <path d="M3 17a9 9 0 0 1 18 0" /><path d="M12 17l4.5-4.5" /><circle cx="12" cy="17" r="1.4" />
+  </svg>
+);
 const IconShield = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="w-5 h-5 shrink-0">
     <path d="M12 2L3 6v6c0 5.25 3.75 10.15 9 11.25C17.25 22.15 21 17.25 21 12V6L12 2z" />
@@ -189,6 +194,7 @@ const IconChevronDown = () => (
 // The Kubernetes module: live cluster resources, grouped so they do not crowd
 // out the provisioning features in the flat list.
 const kubernetesItems = [
+  { href: "/kubernetes/overview", label: "Cluster Overview", icon: <IconGauge /> },
   { href: "/kubernetes/workloads", label: "Workloads", icon: <IconActivity /> },
   { href: "/kubernetes/triage", label: "Triage", icon: <IconTriage /> },
   { href: "/kubernetes/topology", label: "Service Map", icon: <IconTopology /> },

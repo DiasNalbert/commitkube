@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { statusStyle, type ResourceRow } from "./status";
+import { fmtBytes, fmtCores, loadStatus } from "./format";
 
 /** Kinds that have a hand-written Overview tab in the backend detail endpoint. */
 export const KINDS_WITH_DETAIL = new Set(["services", "namespaces"]);
@@ -66,19 +67,6 @@ const IconClose = () => (
     <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
   </svg>
 );
-
-/** CPU in the unit the value deserves: millicores below one core, cores above. */
-const fmtCores = (cores: number) =>
-  cores === 0 ? "0" : cores < 1 ? `${Math.round(cores * 1000)} mcore` : `${cores.toFixed(2)} core`;
-
-const fmtBytes = (bytes: number) => {
-  if (!bytes) return "0";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let v = bytes;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
-};
 
 /** A labelled section; the panel is a stack of these. */
 function Card({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
@@ -301,36 +289,48 @@ function ServiceOverview({ d }: { d: ServiceDetail }) {
   );
 }
 
-/** Usage vs requests vs limits on one shared scale, the way `kubectl top`
- *  numbers only make sense when put next to what was asked for. */
-function UtilizationBars({
+/** One measure, one hue. The track is what the pods asked for (or what they
+ *  use, whichever is larger), the fill is live usage, and requests/limits are
+ *  labelled marks on the same axis rather than competing series -- three hues
+ *  here failed CVD separation, and they were never really three categories. */
+function UtilizationMeter({
   title, usage, requests, limits, format, metrics,
 }: {
   title: string; usage: number; requests: number; limits: number;
   format: (n: number) => string; metrics: boolean;
 }) {
   const scale = Math.max(usage, requests, limits) || 1;
-  const rows: [string, number, string][] = [
-    ["Usage", usage, "bg-brand-green"],
-    ["Requests", requests, "bg-sky-500"],
-    ["Limits", limits, "bg-fuchsia-500"],
-  ];
+  const pct = requests > 0 ? (usage / requests) * 100 : 0;
+  const s = statusStyle(metrics && requests > 0 ? loadStatus(pct) : "unknown");
+  const at = (v: number) => `${Math.min(100, (v / scale) * 100)}%`;
+
   return (
-    <div className="space-y-3">
-      <p className="text-sm font-medium">{title}</p>
-      {rows.map(([label, value, color]) => (
-        <div key={label}>
-          <div className="flex items-baseline justify-between text-xs">
-            <span className="text-zinc-500 dark:text-zinc-400">{label}</span>
-            <span className="font-mono">
-              {label === "Usage" && !metrics ? "unavailable" : format(value)}
-            </span>
-          </div>
-          <div className="mt-1 h-2 rounded-full bg-[var(--color-surface-hover)] overflow-hidden">
-            <div className={`h-full rounded-full ${color}`} style={{ width: `${Math.min(100, (value / scale) * 100)}%` }} />
-          </div>
-        </div>
-      ))}
+    <div>
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-sm font-medium">{title}</p>
+        <p className="text-sm font-mono">
+          {metrics ? format(usage) : <span className="text-zinc-400 dark:text-zinc-600">sem métricas</span>}
+          {metrics && requests > 0 && (
+            <span className={`ml-2 ${s.text}`}>{pct.toFixed(0)}% do requisitado</span>
+          )}
+        </p>
+      </div>
+
+      <div className="relative mt-2 h-3 rounded-full bg-[var(--color-surface-hover)] overflow-hidden">
+        {metrics && <div className={`h-full rounded-full ${s.dot}`} style={{ width: at(usage) }} />}
+        {requests > 0 && (
+          <span className="absolute inset-y-0 w-0.5 bg-zinc-500 dark:bg-zinc-300" style={{ left: at(requests) }} />
+        )}
+        {limits > 0 && (
+          <span className="absolute inset-y-0 w-0.5 bg-zinc-400 dark:bg-zinc-500" style={{ left: at(limits) }} />
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+        <span>Uso <span className="font-mono text-zinc-700 dark:text-zinc-200">{metrics ? format(usage) : "—"}</span></span>
+        <span>Requests <span className="font-mono text-zinc-700 dark:text-zinc-200">{format(requests)}</span></span>
+        <span>Limits <span className="font-mono text-zinc-700 dark:text-zinc-200">{format(limits)}</span></span>
+      </div>
     </div>
   );
 }
@@ -402,9 +402,9 @@ function NamespaceOverview({ d }: { d: NamespaceDetail }) {
           </p>
         )}
         <div className="grid md:grid-cols-2 gap-6">
-          <UtilizationBars title="CPU" usage={d.cpu.usage} requests={d.cpu.requests} limits={d.cpu.limits}
+          <UtilizationMeter title="CPU" usage={d.cpu.usage} requests={d.cpu.requests} limits={d.cpu.limits}
             format={fmtCores} metrics={d.metrics_available} />
-          <UtilizationBars title="Memory" usage={d.memory.usage} requests={d.memory.requests} limits={d.memory.limits}
+          <UtilizationMeter title="Memory" usage={d.memory.usage} requests={d.memory.requests} limits={d.memory.limits}
             format={fmtBytes} metrics={d.metrics_available} />
         </div>
       </Card>
