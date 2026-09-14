@@ -165,7 +165,7 @@ func StartScanWorkers() {
 				case ScanImage:
 					err = runImageOnlyScan(job.Repo)
 				default:
-					err = runScanAndSave(job.Repo, "")
+					err = runScanAndSave(job.Repo, "", false)
 				}
 				if err != nil {
 					fmt.Printf("scan worker %d: %s (%s) failed: %v\n", worker, job.Repo, job.Mode, err)
