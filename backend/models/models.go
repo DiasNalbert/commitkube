@@ -126,21 +126,23 @@ type BitbucketProject struct {
 }
 
 type ScanResult struct {
-	ID            uint      `gorm:"primarykey;autoIncrement" json:"id"`
-	CreatedAt     time.Time `json:"scanned_at"`
-	RepoName      string    `gorm:"index;not null" json:"repo_name"`
-	Critical      int       `json:"critical"`
-	High          int       `json:"high"`
-	Medium        int       `json:"medium"`
-	Low           int       `json:"low"`
-	Report        string    `gorm:"type:text" json:"-"`
-	ScannedImage  string    `json:"scanned_image"`
-	ImageCritical int       `json:"image_critical"`
-	ImageHigh     int       `json:"image_high"`
-	ImageMedium   int       `json:"image_medium"`
-	ImageLow      int       `json:"image_low"`
-	ImageReport   string    `gorm:"type:text" json:"-"`
-	ImageError    string    `json:"image_error,omitempty"`
+	ID           uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt    time.Time `json:"scanned_at"`
+	RepoName     string    `gorm:"index;not null" json:"repo_name"`
+	Critical     int       `json:"critical"`
+	High         int       `json:"high"`
+	Medium       int       `json:"medium"`
+	Low          int       `json:"low"`
+	Report       string    `gorm:"type:text" json:"-"`
+	ScannedImage string    `json:"scanned_image"`
+	ImageSource  string    `json:"image_source"` // deployed | base
+
+	ImageCritical int    `json:"image_critical"`
+	ImageHigh     int    `json:"image_high"`
+	ImageMedium   int    `json:"image_medium"`
+	ImageLow      int    `json:"image_low"`
+	ImageReport   string `gorm:"type:text" json:"-"`
+	ImageError    string `json:"image_error,omitempty"`
 }
 
 type ScanHistory struct {
