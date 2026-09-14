@@ -197,7 +197,7 @@ func runImageOnlyScan(repoName string) error {
 	if db.DB.Where("repo_name = ?", repoName).First(&existing).Error != nil {
 		// Nothing stored yet: there is no code half to preserve, so the full
 		// pass is the only one that makes sense.
-		return runScanAndSave(repoName, "")
+		return runScanAndSave(repoName, "", false)
 	}
 
 	report, counts, image, source, err := resolveImageScan(repoName, "", repo.UserID)
@@ -207,6 +207,7 @@ func runImageOnlyScan(repoName string) error {
 		return err
 	}
 
+	previous := existing
 	reportJSON, _ := json.Marshal(report)
 	existing.ScannedImage = image
 	existing.ImageSource = source
@@ -216,10 +217,65 @@ func runImageOnlyScan(repoName string) error {
 	existing.ImageLow = counts["LOW"]
 	existing.ImageReport = string(reportJSON)
 	existing.ImageError = ""
-	return db.DB.Save(&existing).Error
+	if err := db.DB.Save(&existing).Error; err != nil {
+		return err
+	}
+
+	// This pass exists to catch a CVE published against an image nobody
+	// touched, so a worse result is exactly the thing worth an email -- and an
+	// unchanged one is exactly the thing that must stay quiet.
+	if counts["CRITICAL"] > previous.ImageCritical || counts["HIGH"] > previous.ImageHigh {
+		notifyImageRegression(repo, existing, report, counts, image)
+	}
+	return nil
 }
 
-func runScanAndSave(repoName string, sshKeyOverride string) error {
+// notifyImageRegression mails the same report the full scan would, rebuilding
+// the code half from what is stored so the reader gets the whole picture
+// rather than a fragment that raises more questions than it answers.
+func notifyImageRegression(repo models.Repository, result models.ScanResult, imageReport TrivyReport, imageCounts map[string]int, image string) {
+	var user models.User
+	if db.DB.First(&user, repo.UserID).Error != nil || user.Email == "" {
+		return
+	}
+
+	var codeReport TrivyReport
+	_ = json.Unmarshal([]byte(result.Report), &codeReport)
+	codeCounts := map[string]int{
+		"CRITICAL": result.Critical, "HIGH": result.High,
+		"MEDIUM": result.Medium, "LOW": result.Low,
+	}
+
+	html := buildScanHTML(repo.Name, codeReport, codeCounts, imageReport, imageCounts, image, "")
+	subject := fmt.Sprintf("[CommitKube] Novas vulnerabilidades na imagem: %s — C:%d H:%d",
+		repo.Name, imageCounts["CRITICAL"], imageCounts["HIGH"])
+	if err := sendScanEmail(user.Email, subject, html); err != nil {
+		fmt.Printf("Image regression email failed for %s: %v\n", repo.Name, err)
+	}
+}
+
+// shouldNotify decides whether a finished scan is worth an email. A person who
+// pressed the button is always told. Otherwise only two things are news: the
+// first scan of a repository, and findings that got worse. A scheduled rescan
+// that confirms yesterday's numbers is not news, and mailing it every hour is
+// how a security alert stops being read.
+//
+// Only CRITICAL and HIGH move the needle. Medium and low churn with every
+// database update, and letting them trigger mail would put the whole estate
+// back in the inbox daily.
+func shouldNotify(manual, hadPrevious bool, previous models.ScanResult, counts, imageCounts map[string]int) bool {
+	if manual || !hadPrevious {
+		return true
+	}
+	return counts["CRITICAL"] > previous.Critical ||
+		counts["HIGH"] > previous.High ||
+		imageCounts["CRITICAL"] > previous.ImageCritical ||
+		imageCounts["HIGH"] > previous.ImageHigh
+}
+
+// manual says a person asked for this scan and is waiting for the report;
+// scheduled passes leave it false and only mail when something got worse.
+func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 	var repo models.Repository
 	if err := db.DB.Where("name = ?", repoName).First(&repo).Error; err != nil {
 		return fmt.Errorf("repo not found: %w", err)
@@ -315,7 +371,10 @@ func runScanAndSave(repoName string, sshKeyOverride string) error {
 	}
 
 	var existing models.ScanResult
-	if db.DB.Where("repo_name = ?", repoName).First(&existing).Error == nil {
+	hadPrevious := db.DB.Where("repo_name = ?", repoName).First(&existing).Error == nil
+	previous := existing // counts as they stood before this pass
+
+	if hadPrevious {
 		existing.Critical = counts["CRITICAL"]
 		existing.High = counts["HIGH"]
 		existing.Medium = counts["MEDIUM"]
@@ -399,7 +458,7 @@ func runScanAndSave(repoName string, sshKeyOverride string) error {
 		}
 	}
 
-	if user.Email != "" {
+	if user.Email != "" && shouldNotify(manual, hadPrevious, previous, counts, imageCounts) {
 		html := buildScanHTML(repoName, report, counts, imageReport, imageCounts, scannedImage, imageErrStr)
 		subject := fmt.Sprintf("[CommitKube] Security Scan: %s — Code C:%d H:%d M:%d L:%d",
 			repoName, counts["CRITICAL"], counts["HIGH"], counts["MEDIUM"], counts["LOW"])
@@ -420,7 +479,7 @@ func RunTrivyScan(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 	}
 
-	if err := runScanAndSave(repoName, ""); err != nil {
+	if err := runScanAndSave(repoName, "", true); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
