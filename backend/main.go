@@ -208,6 +208,7 @@ func main() {
 	api.Get("/kubernetes/resources/:kind", handlers.ListK8sResources)
 	api.Get("/kubernetes/manifest/:kind/:name", handlers.GetK8sManifest)
 	api.Get("/kubernetes/detail/:kind/:name", handlers.GetK8sResourceDetail)
+	api.Get("/kubernetes/cluster-overview", handlers.GetClusterOverview)
 
 	api.Get("/kubernetes/pods/logs", handlers.GetPodLogs)
 	api.Get("/kubernetes/pods/logs/stream", handlers.StreamPodLogs)
