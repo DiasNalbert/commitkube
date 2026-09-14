@@ -60,6 +60,13 @@ func ConnectDB() {
 		log.Fatalf("failed to migrate database: %v", err)
 	}
 
+	// scan_results.updated_at is new. Rows written before it existed come back
+	// as the zero time, which would read as "never scanned" and send every
+	// repository through a full rescan on the first pass -- and would show the
+	// year 1 as the scan date until one ran. They were last written when they
+	// were created, so say that.
+	DB.Exec("UPDATE scan_results SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = '' OR updated_at < '0001-01-02'")
+
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_ps_ns_pod_time ON pod_snapshots (namespace, pod_name, recorded_at)")
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_ps_workload_time ON pod_snapshots (workload, recorded_at)")
 	DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_pp_open ON pod_problems (namespace, pod_name, kind) WHERE closed_at IS NULL")
