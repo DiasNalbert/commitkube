@@ -126,8 +126,13 @@ type BitbucketProject struct {
 }
 
 type ScanResult struct {
-	ID           uint      `gorm:"primarykey;autoIncrement" json:"id"`
-	CreatedAt    time.Time `json:"scanned_at"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// There is one row per repository, rewritten in place by every scan, so
+	// CreatedAt is when the repository was first ever scanned and UpdatedAt is
+	// when it was last looked at. Staleness -- and the date the dashboards
+	// show -- has to come from UpdatedAt: CreatedAt never moves again.
+	CreatedAt    time.Time `json:"first_scanned_at"`
+	UpdatedAt    time.Time `json:"scanned_at"`
 	RepoName     string    `gorm:"index;not null" json:"repo_name"`
 	Critical     int       `json:"critical"`
 	High         int       `json:"high"`

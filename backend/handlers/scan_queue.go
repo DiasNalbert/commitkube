@@ -46,7 +46,28 @@ var (
 	// been downloaded makes every scan fail instead of merely being slow.
 	trivyDBMu    sync.RWMutex
 	trivyDBReady bool
+
+	// lastAttempt records when a repository was last actually tried, whether
+	// or not it worked. The stored timestamp only advances on success, so
+	// without this a repository that cannot be cloned -- a rotated key, a
+	// deleted remote -- stays the oldest candidate forever and takes a slot
+	// in every pass, starving the ones that would succeed.
+	attemptMu   sync.Mutex
+	lastAttempt = map[string]time.Time{}
 )
+
+func markAttempt(repo string) {
+	attemptMu.Lock()
+	lastAttempt[repo] = time.Now()
+	attemptMu.Unlock()
+}
+
+func attemptedSince(repo string, window time.Duration) bool {
+	attemptMu.Lock()
+	defer attemptMu.Unlock()
+	at, ok := lastAttempt[repo]
+	return ok && time.Since(at) < window
+}
 
 // TrivyCacheDir is where Trivy keeps the vulnerability database between runs.
 // It defaults next to the SQLite file, which is already the one path the
@@ -137,6 +158,8 @@ func StartScanWorkers() {
 				delete(queued, job.Repo+"|"+string(job.Mode))
 				queuedMu.Unlock()
 
+				markAttempt(job.Repo)
+
 				var err error
 				switch job.Mode {
 				case ScanImage:
@@ -189,12 +212,33 @@ func PollRescans() {
 	imageAge := durationEnv("RESCAN_IMAGE_AGE", 24*time.Hour)
 	fullAge := durationEnv("RESCAN_FULL_AGE", 7*24*time.Hour)
 
+	// A pass enqueues at most a batch. Without a cap the first run after a
+	// deploy hands the workers every repository at once, and from then on the
+	// whole estate goes stale within the same hour it was last scanned -- the
+	// timestamps end up synchronised, so the herd arrives together every day.
+	// A cap spreads the same work across passes and keeps the queue shallow
+	// enough that a scan someone actually asked for is not stuck behind it.
+	batch := 20
+	if v := os.Getenv("RESCAN_BATCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			batch = n
+		}
+	}
+
 	var repos []models.Repository
 	db.DB.Find(&repos)
 
 	now := time.Now()
 	full, image := 0, 0
 	for _, repo := range repos {
+		if full+image >= batch {
+			break
+		}
+		// Tried recently, successfully or not: leave it until its window comes
+		// round again rather than retrying it every single pass.
+		if attemptedSince(repo.Name, imageAge) {
+			continue
+		}
 		var last models.ScanResult
 		err := db.DB.Where("repo_name = ?", repo.Name).Order("created_at desc").First(&last).Error
 		if err != nil {
@@ -205,10 +249,10 @@ func PollRescans() {
 			continue
 		}
 		switch {
-		case now.Sub(last.CreatedAt) >= fullAge:
+		case now.Sub(last.UpdatedAt) >= fullAge:
 			EnqueueScan(repo.Name, ScanFull)
 			full++
-		case now.Sub(last.CreatedAt) >= imageAge:
+		case now.Sub(last.UpdatedAt) >= imageAge:
 			EnqueueScan(repo.Name, ScanImage)
 			image++
 		}
