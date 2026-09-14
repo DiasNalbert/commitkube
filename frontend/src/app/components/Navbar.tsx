@@ -22,8 +22,8 @@ export default function Navbar() {
 
   const links = [
     { href: "/", label: "Dashboard" },
-    { href: "/security/code", label: "Security: Code" },
-    { href: "/security/containers", label: "Security: Containers" },
+    { href: "/security/code", label: "Code Security" },
+    { href: "/security/containers", label: "Container Security" },
     { href: "/kubernetes/workloads", label: "Workloads" },
     { href: "/repositories/new", label: "New Repository" },
     { href: "/repositories/import", label: "Import Repository" },

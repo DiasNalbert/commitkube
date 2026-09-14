@@ -207,6 +207,7 @@ const IconChevronDown = () => (
 // scanned by name and any other order is a rule the reader has to learn.
 const kubernetesItems = [
   { href: "/kubernetes/overview", label: "Cluster Overview", icon: <IconGauge /> },
+  { href: "/security/containers", label: "Container Security", icon: <IconContainer /> },
   { href: "/kubernetes/daemonsets", label: "DaemonSets", icon: <IconDaemonSet /> },
   { href: "/kubernetes/deployments", label: "Deployments", icon: <IconDeployment /> },
   { href: "/kubernetes/ingresses", label: "Ingresses", icon: <IconIngress /> },
@@ -229,6 +230,7 @@ const kubernetesItems = [
 const scmItems = [
   { href: "/", label: "Repositories", icon: <IconDashboard />, admin: false },
   { href: "/audit-logs", label: "Audit Log", icon: <IconAudit />, admin: true },
+  { href: "/security/code", label: "Code Security", icon: <IconShield />, admin: false },
   { href: "/repositories/import", label: "Import Repository", icon: <IconDownload />, admin: true },
   { href: "/repositories/new", label: "New Repository", icon: <IconPlus />, admin: false },
   { href: "/templates", label: "Templates", icon: <IconFile />, admin: false },
@@ -237,8 +239,6 @@ const scmItems = [
 const mainItems = [
   { href: "/tools/base64", label: "Base64", icon: <IconHash /> },
   { href: "/notifications", label: "Notifications", icon: <IconBell /> },
-  { href: "/security/code", label: "Security: Code", icon: <IconShield /> },
-  { href: "/security/containers", label: "Security: Containers", icon: <IconContainer /> },
   { href: "/settings", label: "Settings", icon: <IconGear /> },
 ];
 
@@ -247,9 +247,9 @@ const adminItems = [
   { href: "/users", label: "Users", icon: <IconUsers /> },
 ];
 
-// Routes that belong to SCM, for highlighting the group header. "/" is matched
-// exactly: every other path would start with it.
-const SCM_PREFIXES = ["/", "/audit-logs", "/repositories", "/templates"];
+// Sub-routes that belong to a group but are not themselves nav entries, so the
+// group header stays highlighted while you are inside one.
+const SCM_SUBROUTES = ["/repositories/", "/templates/"];
 
 const bottomItems = [
   { href: "/profile", label: "Profile", icon: <IconUser /> },
@@ -397,14 +397,17 @@ export default function Sidebar() {
               label="Kubernetes"
               icon={<IconKubernetes />}
               items={kubernetesItems}
-              active={pathname.startsWith("/kubernetes")}
+              active={pathname.startsWith("/kubernetes") || pathname === "/security/containers"}
             />
             <NavGroup
               groupKey="scm"
               label="SCM"
               icon={<IconBranch />}
               items={visibleScmItems}
-              active={SCM_PREFIXES.some(p => (p === "/" ? pathname === "/" : pathname.startsWith(p)))}
+              active={
+                visibleScmItems.some(i => i.href === pathname) ||
+                SCM_SUBROUTES.some(p => pathname.startsWith(p))
+              }
             />
           </>
         )}
