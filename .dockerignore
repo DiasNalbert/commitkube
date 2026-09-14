@@ -1,0 +1,33 @@
+# The build context is sent to the daemon in full, and the Dockerfile's
+# `COPY frontend/ .` runs AFTER `npm ci`. Without these rules the host's
+# node_modules overwrites the ones installed inside the image -- and the host
+# is glibc while the image is node:20-alpine (musl), so Next.js's native
+# @next/swc-linux-x64-gnu binaries land in an environment that needs the -musl
+# ones. Excluding them is a correctness fix, not just a size optimization.
+**/node_modules
+**/.next
+**/.git
+**/.gitignore
+
+# Local state that must never be baked into an image
+.env
+**/*.db
+**/*.db-journal
+**/*.db-wal
+data/
+
+# Stale build artifacts: the image compiles both from source, so shipping the
+# host's copies only inflates the context (and risks overwriting fresh output).
+backend/kubecommit-api
+**/tsconfig.tsbuildinfo
+**/tmp/
+
+# Not needed at build time
+deploy/
+README.md
+docker-compose.yml
+**/*.log
+**/.DS_Store
+
+# Nunca entra na imagem
+deploy/rbac.yaml
