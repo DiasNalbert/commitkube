@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -55,19 +54,12 @@ type TrivyMisconf struct {
 	Status   string `json:"Status"`
 }
 
-func TriggerScanBackground(repoName string) {
-	go func() {
-		time.Sleep(30 * time.Second)
-		if err := runScanAndSave(repoName, ""); err != nil {
-			fmt.Printf("Background scan failed for %s: %v\n", repoName, err)
-		}
-	}()
-}
-
-func runImageScanFromRegistry(repoName string, userID uint) (TrivyReport, map[string]int, string, error) {
+// deployedImage is the image the repository actually has running in the
+// cluster, which is the authoritative thing to scan when it exists.
+func deployedImage(repoName string) (string, error) {
 	var repo models.Repository
 	if err := db.DB.Where("name = ?", repoName).First(&repo).Error; err != nil {
-		return TrivyReport{}, nil, "", fmt.Errorf("repo not found")
+		return "", fmt.Errorf("repo not found")
 	}
 	// The workload name follows the ArgoCD application name when one was used
 	// to deploy, and the repository name otherwise.
@@ -75,23 +67,25 @@ func runImageScanFromRegistry(repoName string, userID uint) (TrivyReport, map[st
 	if workloadName == "" {
 		workloadName = repo.Name
 	}
+	return latestWorkloadImage(workloadName)
+}
 
-	image, err := latestWorkloadImage(workloadName)
-	if err != nil {
-		return TrivyReport{}, nil, "", err
-	}
+// scanImage runs Trivy against one image reference, with whatever registry
+// credential resolves for it.
+func scanImage(image string, userID uint) (TrivyReport, map[string]int, error) {
 	scanID := uuid.New().String()
 	reportFile := filepath.Join(os.TempDir(), "trivy-image-"+scanID+".json")
 	defer os.Remove(reportFile)
 
-	args := []string{
-		"image",
+	args := []string{"image"}
+	args = append(args, trivyCacheArgs()...)
+	args = append(args,
 		"--format", "json",
 		"--output", reportFile,
 		"--exit-code", "0",
 		"--scanners", "vuln",
 		"--no-progress",
-	}
+	)
 
 	env := os.Environ()
 	cred := ResolveRegistryCredential(image, userID)
@@ -121,17 +115,17 @@ func runImageScanFromRegistry(repoName string, userID uint) (TrivyReport, map[st
 	trivyCmd := exec.Command("trivy", args...)
 	trivyCmd.Env = env
 	if out, err := trivyCmd.CombinedOutput(); err != nil {
-		return TrivyReport{}, nil, image, fmt.Errorf("trivy image scan failed: %s", strings.TrimSpace(string(out)))
+		return TrivyReport{}, nil, fmt.Errorf("trivy image scan failed: %s", strings.TrimSpace(string(out)))
 	}
 
 	reportBytes, err := os.ReadFile(reportFile)
 	if err != nil {
-		return TrivyReport{}, nil, image, fmt.Errorf("failed to read image report: %w", err)
+		return TrivyReport{}, nil, fmt.Errorf("failed to read image report: %w", err)
 	}
 
 	var report TrivyReport
 	if err := json.Unmarshal(reportBytes, &report); err != nil {
-		return TrivyReport{}, nil, image, fmt.Errorf("failed to parse image report: %w", err)
+		return TrivyReport{}, nil, fmt.Errorf("failed to parse image report: %w", err)
 	}
 
 	counts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
@@ -141,7 +135,88 @@ func runImageScanFromRegistry(repoName string, userID uint) (TrivyReport, map[st
 		}
 	}
 
-	return report, counts, image, nil
+	return report, counts, nil
+}
+
+// ImageSource records which image a container scan actually looked at, because
+// the two answer different questions and a number without that label is a lie.
+// A deployed image is what is running; a base image is what the Dockerfile
+// declares, scanned before anything has been built, so a repository has
+// container findings from the moment it is connected.
+const (
+	ImageSourceDeployed = "deployed"
+	ImageSourceBase     = "base"
+)
+
+// resolveImageScan scans the deployed image when the repository has one and
+// falls back to the base image its Dockerfile declares. checkoutDir may be
+// empty -- an image-only pass has no checkout, so it simply has no fallback.
+func resolveImageScan(repoName, checkoutDir string, userID uint) (report TrivyReport, counts map[string]int, image, source string, err error) {
+	image, deployErr := deployedImage(repoName)
+	if deployErr == nil && image != "" {
+		report, counts, err = scanImage(image, userID)
+		if err == nil {
+			return report, counts, image, ImageSourceDeployed, nil
+		}
+	}
+
+	if checkoutDir == "" {
+		if deployErr != nil {
+			return TrivyReport{}, nil, "", "", deployErr
+		}
+		return TrivyReport{}, nil, image, "", err
+	}
+
+	base, dockerfile, baseErr := resolveBaseImage(checkoutDir)
+	if baseErr != nil {
+		// Report the reason the preferred scan failed, not the fallback's:
+		// "no workload deployed yet" is the actionable half.
+		if deployErr != nil {
+			return TrivyReport{}, nil, "", "", fmt.Errorf("%v; and no base image to fall back to: %v", deployErr, baseErr)
+		}
+		return TrivyReport{}, nil, image, "", err
+	}
+
+	report, counts, err = scanImage(base, userID)
+	if err != nil {
+		return TrivyReport{}, nil, base, "", fmt.Errorf("base image %s from %s: %w", base, dockerfile, err)
+	}
+	return report, counts, base, ImageSourceBase, nil
+}
+
+// runImageOnlyScan refreshes just the container half of a repository's result.
+// It is the cheap pass: no clone, no filesystem scan. New CVEs land against an
+// image that has not changed, so this is the one worth running often.
+func runImageOnlyScan(repoName string) error {
+	var repo models.Repository
+	if err := db.DB.Where("name = ?", repoName).First(&repo).Error; err != nil {
+		return fmt.Errorf("repo not found")
+	}
+
+	var existing models.ScanResult
+	if db.DB.Where("repo_name = ?", repoName).First(&existing).Error != nil {
+		// Nothing stored yet: there is no code half to preserve, so the full
+		// pass is the only one that makes sense.
+		return runScanAndSave(repoName, "")
+	}
+
+	report, counts, image, source, err := resolveImageScan(repoName, "", repo.UserID)
+	if err != nil {
+		existing.ImageError = err.Error()
+		db.DB.Save(&existing)
+		return err
+	}
+
+	reportJSON, _ := json.Marshal(report)
+	existing.ScannedImage = image
+	existing.ImageSource = source
+	existing.ImageCritical = counts["CRITICAL"]
+	existing.ImageHigh = counts["HIGH"]
+	existing.ImageMedium = counts["MEDIUM"]
+	existing.ImageLow = counts["LOW"]
+	existing.ImageReport = string(reportJSON)
+	existing.ImageError = ""
+	return db.DB.Save(&existing).Error
 }
 
 func runScanAndSave(repoName string, sshKeyOverride string) error {
@@ -193,13 +268,16 @@ func runScanAndSave(repoName string, sshKeyOverride string) error {
 	reportFile := filepath.Join(os.TempDir(), "trivy-report-"+scanID+".json")
 	defer os.Remove(reportFile)
 
-	trivyCmd := exec.Command("trivy", "fs",
+	fsArgs := []string{"fs"}
+	fsArgs = append(fsArgs, trivyCacheArgs()...)
+	fsArgs = append(fsArgs,
 		"--format", "json",
 		"--output", reportFile,
 		"--exit-code", "0",
 		"--scanners", "vuln,misconfig,secret",
 		scanDir,
 	)
+	trivyCmd := exec.Command("trivy", fsArgs...)
 	if out, err := trivyCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("trivy scan failed: %s", string(out))
 	}
@@ -228,7 +306,7 @@ func runScanAndSave(repoName string, sshKeyOverride string) error {
 
 	reportJSON, _ := json.Marshal(report)
 
-	imageReport, imageCounts, scannedImage, imageErr := runImageScanFromRegistry(repoName, repo.UserID)
+	imageReport, imageCounts, scannedImage, imageSource, imageErr := resolveImageScan(repoName, scanDir, repo.UserID)
 	imageReportJSON, _ := json.Marshal(imageReport)
 	imageErrStr := ""
 	if imageErr != nil {
@@ -244,6 +322,7 @@ func runScanAndSave(repoName string, sshKeyOverride string) error {
 		existing.Low = counts["LOW"]
 		existing.Report = string(reportJSON)
 		existing.ScannedImage = scannedImage
+		existing.ImageSource = imageSource
 		existing.ImageCritical = imageCounts["CRITICAL"]
 		existing.ImageHigh = imageCounts["HIGH"]
 		existing.ImageMedium = imageCounts["MEDIUM"]
@@ -260,6 +339,7 @@ func runScanAndSave(repoName string, sshKeyOverride string) error {
 			Low:           counts["LOW"],
 			Report:        string(reportJSON),
 			ScannedImage:  scannedImage,
+			ImageSource:   imageSource,
 			ImageCritical: imageCounts["CRITICAL"],
 			ImageHigh:     imageCounts["HIGH"],
 			ImageMedium:   imageCounts["MEDIUM"],

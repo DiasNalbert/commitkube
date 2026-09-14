@@ -18,6 +18,49 @@ func main() {
 	db.ConnectDB()
 	_ = crypto.MasterKey() // validate ENCRYPTION_KEY at startup
 
+	// The scan pool and the vulnerability database come up before anything can
+	// enqueue work: a scan that starts before the first database download would
+	// either fail or fetch its own copy, which is what the shared cache exists
+	// to avoid.
+	handlers.StartScanWorkers()
+
+	go func() {
+		// Trivy's database is fetched centrally, on a schedule of its own, so
+		// no scan pays the download and a rescan of untouched code still
+		// reflects CVEs published since the last pass.
+		interval := 6 * time.Hour
+		if v := os.Getenv("TRIVY_DB_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				interval = d
+			}
+		}
+		handlers.UpdateTrivyDB()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			handlers.UpdateTrivyDB()
+		}
+	}()
+
+	go func() {
+		// Findings go stale on their own: a CVE published today applies to an
+		// image nobody has touched. The pass only enqueues -- the worker pool
+		// decides how fast the queue actually drains.
+		interval := 1 * time.Hour
+		if v := os.Getenv("RESCAN_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				interval = d
+			}
+		}
+		time.Sleep(2 * time.Minute) // let the database download finish first
+		handlers.PollRescans()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			handlers.PollRescans()
+		}
+	}()
+
 	go func() {
 		// Workload uptime and change history, read from the Kubernetes apps API.
 		// ArgoCD is used only to deploy applications, never to observe them.
