@@ -164,8 +164,8 @@ export default function Dashboard() {
       )}
 
       <header>
-        <h1 className="text-3xl font-bold">Platform Dashboard</h1>
-        <p className="text-zinc-400 mt-2">Overview of repositories, security findings, and Kubernetes service health.</p>
+        <h1 className="text-3xl font-bold">Repositories Dashboard</h1>
+        <p className="text-zinc-400 mt-2">Os repositórios geridos pela plataforma — Bitbucket, GitHub e GitLab — com o estado de cada scan e a saúde do que eles entregam.</p>
       </header>
 
       <WorkspaceFilter
@@ -187,7 +187,7 @@ export default function Dashboard() {
 
         <div
           className="glass-card p-6 border-l-4 border-l-yellow-500 cursor-pointer hover:border-yellow-400 transition-colors"
-          onClick={() => window.location.href = "/security"}
+          onClick={() => window.location.href = "/security/code"}
         >
           <h3 className="text-lg font-medium text-zinc-300">Security</h3>
           {summary ? (

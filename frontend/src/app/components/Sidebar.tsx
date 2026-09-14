@@ -19,6 +19,17 @@ const IconGauge = () => (
     <path d="M3 17a9 9 0 0 1 18 0" /><path d="M12 17l4.5-4.5" /><circle cx="12" cy="17" r="1.4" />
   </svg>
 );
+const IconContainer = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="w-5 h-5 shrink-0">
+    <path d="M21 8 12 3 3 8v8l9 5 9-5V8z" /><path d="M3 8l9 5 9-5" /><path d="M12 13v8" />
+  </svg>
+);
+const IconBranch = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="w-5 h-5 shrink-0">
+    <circle cx="6" cy="5" r="2.2" /><circle cx="6" cy="19" r="2.2" /><circle cx="18" cy="9" r="2.2" />
+    <path d="M6 7.2v9.6" /><path d="M18 11.2c0 4-4 3.8-6 5.4" />
+  </svg>
+);
 const IconShield = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="w-5 h-5 shrink-0">
     <path d="M12 2L3 6v6c0 5.25 3.75 10.15 9 11.25C17.25 22.15 21 17.25 21 12V6L12 2z" />
@@ -191,42 +202,54 @@ const IconChevronDown = () => (
   </svg>
 );
 
-// The Kubernetes module: live cluster resources, grouped so they do not crowd
-// out the provisioning features in the flat list.
+// Live cluster resources. The overview leads, as the group's own landing
+// page; everything after it is alphabetical, because a list this long is
+// scanned by name and any other order is a rule the reader has to learn.
 const kubernetesItems = [
   { href: "/kubernetes/overview", label: "Cluster Overview", icon: <IconGauge /> },
-  { href: "/kubernetes/workloads", label: "Workloads", icon: <IconActivity /> },
-  { href: "/kubernetes/triage", label: "Triage", icon: <IconTriage /> },
-  { href: "/kubernetes/topology", label: "Service Map", icon: <IconTopology /> },
-  { href: "/kubernetes/nodes", label: "Nodes", icon: <IconServer /> },
-  { href: "/kubernetes/namespaces", label: "Namespaces", icon: <IconNamespace /> },
-  { href: "/kubernetes/pods", label: "Pods", icon: <IconPods /> },
-  { href: "/kubernetes/deployments", label: "Deployments", icon: <IconDeployment /> },
-  { href: "/kubernetes/replicasets", label: "ReplicaSets", icon: <IconReplicaSet /> },
   { href: "/kubernetes/daemonsets", label: "DaemonSets", icon: <IconDaemonSet /> },
-  { href: "/kubernetes/statefulsets", label: "StatefulSets", icon: <IconStatefulSet /> },
+  { href: "/kubernetes/deployments", label: "Deployments", icon: <IconDeployment /> },
   { href: "/kubernetes/ingresses", label: "Ingresses", icon: <IconIngress /> },
-  { href: "/kubernetes/services", label: "Services", icon: <IconService /> },
-  { href: "/kubernetes/pvcs", label: "Volume Claims", icon: <IconVolume /> },
+  { href: "/kubernetes/namespaces", label: "Namespaces", icon: <IconNamespace /> },
+  { href: "/kubernetes/nodes", label: "Nodes", icon: <IconServer /> },
+  { href: "/kubernetes/pods", label: "Pods", icon: <IconPods /> },
+  { href: "/kubernetes/replicasets", label: "ReplicaSets", icon: <IconReplicaSet /> },
   { href: "/kubernetes/secrets", label: "Secrets", icon: <IconKey /> },
+  { href: "/kubernetes/topology", label: "Service Map", icon: <IconTopology /> },
+  { href: "/kubernetes/services", label: "Services", icon: <IconService /> },
+  { href: "/kubernetes/statefulsets", label: "StatefulSets", icon: <IconStatefulSet /> },
+  { href: "/kubernetes/triage", label: "Triage", icon: <IconTriage /> },
+  { href: "/kubernetes/pvcs", label: "Volume Claims", icon: <IconVolume /> },
+  { href: "/kubernetes/workloads", label: "Workloads", icon: <IconActivity /> },
+];
+
+// Source control: everything that acts on a repository, whichever provider it
+// lives in -- Bitbucket, GitHub or GitLab. The repository dashboard leads and
+// the rest is alphabetical, matching the Kubernetes group.
+const scmItems = [
+  { href: "/", label: "Repositories", icon: <IconDashboard />, admin: false },
+  { href: "/audit-logs", label: "Audit Log", icon: <IconAudit />, admin: true },
+  { href: "/repositories/import", label: "Import Repository", icon: <IconDownload />, admin: true },
+  { href: "/repositories/new", label: "New Repository", icon: <IconPlus />, admin: false },
+  { href: "/templates", label: "Templates", icon: <IconFile />, admin: false },
 ];
 
 const mainItems = [
-  { href: "/", label: "Dashboard", icon: <IconDashboard /> },
   { href: "/tools/base64", label: "Base64", icon: <IconHash /> },
-  { href: "/repositories/new", label: "New Repository", icon: <IconPlus /> },
   { href: "/notifications", label: "Notifications", icon: <IconBell /> },
-  { href: "/security", label: "Security", icon: <IconShield /> },
+  { href: "/security/code", label: "Security: Code", icon: <IconShield /> },
+  { href: "/security/containers", label: "Security: Containers", icon: <IconContainer /> },
   { href: "/settings", label: "Settings", icon: <IconGear /> },
-  { href: "/templates", label: "Templates", icon: <IconFile /> },
 ];
 
 const adminItems = [
-  { href: "/audit-logs", label: "Audit Log", icon: <IconAudit /> },
   { href: "/groups", label: "Groups", icon: <IconGroups /> },
-  { href: "/repositories/import", label: "Import Repository", icon: <IconDownload /> },
   { href: "/users", label: "Users", icon: <IconUsers /> },
 ];
+
+// Routes that belong to SCM, for highlighting the group header. "/" is matched
+// exactly: every other path would start with it.
+const SCM_PREFIXES = ["/", "/audit-logs", "/repositories", "/templates"];
 
 const bottomItems = [
   { href: "/profile", label: "Profile", icon: <IconUser /> },
@@ -236,13 +259,18 @@ export default function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [role, setRole] = useState("");
-  const [k8sOpen, setK8sOpen] = useState(false);
+  // One open flag per group, each remembered on its own, so opening SCM does
+  // not close the cluster resources someone was working through.
+  const [open, setOpen] = useState<Record<string, boolean>>({ k8s: false, scm: false });
 
   useLayoutEffect(() => {
     setRole(localStorage.getItem("role") || "");
     const saved = localStorage.getItem("sidebar_collapsed");
     if (saved === "1") setCollapsed(true);
-    if (localStorage.getItem("sidebar_k8s_open") !== "0") setK8sOpen(true);
+    setOpen({
+      k8s: localStorage.getItem("sidebar_k8s_open") !== "0",
+      scm: localStorage.getItem("sidebar_scm_open") !== "0",
+    });
   }, []);
 
   const toggle = () => {
@@ -254,13 +282,11 @@ export default function Sidebar() {
     });
   };
 
-  const inKubernetes = pathname.startsWith("/kubernetes");
-
-  const toggleK8s = () => {
-    setK8sOpen(prev => {
-      const next = !prev;
-      localStorage.setItem("sidebar_k8s_open", next ? "1" : "0");
-      return next;
+  const toggleGroup = (key: string) => {
+    setOpen(prev => {
+      const next = !prev[key];
+      localStorage.setItem(`sidebar_${key}_open`, next ? "1" : "0");
+      return { ...prev, [key]: next };
     });
   };
 
@@ -271,6 +297,7 @@ export default function Sidebar() {
     ...mainItems,
     ...(isAdminOrRoot ? adminItems : []),
   ];
+  const visibleScmItems = scmItems.filter(item => !item.admin || isAdminOrRoot);
 
   const w = collapsed ? "w-16" : "w-60";
 
@@ -296,6 +323,40 @@ export default function Sidebar() {
       </a>
     );
   };
+
+  /** A collapsible section of the nav. Bitbucket, GitHub and GitLab all land
+   *  in the same group: the provider is a detail of the repository, not a
+   *  separate place in the product. */
+  const NavGroup = ({ groupKey, label, icon, items, active }: {
+    groupKey: string;
+    label: string;
+    icon: React.ReactNode;
+    items: { href: string; label: string; icon: React.ReactNode }[];
+    active: boolean;
+  }) => (
+    <>
+      <button
+        onClick={() => toggleGroup(groupKey)}
+        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group
+          ${active ? "text-brand-green" : "text-zinc-400 hover:text-brand-green hover:bg-brand-green/8"}`}
+      >
+        <span className={active ? "text-brand-green" : "text-zinc-500 group-hover:text-brand-green transition-colors"}>
+          {icon}
+        </span>
+        <span className="truncate flex-1 text-left">{label}</span>
+        <span className={`transition-transform duration-150 ${open[groupKey] ? "" : "-rotate-90"}`}>
+          <IconChevronDown />
+        </span>
+      </button>
+      {open[groupKey] && (
+        <div className="ml-3 pl-2 border-l border-brand-green/20 space-y-0.5">
+          {items.map(item => (
+            <NavItem key={item.href} href={item.href} label={item.label} icon={item.icon} />
+          ))}
+        </div>
+      )}
+    </>
+  );
 
   return (
     <aside
@@ -323,30 +384,28 @@ export default function Sidebar() {
       </button>
 
       <nav className="flex-1 overflow-y-auto py-4 px-2 space-y-0.5">
-        {/* Collapsed rail has no room for a group header, so the resources
-            render as a flat icon list instead. */}
+        {/* Collapsed rail has no room for a group header, so every group's
+            items render as one flat icon list instead. */}
         {collapsed ? (
-          kubernetesItems.map(item => <NavItem key={item.href} {...item} />)
+          [...kubernetesItems, ...visibleScmItems].map(item => (
+            <NavItem key={item.href} href={item.href} label={item.label} icon={item.icon} />
+          ))
         ) : (
           <>
-            <button
-              onClick={toggleK8s}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group
-                ${inKubernetes ? "text-brand-green" : "text-zinc-400 hover:text-brand-green hover:bg-brand-green/8"}`}
-            >
-              <span className={inKubernetes ? "text-brand-green" : "text-zinc-500 group-hover:text-brand-green transition-colors"}>
-                <IconKubernetes />
-              </span>
-              <span className="truncate flex-1 text-left">Kubernetes</span>
-              <span className={`transition-transform duration-150 ${k8sOpen ? "" : "-rotate-90"}`}>
-                <IconChevronDown />
-              </span>
-            </button>
-            {k8sOpen && (
-              <div className="ml-3 pl-2 border-l border-brand-green/20 space-y-0.5">
-                {kubernetesItems.map(item => <NavItem key={item.href} {...item} />)}
-              </div>
-            )}
+            <NavGroup
+              groupKey="k8s"
+              label="Kubernetes"
+              icon={<IconKubernetes />}
+              items={kubernetesItems}
+              active={pathname.startsWith("/kubernetes")}
+            />
+            <NavGroup
+              groupKey="scm"
+              label="SCM"
+              icon={<IconBranch />}
+              items={visibleScmItems}
+              active={SCM_PREFIXES.some(p => (p === "/" ? pathname === "/" : pathname.startsWith(p)))}
+            />
           </>
         )}
 
