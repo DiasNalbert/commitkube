@@ -1,0 +1,49 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts",
+    "/tmp/claude-1000/-home-nalbert-dias-kubecommit/957fa8bd-4b2b-4b26-a120-b15489ebbd17/scratchpad/next-build/types/**/*.ts",
+    "/tmp/claude-1000/-home-nalbert-dias-kubecommit/957fa8bd-4b2b-4b26-a120-b15489ebbd17/scratchpad/nb/types/**/*.ts",
+    "/tmp/claude-1000/-home-nalbert-dias-kubecommit/957fa8bd-4b2b-4b26-a120-b15489ebbd17/scratchpad/nb2/types/**/*.ts",
+    "/tmp/claude-1000/-home-nalbert-dias-kubecommit/957fa8bd-4b2b-4b26-a120-b15489ebbd17/scratchpad/nb3/types/**/*.ts",
+    "/tmp/claude-1000/-home-nalbert-dias-kubecommit/957fa8bd-4b2b-4b26-a120-b15489ebbd17/scratchpad/nb4/types/**/*.ts",
+    "/tmp/claude-1000/-home-nalbert-dias-kubecommit/957fa8bd-4b2b-4b26-a120-b15489ebbd17/scratchpad/nb5/types/**/*.ts",
+    "/tmp/claude-1000/-home-nalbert-dias-kubecommit/701f08b9-eb79-4561-9d21-ae388eb93258/scratchpad/nextbuild/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

@@ -1,0 +1,38 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# SQLite database (contains credentials and sensitive data)
+*.db
+*.sqlite
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go build artifacts
+backend/kubecommit-api
+backend/*.test
+
+# Node / Next.js build output. These are rebuilt from source by the Dockerfile
+# and are large enough to make the repository unusable if committed
+# (node_modules alone is ~540 MB).
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Anything a tool drops inside the project while building
+tmp/
+*.log
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Manifesto de deploy: fica só local, cita namespace interno
+deploy/rbac.yaml
+.claude/settings.local.json
