@@ -582,12 +582,26 @@ func GetScanDashboard(c *fiber.Ctx) error {
 
 	var allResults []models.ScanResult
 	baseQ().Find(&allResults)
+
+	// Three tallies from the same rows. The code and image totals are what the
+	// two security dashboards each show on their own; the combined one is kept
+	// because the platform summary still reports a single security number.
 	totals := map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0}
+	codeTotals := map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0}
+	imageTotals := map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0}
 	for _, r := range allResults {
-		totals["critical"] += r.Critical + r.ImageCritical
-		totals["high"] += r.High + r.ImageHigh
-		totals["medium"] += r.Medium + r.ImageMedium
-		totals["low"] += r.Low + r.ImageLow
+		codeTotals["critical"] += r.Critical
+		codeTotals["high"] += r.High
+		codeTotals["medium"] += r.Medium
+		codeTotals["low"] += r.Low
+
+		imageTotals["critical"] += r.ImageCritical
+		imageTotals["high"] += r.ImageHigh
+		imageTotals["medium"] += r.ImageMedium
+		imageTotals["low"] += r.ImageLow
+	}
+	for k := range totals {
+		totals[k] = codeTotals[k] + imageTotals[k]
 	}
 
 	var total int64
@@ -602,12 +616,14 @@ func GetScanDashboard(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"totals":  totals,
-		"results": results,
-		"total":   total,
-		"page":    page,
-		"pages":   pages,
-		"limit":   limit,
+		"totals":       totals,
+		"code_totals":  codeTotals,
+		"image_totals": imageTotals,
+		"results":      results,
+		"total":        total,
+		"page":         page,
+		"pages":        pages,
+		"limit":        limit,
 	})
 }
 
