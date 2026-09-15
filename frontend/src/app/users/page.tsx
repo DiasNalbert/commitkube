@@ -79,12 +79,22 @@ export default function UsersPage() {
     if (res.ok) setUsers(prev => prev.filter(u => u.id !== user.id));
   };
 
+  const rootCount = users.filter(u => u.role === "root").length;
+
   const changeRole = async (user: User, role: string) => {
-    await apiFetch(`/users/${user.id}/role`, {
+    const res = await apiFetch(`/users/${user.id}/role`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ role }),
     });
+    // The backend refuses a third root and refuses removing the last one.
+    // Swallowing that would look like the dropdown silently snapping back.
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body.error ?? "não foi possível alterar o papel");
+    } else {
+      setError("");
+    }
     fetchUsers();
   };
 
@@ -220,7 +230,7 @@ export default function UsersPage() {
               <tr key={u.id} className="border-b border-zinc-800 hover:bg-surface-hover">
                 <td className="px-6 py-3 font-mono text-zinc-200">{u.email}</td>
                 <td className="px-6 py-3">
-                  {myRole === "root" && u.role !== "root" ? (
+                  {myRole === "root" ? (
                     <select
                       value={u.role}
                       onChange={(e) => changeRole(u, e.target.value)}
@@ -228,6 +238,12 @@ export default function UsersPage() {
                     >
                       <option value="user">user</option>
                       <option value="admin">admin</option>
+                      {/* Root edits the policy and authors cluster RBAC. Two
+                          holders at most: the backend refuses the third, and
+                          refuses removing the last one. */}
+                      <option value="root" disabled={rootCount >= 2 && u.role !== "root"}>
+                        root{rootCount >= 2 && u.role !== "root" ? " (limite de 2)" : ""}
+                      </option>
                     </select>
                   ) : (
                     <span className={`text-xs px-2 py-1 rounded ${

@@ -246,7 +246,7 @@ const mainItems = [
 ];
 
 const adminItems = [
-  { href: "/access", label: "Access", icon: <IconShield />, perm: P.userManage },
+  { href: "/access", label: "Access", icon: <IconShield />, perm: P.iamManage },
   { href: "/groups", label: "Groups", icon: <IconGroups />, perm: P.userManage },
   { href: "/users", label: "Users", icon: <IconUsers />, perm: P.userManage },
 ];

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
@@ -95,7 +96,16 @@ func DeleteUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Cannot delete yourself"})
 	}
 	if target.Role == "root" {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Cannot delete root user"})
+		if caller.Role != "root" {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "only root can remove a root user"})
+		}
+		var roots int64
+		db.DB.Model(&models.User{}).Where("role = ?", "root").Count(&roots)
+		if roots <= 1 {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "this is the only root user; promote another one first",
+			})
+		}
 	}
 	if caller.Role == "admin" && target.Role == "admin" {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Admins cannot delete other admins"})
@@ -118,19 +128,50 @@ func UpdateUserRole(c *fiber.Ctx) error {
 	var req struct {
 		Role string `json:"role"`
 	}
-	if err := c.BodyParser(&req); err != nil || (req.Role != "user" && req.Role != "admin") {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be 'user' or 'admin'"})
+	if err := c.BodyParser(&req); err != nil ||
+		(req.Role != "user" && req.Role != "admin" && req.Role != "root") {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be 'user', 'admin' or 'root'"})
 	}
 
 	var target models.User
 	if err := db.DB.First(&target, c.Params("id")).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
-	if target.Role == "root" {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Cannot change root role"})
+	if target.Role == req.Role {
+		return c.JSON(fiber.Map{"message": "Role unchanged"})
+	}
+
+	var roots int64
+	db.DB.Model(&models.User{}).Where("role = ?", "root").Count(&roots)
+
+	if req.Role == "root" {
+		// Root edits the policy and authors cluster RBAC, so the holders are
+		// capped: two, because one cannot go on holiday, and no more, because
+		// each additional holder is another account whose compromise is total.
+		if roots >= int64(MaxRootUsers) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": fmt.Sprintf("there are already %d root users, which is the maximum; demote one first", roots),
+			})
+		}
+	} else if target.Role == "root" {
+		// Demoting the last root leaves nobody who can grant anything ever
+		// again -- an unrecoverable state, since the permission that fixes it
+		// is the one that just disappeared.
+		if roots <= 1 {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "this is the only root user; promote another one before demoting this one",
+			})
+		}
+		if target.ID == caller.ID {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "demote yourself from another root account, so a mistake is someone else's to undo",
+			})
+		}
 	}
 
 	db.DB.Model(&target).Update("role", req.Role)
+	db.LogAudit(caller.ID, "update_user_role", "user", target.Email,
+		`{"from":"`+target.Role+`","to":"`+req.Role+`"}`, c.IP())
 	return c.JSON(fiber.Map{"message": "Role updated"})
 }
 
