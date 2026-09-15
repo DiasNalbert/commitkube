@@ -75,7 +75,7 @@ export default function ClusterSelector() {
         >
           {clusters.map(c => (
             <option key={c.id} value={c.id}>
-              {c.name}{c.reachable ? "" : " (inacessível)"}
+              {c.name}{c.reachable ? "" : " (unreachable)"}
             </option>
           ))}
         </select>

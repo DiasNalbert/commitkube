@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import ClusterRBAC from "./ClusterRBAC";
 import AddCluster from "./AddCluster";
+import { UserActions, NewUser, GroupActions, NewGroup } from "./SubjectActions";
 
 interface User { id: number; email: string; role: string; is_active: boolean }
 interface Group { id: number; name: string; description: string }
@@ -16,32 +17,32 @@ type Tab = "users" | "groups" | "clusters";
 /** Who each permission is for, said the way the person granting it would say
  *  it. A list of dotted strings is not something anyone can hand out safely. */
 const DESCRIPTIONS: Record<string, string> = {
-  "k8s.read": "Ver pods, workloads, nodes, namespaces e manifestos",
-  "k8s.logs.read": "Ler log de pod — log costuma conter credencial",
-  "k8s.secrets.read": "Listar nomes e chaves de Secrets (valores mascarados)",
-  "k8s.secrets.show": "Revelar o valor de um Secret",
-  "k8s.pod.delete": "Deletar e reiniciar pods",
-  "k8s.scale": "Escalar workloads",
-  "cluster.manage": "Importar e remover clusters — vê todos os namespaces",
-  "scm.read": "Ver repositórios, branches, commits e pipelines",
-  "scm.write": "Criar, importar, editar e excluir repositórios",
-  "scm.approve": "Aprovar repositórios",
-  "template.read": "Ver templates e golden paths",
-  "template.write": "Criar e editar templates e golden paths",
-  "security.read": "Ver os achados de segurança",
-  "security.scan": "Disparar um scan manualmente",
-  "settings.read": "Ver configurações, credenciais de registry e notificações",
-  "settings.write": "Alterar configurações e credenciais",
-  "notify.write": "Criar e editar notificações e webhooks",
-  "user.manage": "Gerir usuários e grupos",
-  "audit.read": "Ler o log de auditoria",
+  "k8s.read": "View pods, workloads, nodes, namespaces and manifests",
+  "k8s.logs.read": "Read pod logs — logs routinely contain credentials",
+  "k8s.secrets.read": "List Secret names and keys (values masked)",
+  "k8s.secrets.show": "Reveal a Secret value",
+  "k8s.pod.delete": "Delete and restart pods",
+  "k8s.scale": "Scale workloads",
+  "cluster.manage": "Import and remove clusters — sees every namespace",
+  "scm.read": "View repositories, branches, commits and pipelines",
+  "scm.write": "Create, import, edit and delete repositories",
+  "scm.approve": "Approve repositories",
+  "template.read": "View templates and golden paths",
+  "template.write": "Create and edit templates and golden paths",
+  "security.read": "View security findings",
+  "security.scan": "Trigger a scan by hand",
+  "settings.read": "View settings, registry credentials and notifications",
+  "settings.write": "Change settings and credentials",
+  "notify.write": "Create and edit notifications and webhooks",
+  "user.manage": "Manage users and groups",
+  "audit.read": "Read the audit log",
 };
 
 const GROUPS: [string, string[]][] = [
   ["Kubernetes", ["k8s.read", "k8s.logs.read", "k8s.secrets.read", "k8s.secrets.show", "k8s.pod.delete", "k8s.scale", "cluster.manage"]],
-  ["Repositórios", ["scm.read", "scm.write", "scm.approve", "template.read", "template.write"]],
-  ["Segurança", ["security.read", "security.scan"]],
-  ["Plataforma", ["settings.read", "settings.write", "notify.write", "user.manage", "audit.read"]],
+  ["Source control", ["scm.read", "scm.write", "scm.approve", "template.read", "template.write"]],
+  ["Security", ["security.read", "security.scan"]],
+  ["Platform", ["settings.read", "settings.write", "notify.write", "user.manage", "audit.read"]],
 ];
 
 export default function Page() {
@@ -62,6 +63,9 @@ export default function Page() {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const [loading, setLoading] = useState(true);
+  const [myRole, setMyRole] = useState("");
+
+  useEffect(() => { setMyRole(localStorage.getItem("role") ?? ""); }, []);
 
   const load = useCallback(async () => {
     const [u, g, cl, cat, gr, sc] = await Promise.all([
@@ -96,6 +100,7 @@ export default function Page() {
       .then(r => r.json()).then(b => setNamespaces(b.namespaces ?? [])).catch(() => setNamespaces([]));
   }, [newCluster]);
 
+  const rootCount = users.filter(u => u.role === "root").length;
   const subjectType = tab === "groups" ? "group" : "user";
   const subject = useMemo(() => {
     if (selected === null) return null;
@@ -136,9 +141,9 @@ export default function Page() {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setError(body.error ?? "não foi possível alterar"); return;
+      setError(body.error ?? "could not change that"); return;
     }
-    flash("salvo");
+    flash("saved");
     load();
   };
 
@@ -151,14 +156,14 @@ export default function Page() {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setError(body.error ?? "não foi possível adicionar"); return;
+      setError(body.error ?? "could not add that"); return;
     }
-    setNewNamespace(""); flash("salvo"); load();
+    setNewNamespace(""); flash("saved"); load();
   };
 
   const removeScope = async (id: number) => {
     await apiFetch(`/permissions/scopes/${id}`, { method: "DELETE" });
-    flash("salvo"); load();
+    flash("saved"); load();
   };
 
   const loadMembers = useCallback(async (groupID: number) => {
@@ -179,11 +184,11 @@ export default function Page() {
     const res = on
       ? await apiFetch(`/groups/${selected}/members`, { method: "POST", body: JSON.stringify({ user_id: userID }) })
       : await apiFetch(`/groups/${selected}/members/${userID}`, { method: "DELETE" });
-    if (!res.ok) { setError("não foi possível alterar o grupo"); return; }
-    flash("salvo"); loadMembers(selected);
+    if (!res.ok) { setError("could not change the group"); return; }
+    flash("saved"); loadMembers(selected);
   };
 
-  if (loading) return <div className="p-6 text-zinc-500">Carregando…</div>;
+  if (loading) return <div className="p-6 text-zinc-500">Loading…</div>;
 
   const list = tab === "groups" ? groups : users;
   const labelOf = (s: User | Group) => ("email" in s ? s.email : s.name);
@@ -194,7 +199,7 @@ export default function Page() {
         <div>
           <h1 className="text-2xl font-semibold">IAM</h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-            Quem é, o que pode fazer, e em quais namespaces. Toda mudança salva na hora.
+            Who someone is, what they may do, and in which namespaces. Every change saves as you make it.
           </p>
         </div>
         {saved && <span className="text-xs text-brand-green">{saved}</span>}
@@ -203,7 +208,7 @@ export default function Page() {
       {error && <div className="glass-card p-3 border-red-500/30 text-sm text-red-500 dark:text-red-400">{error}</div>}
 
       <div className="flex rounded-lg overflow-hidden border border-[var(--card-border)] w-fit">
-        {([["users", "Usuários"], ["groups", "Grupos"], ["clusters", "Clusters"]] as [Tab, string][]).map(([t, label]) => (
+        {([["users", "Users"], ["groups", "Groups"], ["clusters", "Clusters"]] as [Tab, string][]).map(([t, label]) => (
           <button key={t} onClick={() => { setTab(t); setSelected(null); }}
             className={`px-4 py-2 text-sm transition ${tab === t ? "bg-brand-green/15 text-brand-green" : "text-zinc-500 hover:text-brand-green"}`}>
             {label}
@@ -218,7 +223,7 @@ export default function Page() {
               <div>
                 <h2 className="text-sm font-semibold">Clusters</h2>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
-                  {clusters.map(c => c.name).join(", ") || "nenhum"}
+                  {clusters.map(c => c.name).join(", ") || "none"}
                 </p>
               </div>
               <AddCluster onAdded={load} />
@@ -229,7 +234,7 @@ export default function Page() {
       ) : (
         <div className="grid lg:grid-cols-[260px_1fr] gap-4">
           <aside className="glass-card p-2 h-fit">
-            {list.length === 0 && <p className="p-3 text-xs text-zinc-500">nenhum</p>}
+            {list.length === 0 && <p className="p-3 text-xs text-zinc-500">none yet</p>}
             {list.map(s => (
               <button key={s.id} onClick={() => setSelected(s.id)}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm truncate transition ${
@@ -239,21 +244,24 @@ export default function Page() {
                 {"role" in s && <span className="block text-[10px] opacity-70">{s.role}</span>}
               </button>
             ))}
+            {tab === "users"
+              ? <NewUser myRole={myRole} onCreated={load} onError={setError} />
+              : <NewGroup onCreated={load} onError={setError} />}
           </aside>
 
           {selected === null ? (
             <div className="glass-card p-10 text-center text-zinc-500">
-              Escolha {tab === "groups" ? "um grupo" : "um usuário"} à esquerda.
+              Pick {tab === "groups" ? "a group" : "a user"} on the left.
             </div>
           ) : (
             <div className="space-y-4">
               <section className="glass-card p-4">
                 <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
-                  <h2 className="text-sm font-semibold">Permissões</h2>
+                  <h2 className="text-sm font-semibold">Permissions</h2>
                   {roleName && (
                     <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                      papel <span className="font-mono text-brand-green">{roleName}</span> — marque ou desmarque
-                      qualquer uma, o papel é só o ponto de partida
+                      role <span className="font-mono text-brand-green">{roleName}</span> — tick or untick any of
+                      them; the role is only a starting point
                     </span>
                   )}
                 </div>
@@ -274,7 +282,7 @@ export default function Page() {
                                 <span className="text-sm">{DESCRIPTIONS[p] ?? p}</span>
                                 {explicit && (
                                   <span className={`ml-2 text-[10px] ${explicit.denied ? "text-red-500" : "text-brand-green"}`}>
-                                    {explicit.denied ? "removida para este" : "adicionada para este"}
+                                    {explicit.denied ? "removed for this one" : "added for this one"}
                                   </span>
                                 )}
                                 <span className="block font-mono text-[10px] text-zinc-500">{p}</span>
@@ -292,8 +300,8 @@ export default function Page() {
                 <h2 className="text-sm font-semibold">Namespaces</h2>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 mb-3">
                   {myScopes.length === 0
-                    ? "Sem restrição: vê todos os namespaces."
-                    : `Vê apenas estes ${myScopes.length}.`}
+                    ? "Unrestricted: sees every namespace."
+                    : `Sees only these ${myScopes.length}.`}
                 </p>
 
                 <div className="flex flex-wrap gap-1.5 mb-3">
@@ -318,20 +326,29 @@ export default function Page() {
                   </select>
                   <button onClick={addScope} disabled={!newNamespace}
                     className="px-3 py-2 text-sm rounded-lg border border-brand-green/30 text-brand-green hover:bg-brand-green/10 transition disabled:opacity-40">
-                    Adicionar
+                    Add
                   </button>
                 </div>
                 {namespaces.length === 0 && (
                   <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-                    Nenhum namespace retornou. Se “falar com o cluster como a pessoa” estiver ligado sem
-                    RoleBindings, é isso.
+                    No namespaces came back. If “let the cluster decide” is on without RoleBindings, that is why.
                   </p>
                 )}
               </section>
 
+              {tab === "users" && subject && (
+                <UserActions user={subject as User} myRole={myRole} rootCount={rootCount}
+                  onChanged={load} onError={setError} />
+              )}
+
+              {tab === "groups" && subject && (
+                <GroupActions groupID={selected} name={(subject as Group).name}
+                  onChanged={() => { setSelected(null); load(); }} onError={setError} />
+              )}
+
               {tab === "groups" && (
                 <section className="glass-card p-4">
-                  <h2 className="text-sm font-semibold mb-3">Membros</h2>
+                  <h2 className="text-sm font-semibold mb-3">Members</h2>
                   <div className="grid sm:grid-cols-2 gap-1">
                     {users.map(u => (
                       <label key={u.id} className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-[var(--color-surface-hover)] cursor-pointer text-sm">

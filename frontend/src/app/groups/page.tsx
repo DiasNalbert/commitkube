@@ -6,5 +6,5 @@ import { useEffect } from "react";
  *  was the confusion, not the answer. Old links still land somewhere. */
 export default function Page() {
   useEffect(() => { window.location.replace("/iam"); }, []);
-  return <div className="p-6 text-zinc-500">Redirecionando para IAM…</div>;
+  return <div className="p-6 text-zinc-500">Redirecting to IAM…</div>;
 }

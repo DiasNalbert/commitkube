@@ -84,7 +84,7 @@ const ImageSourceTag = ({ source }: { source: string }) => {
   if (source === "deployed") {
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border border-brand-green/40 text-brand-green">
-        imagem em produção
+        deployed image
       </span>
     );
   }
@@ -92,9 +92,9 @@ const ImageSourceTag = ({ source }: { source: string }) => {
     return (
       <span
         className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border border-amber-500/40 text-amber-500"
-        title="Nada foi deployado ainda: estes achados são da imagem base declarada no Dockerfile, não da imagem final."
+        title="Nothing is deployed yet: these findings are from the base image the Dockerfile declares, not from the final image."
       >
-        imagem base (Dockerfile)
+        base image (Dockerfile)
       </span>
     );
   }
@@ -125,13 +125,13 @@ export type SecurityDomain = "code" | "container";
 const DOMAIN_COPY: Record<SecurityDomain, { title: string; subtitle: string; empty: string }> = {
   code: {
     title: "Code Security",
-    subtitle: "Vulnerabilidades, misconfigurations e segredos encontrados no código dos repositórios.",
-    empty: "Nenhum scan de código ainda. Rode um Security Scan na página do repositório.",
+    subtitle: "Vulnerabilities, misconfigurations and secrets found in repository code.",
+    empty: "No code scan yet. Run a Security Scan from a repository page.",
   },
   container: {
     title: "Container Security",
-    subtitle: "Vulnerabilidades nas imagens publicadas no registry — o sistema base e as dependências que sobem em produção.",
-    empty: "Nenhuma imagem escaneada ainda. O scan de imagem roda junto do scan do repositório.",
+    subtitle: "Vulnerabilities in the images published to the registry — the base system and the dependencies that reach production.",
+    empty: "No image scanned yet. The image scan runs alongside the repository scan.",
   },
 };
 
@@ -378,7 +378,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                           <div className="min-w-0">
                             <h3 className="font-bold text-brand-gold truncate">{r.repo_name}</h3>
                             <p className="text-xs text-zinc-500 mt-1">
-                              Escaneado em {new Date(r.scanned_at).toLocaleString("pt-BR")}
+                              Scanned {new Date(r.scanned_at).toLocaleString("en-US")}
                             </p>
                             {!isCode && r.scanned_image && (
                               <>
@@ -401,7 +401,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                               </div>
                             ) : r.image_error ? (
                               <span className="text-xs text-amber-500/80 italic max-w-[260px] text-right" title={r.image_error}>
-                                imagem não escaneada
+                                image not scanned
                               </span>
                             ) : (
                               <div className="flex gap-1 items-center">

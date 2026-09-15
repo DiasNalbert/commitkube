@@ -309,9 +309,9 @@ function UtilizationMeter({
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-sm font-medium">{title}</p>
         <p className="text-sm font-mono">
-          {metrics ? format(usage) : <span className="text-zinc-400 dark:text-zinc-600">sem métricas</span>}
+          {metrics ? format(usage) : <span className="text-zinc-400 dark:text-zinc-600">no metrics</span>}
           {metrics && requests > 0 && (
-            <span className={`ml-2 ${s.text}`}>{pct.toFixed(0)}% do requisitado</span>
+            <span className={`ml-2 ${s.text}`}>{pct.toFixed(0)}% of requests</span>
           )}
         </p>
       </div>
@@ -327,7 +327,7 @@ function UtilizationMeter({
       </div>
 
       <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-        <span>Uso <span className="font-mono text-zinc-700 dark:text-zinc-200">{metrics ? format(usage) : "—"}</span></span>
+        <span>Usage <span className="font-mono text-zinc-700 dark:text-zinc-200">{metrics ? format(usage) : "—"}</span></span>
         <span>Requests <span className="font-mono text-zinc-700 dark:text-zinc-200">{format(requests)}</span></span>
         <span>Limits <span className="font-mono text-zinc-700 dark:text-zinc-200">{format(limits)}</span></span>
       </div>
