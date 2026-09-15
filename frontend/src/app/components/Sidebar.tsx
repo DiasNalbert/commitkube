@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import KubeLogo from "./KubeLogo";
 import ThemeToggle from "./ThemeToggle";
 import LogoutButton from "./LogoutButton";
+import ClusterSelector from "./k8s/ClusterSelector";
 
 const HIDDEN_ROUTES = ["/login", "/register", "/setup"];
 
@@ -350,6 +351,7 @@ export default function Sidebar() {
       </button>
       {open[groupKey] && (
         <div className="ml-3 pl-2 border-l border-brand-green/20 space-y-0.5">
+          {groupKey === "k8s" && <ClusterSelector />}
           {items.map(item => (
             <NavItem key={item.href} href={item.href} label={item.label} icon={item.icon} />
           ))}

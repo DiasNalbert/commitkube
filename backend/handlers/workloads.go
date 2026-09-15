@@ -43,8 +43,8 @@ func deriveStatus(desired, ready int32) string {
 	}
 }
 
-func collectWorkloads(ctx context.Context) ([]workloadState, error) {
-	typed, _, err := buildK8sClients()
+func collectWorkloads(ctx context.Context, cl *models.Cluster) ([]workloadState, error) {
+	typed, _, err := collectorClients(cl)
 	if err != nil {
 		return nil, err
 	}
@@ -130,9 +130,15 @@ func PollWorkloads() {
 	db.DB.Where("recorded_at < ?", cutoff).Delete(&models.WorkloadSnapshot{})
 	db.DB.Where("recorded_at < ?", cutoff).Delete(&models.WorkloadEvent{})
 
-	states, err := collectWorkloads(context.Background())
+	for _, cl := range allClusters() {
+		pollWorkloadsFor(&cl)
+	}
+}
+
+func pollWorkloadsFor(cl *models.Cluster) {
+	states, err := collectWorkloads(context.Background(), cl)
 	if err != nil {
-		fmt.Printf("Workload monitoring: %v\n", err)
+		fmt.Printf("Workload monitoring: cluster %s: %v\n", cl.Name, err)
 		return
 	}
 
@@ -143,8 +149,9 @@ func PollWorkloads() {
 	var previous []models.WorkloadSnapshot
 	db.DB.Raw(`
 		SELECT * FROM workload_snapshots
-		WHERE id IN (SELECT MAX(id) FROM workload_snapshots GROUP BY namespace, kind, name)
-	`).Scan(&previous)
+		WHERE cluster_id = ?
+		  AND id IN (SELECT MAX(id) FROM workload_snapshots WHERE cluster_id = ? GROUP BY namespace, kind, name)
+	`, cl.ID, cl.ID).Scan(&previous)
 	prevByKey := map[string]models.WorkloadSnapshot{}
 	for _, p := range previous {
 		prevByKey[p.Namespace+"/"+p.Kind+"/"+p.Name] = p
@@ -156,6 +163,7 @@ func PollWorkloads() {
 		if prev, ok := prevByKey[key]; ok {
 			addEvent := func(eventType, oldV, newV string) {
 				db.DB.Create(&models.WorkloadEvent{
+					ClusterID:  cl.ID,
 					RecordedAt: now, Namespace: w.Namespace, Kind: w.Kind, Name: w.Name,
 					EventType: eventType, OldValue: oldV, NewValue: newV,
 				})
@@ -179,6 +187,7 @@ func PollWorkloads() {
 		}
 
 		db.DB.Create(&models.WorkloadSnapshot{
+			ClusterID:  cl.ID,
 			RecordedAt: now, Namespace: w.Namespace, Kind: w.Kind, Name: w.Name,
 			Desired: w.Desired, Ready: w.Ready, Updated: w.Updated,
 			Available: w.Available, Image: w.Image, Status: w.Status,
@@ -204,7 +213,11 @@ type WorkloadSummary struct {
 // GetWorkloads lists every workload with its live state plus the uptime and
 // mini timeline computed from stored samples.
 func GetWorkloads(c *fiber.Ctx) error {
-	states, err := collectWorkloads(context.Background())
+	cl, err := clusterFromRequest(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	states, err := collectWorkloads(context.Background(), cl)
 	if err != nil {
 		return k8sError(c, err)
 	}
@@ -224,8 +237,9 @@ func GetWorkloads(c *fiber.Ctx) error {
 			SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END) AS healthy,
 			SUM(CASE WHEN status != 'scaled_zero' THEN 1 ELSE 0 END) AS counted
 		FROM workload_snapshots
+		WHERE cluster_id = ?
 		GROUP BY namespace, kind, name
-	`).Scan(&uptimeRows)
+	`, cl.ID).Scan(&uptimeRows)
 	uptimeByKey := map[string]uptimeRow{}
 	for _, r := range uptimeRows {
 		uptimeByKey[r.Namespace+"/"+r.Kind+"/"+r.Name] = r
@@ -243,9 +257,10 @@ func GetWorkloads(c *fiber.Ctx) error {
 			SELECT namespace, kind, name, status,
 				ROW_NUMBER() OVER (PARTITION BY namespace, kind, name ORDER BY recorded_at DESC) AS rn
 			FROM workload_snapshots
+			WHERE cluster_id = ?
 		) WHERE rn <= 90
 		ORDER BY namespace, kind, name, rn DESC
-	`).Scan(&miniRows)
+	`, cl.ID).Scan(&miniRows)
 	miniByKey := map[string][]string{}
 	for _, r := range miniRows {
 		k := r.Namespace + "/" + r.Kind + "/" + r.Name
@@ -286,8 +301,12 @@ func GetWorkloadHistory(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and name are required"})
 	}
 
-	sq := db.DB.Where("namespace = ? AND name = ?", namespace, name)
-	eq := db.DB.Where("namespace = ? AND name = ?", namespace, name)
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	sq := db.DB.Where("cluster_id = ? AND namespace = ? AND name = ?", clusterID, namespace, name)
+	eq := db.DB.Where("cluster_id = ? AND namespace = ? AND name = ?", clusterID, namespace, name)
 	if kind != "" {
 		sq = sq.Where("kind = ?", kind)
 		eq = eq.Where("kind = ?", kind)
@@ -331,6 +350,11 @@ func GetWorkloadHistory(c *fiber.Ctx) error {
 
 // latestWorkloadImage finds the image a workload is currently running, by name.
 // It replaces the ArgoCD snapshot lookup the image scanner used to depend on.
+//
+// Deliberately not scoped to one cluster: the caller is the vulnerability
+// scanner, which has no request and no cluster in hand. A repository deployed
+// in any cluster has an image worth scanning, so the most recent sample from
+// anywhere wins.
 func latestWorkloadImage(name string) (string, error) {
 	var snap models.WorkloadSnapshot
 	err := db.DB.Where("name = ? AND image != ''", name).
@@ -340,15 +364,22 @@ func latestWorkloadImage(name string) (string, error) {
 	}
 
 	// No sample yet (the poller may not have run since this workload appeared),
-	// so ask the cluster directly.
-	states, cErr := collectWorkloads(context.Background())
-	if cErr != nil {
-		return "", fmt.Errorf("no stored sample for %s and the cluster is unreachable: %v", name, cErr)
-	}
-	for _, w := range states {
-		if w.Name == name && w.Image != "" {
-			return w.Image, nil
+	// so ask the clusters directly.
+	var lastErr error
+	for _, cl := range allClusters() {
+		states, cErr := collectWorkloads(context.Background(), &cl)
+		if cErr != nil {
+			lastErr = cErr
+			continue
+		}
+		for _, w := range states {
+			if w.Name == name && w.Image != "" {
+				return w.Image, nil
+			}
 		}
 	}
-	return "", fmt.Errorf("no running workload named %s was found in the cluster", name)
+	if lastErr != nil {
+		return "", fmt.Errorf("no stored sample for %s and no cluster could be read: %v", name, lastErr)
+	}
+	return "", fmt.Errorf("no running workload named %s was found in any cluster", name)
 }

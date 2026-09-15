@@ -112,7 +112,7 @@ func ListK8sResources(c *fiber.Ctx) error {
 		namespace = ""
 	}
 
-	typed, _, err := buildK8sClients()
+	typed, _, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
 	}
@@ -476,7 +476,7 @@ func GetK8sManifest(c *fiber.Ctx) error {
 		namespace = ""
 	}
 
-	_, dyn, err := buildK8sClients()
+	_, dyn, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
 	}
@@ -514,7 +514,7 @@ func GetK8sManifest(c *fiber.Ctx) error {
 
 // ListK8sNamespaceNames is a lightweight list for populating namespace filters.
 func ListK8sNamespaceNames(c *fiber.Ctx) error {
-	typed, _, err := buildK8sClients()
+	typed, _, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
 	}

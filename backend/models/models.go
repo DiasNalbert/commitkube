@@ -191,6 +191,34 @@ type SMTPConfig struct {
 	From     string `json:"from"`
 }
 
+// Cluster is a Kubernetes cluster CommitKube talks to. Until this existed
+// every call went to whatever the pod's own ServiceAccount could reach, so
+// there was exactly one cluster and it was implicit.
+//
+// The first row is created automatically from that same ambient credential
+// (in-cluster, or KUBECONFIG outside), marked Local -- so an install that has
+// never configured a cluster keeps working exactly as before, and a second
+// cluster is additive rather than a migration.
+type Cluster struct {
+	ID        uint           `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"-"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+
+	Name      string `gorm:"uniqueIndex;not null" json:"name"`
+	APIServer string `json:"api_server"`
+	CACert    string `gorm:"type:text" json:"-"`
+	// ServiceToken is the collector identity: the credential the background
+	// pollers use. It is never used to serve a write on behalf of a user.
+	ServiceToken string `gorm:"type:text" json:"-"`
+	// Local means "use the ambient credential this process already has"
+	// instead of APIServer/ServiceToken.
+	Local       bool `gorm:"default:false" json:"local"`
+	InsecureTLS bool `gorm:"default:false" json:"insecure_tls"`
+	IsDefault   bool `gorm:"default:false" json:"is_default"`
+	CreatedBy   uint `json:"created_by"`
+}
+
 type ArgoCDInstance struct {
 	ID               uint           `gorm:"primarykey;autoIncrement" json:"id"`
 	CreatedAt        time.Time      `json:"-"`
@@ -292,7 +320,11 @@ type NotificationConfig struct {
 // the pod spec's requests/limits. metrics-server keeps no history of its own,
 // so the time series only exists because we sample and store it here.
 type PodSnapshot struct {
-	ID           uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID    uint      `gorm:"index;not null;default:0" json:"cluster_id"`
 	RecordedAt   time.Time `gorm:"index" json:"recorded_at"`
 	Namespace    string    `gorm:"index;not null" json:"namespace"`
 	PodName      string    `gorm:"index;not null" json:"pod_name"`
@@ -318,7 +350,11 @@ type PodSnapshot struct {
 // threshold alert it has a lifecycle: it opens once, accumulates occurrences
 // while it persists, and closes when the condition clears.
 type PodProblem struct {
-	ID          uint       `gorm:"primarykey;autoIncrement" json:"id"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID   uint       `gorm:"index;not null;default:0" json:"cluster_id"`
 	OpenedAt    time.Time  `gorm:"index" json:"opened_at"`
 	LastSeenAt  time.Time  `json:"last_seen_at"`
 	ClosedAt    *time.Time `gorm:"index" json:"closed_at"`
@@ -339,7 +375,11 @@ type PodProblem struct {
 // monitoring it replaced -- uptime and change history -- but is keyed on the
 // real cluster object rather than on an ArgoCD Application name.
 type WorkloadSnapshot struct {
-	ID         uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID  uint      `gorm:"index;not null;default:0" json:"cluster_id"`
 	RecordedAt time.Time `gorm:"index" json:"recorded_at"`
 	Namespace  string    `gorm:"index;not null" json:"namespace"`
 	Kind       string    `gorm:"index;not null" json:"kind"`
@@ -355,7 +395,11 @@ type WorkloadSnapshot struct {
 // WorkloadEvent records a transition worth showing in a change history:
 // a status flip, a rescale, or a new image rolling out.
 type WorkloadEvent struct {
-	ID         uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID  uint      `gorm:"index;not null;default:0" json:"cluster_id"`
 	RecordedAt time.Time `gorm:"index" json:"recorded_at"`
 	Namespace  string    `gorm:"index;not null" json:"namespace"`
 	Kind       string    `json:"kind"`
@@ -372,7 +416,11 @@ type WorkloadEvent struct {
 // FirstSeen/LastSeen give the node a lifetime, so a workload that is deleted
 // fades out of the map on retention instead of lingering forever.
 type ServiceNode struct {
-	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID uint      `gorm:"uniqueIndex:idx_sn_ident;index;not null;default:0" json:"cluster_id"`
 	UpdatedAt time.Time `json:"updated_at"`
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `gorm:"index" json:"last_seen"`
@@ -395,7 +443,11 @@ type ServiceNode struct {
 // Observed is the seam for the eBPF layer that comes later. Until it lands
 // every row is false, and the frontend labels the whole map as declared.
 type ServiceEdge struct {
-	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID uint      `gorm:"uniqueIndex:idx_se_ident;index;not null;default:0" json:"cluster_id"`
 	UpdatedAt time.Time `json:"updated_at"`
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `gorm:"index" json:"last_seen"`
@@ -425,8 +477,12 @@ type ServiceEdge struct {
 // read from the ingress controller's access log, "logs" is error-level lines
 // counted in the container's own output, and "ebpf" is the L7 layer.
 type ErrorWindow struct {
-	ID       uint      `gorm:"primarykey;autoIncrement" json:"id"`
-	BucketAt time.Time `gorm:"uniqueIndex:idx_ew_ident;index;not null" json:"bucket_at"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID uint      `gorm:"uniqueIndex:idx_ew_ident;index;not null;default:0" json:"cluster_id"`
+	BucketAt  time.Time `gorm:"uniqueIndex:idx_ew_ident;index;not null" json:"bucket_at"`
 
 	Namespace    string `gorm:"uniqueIndex:idx_ew_ident;index;not null" json:"namespace"`
 	WorkloadKind string `gorm:"uniqueIndex:idx_ew_ident" json:"workload_kind"`
@@ -452,8 +508,12 @@ type ErrorWindow struct {
 // Dst identifies a node in the service map, so an External target resolves to
 // the same row the topology already created for it.
 type DependencyFailure struct {
-	ID       uint      `gorm:"primarykey;autoIncrement" json:"id"`
-	BucketAt time.Time `gorm:"uniqueIndex:idx_df_ident;index;not null" json:"bucket_at"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID uint      `gorm:"uniqueIndex:idx_df_ident;index;not null;default:0" json:"cluster_id"`
+	BucketAt  time.Time `gorm:"uniqueIndex:idx_df_ident;index;not null" json:"bucket_at"`
 
 	SrcNamespace string `gorm:"uniqueIndex:idx_df_ident;index;not null" json:"src_namespace"`
 	SrcKind      string `gorm:"uniqueIndex:idx_df_ident" json:"src_kind"`
@@ -497,7 +557,11 @@ func (d DependencyFailure) Failures() int64 {
 // or swallowed -- but for a batch job or an RPA it is usually the only evidence
 // there is, and it is far better than reporting "unknown".
 type ServiceProblem struct {
-	ID         uint       `gorm:"primarykey;autoIncrement" json:"id"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID  uint       `gorm:"index;not null;default:0" json:"cluster_id"`
 	OpenedAt   time.Time  `gorm:"index" json:"opened_at"`
 	LastSeenAt time.Time  `json:"last_seen_at"`
 	ClosedAt   *time.Time `gorm:"index" json:"closed_at"`
@@ -542,8 +606,12 @@ type ServiceProblem struct {
 // automation reports net::ERR_NAME_NOT_RESOLVED, an HTTP client reports
 // ECONNREFUSED. Target carries the host the message named, when it named one.
 type LogErrorGroup struct {
-	ID       uint      `gorm:"primarykey;autoIncrement" json:"id"`
-	BucketAt time.Time `gorm:"uniqueIndex:idx_leg_ident;index;not null" json:"bucket_at"`
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from. Rows written
+	// before CommitKube knew about more than one cluster carry 0, which the
+	// migration rewrites to the default cluster.
+	ClusterID uint      `gorm:"uniqueIndex:idx_leg_ident;index;not null;default:0" json:"cluster_id"`
+	BucketAt  time.Time `gorm:"uniqueIndex:idx_leg_ident;index;not null" json:"bucket_at"`
 
 	Namespace    string `gorm:"uniqueIndex:idx_leg_ident;index;not null" json:"namespace"`
 	WorkloadKind string `gorm:"uniqueIndex:idx_leg_ident" json:"workload_kind"`

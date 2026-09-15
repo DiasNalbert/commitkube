@@ -154,7 +154,7 @@ func topCounts(tally map[string]int, limit int) []CountedValue {
 
 // GetClusterOverview aggregates the whole cluster into a single response.
 func GetClusterOverview(c *fiber.Ctx) error {
-	cs, err := buildK8sClient()
+	cs, err := requestTyped(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
 	}

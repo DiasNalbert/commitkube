@@ -18,6 +18,11 @@ func main() {
 	db.ConnectDB()
 	_ = crypto.MasterKey() // validate ENCRYPTION_KEY at startup
 
+	// A cluster row has to exist before any poller or handler resolves one,
+	// and before the collected rows can be adopted into it.
+	handlers.EnsureDefaultCluster()
+	db.BackfillCollectedCluster()
+
 	// The scan pool and the vulnerability database come up before anything can
 	// enqueue work: a scan that starts before the first database download would
 	// either fail or fetch its own copy, which is what the shared cache exists
@@ -252,6 +257,10 @@ func main() {
 	api.Get("/kubernetes/manifest/:kind/:name", handlers.GetK8sManifest)
 	api.Get("/kubernetes/detail/:kind/:name", handlers.GetK8sResourceDetail)
 	api.Get("/kubernetes/cluster-overview", handlers.GetClusterOverview)
+
+	api.Get("/clusters", handlers.ListClusters)
+	api.Post("/clusters", handlers.CreateCluster)
+	api.Delete("/clusters/:id", handlers.DeleteCluster)
 
 	api.Get("/kubernetes/pods/logs", handlers.GetPodLogs)
 	api.Get("/kubernetes/pods/logs/stream", handlers.StreamPodLogs)

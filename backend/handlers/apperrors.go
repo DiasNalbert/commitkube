@@ -178,11 +178,11 @@ type upstreamIndex struct {
 	byPod    map[string]workloadRef // "ns/podname" -> workload
 }
 
-func buildUpstreamIndex() *upstreamIndex {
+func buildUpstreamIndex(clusterID uint) *upstreamIndex {
 	ix := &upstreamIndex{prefixes: map[string]workloadRef{}, byPod: map[string]workloadRef{}}
 
 	var nodes []models.ServiceNode
-	db.DB.Where("external = ?", false).Find(&nodes)
+	db.DB.Where("cluster_id = ? AND external = ?", clusterID, false).Find(&nodes)
 	for _, n := range nodes {
 		if n.Kind == "Service" || n.Kind == "Ingress" || n.Kind == "External" {
 			continue
@@ -664,11 +664,12 @@ func collectLogWindows(
 
 // persistLogErrorGroups overwrites the catalogue buckets this pass rebuilt, on
 // the same idempotency rule as the windows: a re-read cannot inflate a count.
-func persistLogErrorGroups(groups map[string]*groupAcc, now time.Time, retentionDays int) error {
+func persistLogErrorGroups(clusterID uint, groups map[string]*groupAcc, now time.Time, retentionDays int) error {
 	rows := make([]models.LogErrorGroup, 0, len(groups))
 	for _, g := range groups {
 		rows = append(rows, models.LogErrorGroup{
 			BucketAt:     g.Bucket,
+			ClusterID:    clusterID,
 			Namespace:    g.Ref.Namespace,
 			WorkloadKind: g.Ref.Kind,
 			Workload:     g.Ref.Name,
@@ -684,7 +685,7 @@ func persistLogErrorGroups(groups map[string]*groupAcc, now time.Time, retention
 	if len(rows) > 0 {
 		upsert := clause.OnConflict{
 			Columns: []clause.Column{
-				{Name: "bucket_at"}, {Name: "namespace"},
+				{Name: "cluster_id"}, {Name: "bucket_at"}, {Name: "namespace"},
 				{Name: "workload_kind"}, {Name: "workload"}, {Name: "fingerprint"},
 			},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -704,11 +705,12 @@ func persistLogErrorGroups(groups map[string]*groupAcc, now time.Time, retention
 // rather than accumulation is what makes the poll idempotent: the same log
 // range can be read twice, by an overlapping pass or after a restart, without
 // inflating any count.
-func persistErrorWindows(accs map[string]*windowAcc, now time.Time, retentionDays int) error {
+func persistErrorWindows(clusterID uint, accs map[string]*windowAcc, now time.Time, retentionDays int) error {
 	rows := make([]models.ErrorWindow, 0, len(accs))
 	for _, a := range accs {
 		rows = append(rows, models.ErrorWindow{
 			BucketAt:     a.Bucket,
+			ClusterID:    clusterID,
 			Namespace:    a.Ref.Namespace,
 			WorkloadKind: a.Ref.Kind,
 			Workload:     a.Ref.Name,
@@ -725,7 +727,7 @@ func persistErrorWindows(accs map[string]*windowAcc, now time.Time, retentionDay
 	if len(rows) > 0 {
 		upsert := clause.OnConflict{
 			Columns: []clause.Column{
-				{Name: "bucket_at"}, {Name: "namespace"},
+				{Name: "cluster_id"}, {Name: "bucket_at"}, {Name: "namespace"},
 				{Name: "workload_kind"}, {Name: "workload"}, {Name: "source"},
 			},
 			DoUpdates: clause.AssignmentColumns([]string{
@@ -772,10 +774,10 @@ type causeAttribution struct {
 //     "self". Absence of both sources reports "unknown", never "self" --
 //     blaming an application on data nobody collected sends the wrong team to
 //     investigate.
-func attributeCause(ref workloadRef, from, to time.Time) causeAttribution {
+func attributeCause(clusterID uint, ref workloadRef, from, to time.Time) causeAttribution {
 	var rows []models.DependencyFailure
-	db.DB.Where("src_namespace = ? AND src_name = ? AND bucket_at >= ? AND bucket_at <= ?",
-		ref.Namespace, ref.Name, from, to).Find(&rows)
+	db.DB.Where("cluster_id = ? AND src_namespace = ? AND src_name = ? AND bucket_at >= ? AND bucket_at <= ?",
+		clusterID, ref.Namespace, ref.Name, from, to).Find(&rows)
 
 	type agg struct {
 		models.DependencyFailure
@@ -836,7 +838,7 @@ func attributeCause(ref workloadRef, from, to time.Time) causeAttribution {
 		}
 	}
 
-	if inferred, ok := causeFromLogs(ref, from, to); ok {
+	if inferred, ok := causeFromLogs(clusterID, ref, from, to); ok {
 		return inferred
 	}
 
@@ -857,10 +859,10 @@ func attributeCause(ref workloadRef, from, to time.Time) causeAttribution {
 // dependency-class group actually named a host: a timeout with no host in the
 // message says something failed but not what, and guessing at that is how an
 // incident gets routed to a team that owns none of it.
-func causeFromLogs(ref workloadRef, from, to time.Time) (causeAttribution, bool) {
+func causeFromLogs(clusterID uint, ref workloadRef, from, to time.Time) (causeAttribution, bool) {
 	var groups []models.LogErrorGroup
-	db.DB.Where("namespace = ? AND workload = ? AND bucket_at >= ? AND bucket_at <= ? AND target != ''",
-		ref.Namespace, ref.Name, from, to).Find(&groups)
+	db.DB.Where("cluster_id = ? AND namespace = ? AND workload = ? AND bucket_at >= ? AND bucket_at <= ? AND target != ''",
+		clusterID, ref.Namespace, ref.Name, from, to).Find(&groups)
 
 	type tally struct {
 		count int64
@@ -895,8 +897,8 @@ func causeFromLogs(ref workloadRef, from, to time.Time) (causeAttribution, bool)
 	// record of the same dependency.
 	nodeKind, nodeNS, nodeName := "External", "", bestHost
 	var nodes []models.ServiceNode
-	db.DB.Where("external = ? AND (name = ? OR hosts LIKE ?)",
-		true, bestHost, "%"+bestHost+"%").Limit(1).Find(&nodes)
+	db.DB.Where("cluster_id = ? AND external = ? AND (name = ? OR hosts LIKE ?)",
+		clusterID, true, bestHost, "%"+bestHost+"%").Limit(1).Find(&nodes)
 	if len(nodes) == 1 {
 		nodeKind, nodeNS, nodeName = nodes[0].Kind, nodes[0].Namespace, nodes[0].Name
 	}
@@ -927,7 +929,7 @@ type detected struct {
 // evaluateWindows turns the recent buckets into problems. Thresholds are read
 // from the environment because what counts as "too many errors" is a property
 // of the service, not of the platform.
-func evaluateWindows(now time.Time) []detected {
+func evaluateWindows(clusterID uint, now time.Time) []detected {
 	windows := envInt("APP_ERROR_WINDOWS", 3)
 	if windows < 1 {
 		windows = 1
@@ -944,7 +946,7 @@ func evaluateWindows(now time.Time) []detected {
 	minutes := float64(windows) * errorBucket.Minutes()
 
 	var rows []models.ErrorWindow
-	db.DB.Where("bucket_at >= ? AND bucket_at <= ?", from, to).Find(&rows)
+	db.DB.Where("cluster_id = ? AND bucket_at >= ? AND bucket_at <= ?", clusterID, from, to).Find(&rows)
 
 	type totals struct {
 		ref       workloadRef
@@ -984,7 +986,7 @@ func evaluateWindows(now time.Time) []detected {
 	// dependency side is evaluated for every workload the traffic layer saw,
 	// not only for those that already appear in an error window.
 	var depRows []models.DependencyFailure
-	db.DB.Where("bucket_at >= ? AND bucket_at <= ?", from, to).Find(&depRows)
+	db.DB.Where("cluster_id = ? AND bucket_at >= ? AND bucket_at <= ?", clusterID, from, to).Find(&depRows)
 	depSources := map[string]workloadRef{}
 	for _, r := range depRows {
 		ref := workloadRef{Namespace: r.SrcNamespace, Kind: r.SrcKind, Name: r.SrcName}
@@ -997,7 +999,7 @@ func evaluateWindows(now time.Time) []detected {
 		if t.requests >= minRequests && t.errors > 0 {
 			rate := float64(t.errors) / float64(t.requests) * 100
 			if rate >= ratePct {
-				cause := attributeCause(t.ref, from, to)
+				cause := attributeCause(clusterID, t.ref, from, to)
 				severity := "warning"
 				if rate >= criticalPct {
 					severity = "critical"
@@ -1034,7 +1036,7 @@ func evaluateWindows(now time.Time) []detected {
 		}
 
 		if trips {
-			cause := attributeCause(t.ref, from, to)
+			cause := attributeCause(clusterID, t.ref, from, to)
 			title := fmt.Sprintf("%s is logging errors", t.ref.Name)
 			detail := fmt.Sprintf("%d error-level log lines in %.0f minutes (%.1f/min)",
 				t.errorLogs, minutes, rate)
@@ -1066,7 +1068,7 @@ func evaluateWindows(now time.Time) []detected {
 
 	for key, ref := range depSources {
 		_ = key
-		cause := attributeCause(ref, from, to)
+		cause := attributeCause(clusterID, ref, from, to)
 		if cause.Kind != "dependency" {
 			continue
 		}
@@ -1098,9 +1100,9 @@ func evaluateWindows(now time.Time) []detected {
 // the same lifecycle as PodProblem so both surfaces behave identically: a
 // problem opens once, its occurrence count grows while it reproduces, and it
 // closes when it stops.
-func reconcileServiceProblems(found []detected, now time.Time) {
+func reconcileServiceProblems(clusterID uint, found []detected, now time.Time) {
 	var open []models.ServiceProblem
-	db.DB.Where("closed_at IS NULL").Find(&open)
+	db.DB.Where("cluster_id = ? AND closed_at IS NULL", clusterID).Find(&open)
 	openByKey := map[string]models.ServiceProblem{}
 	for _, p := range open {
 		openByKey[p.Namespace+"/"+p.Workload+"/"+p.Kind] = p
@@ -1132,6 +1134,7 @@ func reconcileServiceProblems(found []detected, now time.Time) {
 		}
 
 		db.DB.Create(&models.ServiceProblem{
+			ClusterID:    clusterID,
 			OpenedAt:     now,
 			LastSeenAt:   now,
 			Namespace:    d.Ref.Namespace,
@@ -1179,12 +1182,22 @@ func reconcileServiceProblems(found []detected, now time.Time) {
 // different questions, and a cluster where pods are healthy is exactly the
 // cluster where only this one has anything to say.
 func PollAppErrors() {
+	// One pass per cluster: application errors are per-cluster facts, and a
+	// cluster that cannot be read must not stop the others being sampled.
+	for _, cl := range allClusters() {
+		pollAppErrorsFor(&cl)
+	}
+}
+
+func pollAppErrorsFor(cl *models.Cluster) {
+	clusterID := cl.ID
 	retentionDays := envInt("APP_ERROR_RETENTION_DAYS", 3)
 	limitBytes := int64(envInt("APP_LOG_LIMIT_BYTES", 8*1024*1024))
 	maxPods := envInt("APP_LOG_SCAN_MAX_PODS", 120)
 
-	typed, err := buildK8sClient()
+	typed, _, err := collectorClients(cl)
 	if err != nil {
+		fmt.Printf("App errors: cluster %s: %v\n", cl.Name, err)
 		return
 	}
 
@@ -1236,7 +1249,7 @@ func PollAppErrors() {
 		fmt.Println("App errors: no ingress controller pod found; HTTP status is not being measured. " +
 			"Set INGRESS_CONTROLLER_LABELS if the controller uses non-standard labels.")
 	} else {
-		unresolved := collectIngressWindows(ctx, typed, controllers, buildUpstreamIndex(), since, limitBytes, set)
+		unresolved := collectIngressWindows(ctx, typed, controllers, buildUpstreamIndex(clusterID), since, limitBytes, set)
 		if unresolved > 0 {
 			fmt.Printf("App errors: %d access log lines did not map to a known Service; "+
 				"the topology poll may not have run yet.\n", unresolved)
@@ -1246,16 +1259,16 @@ func PollAppErrors() {
 	groups := newGroupSet()
 	collectLogWindows(ctx, typed, apps, buildJobOwnerIndex(ctx, typed), since, limitBytes, set, groups)
 
-	if err := persistErrorWindows(set.accs, now, retentionDays); err != nil {
+	if err := persistErrorWindows(clusterID, set.accs, now, retentionDays); err != nil {
 		fmt.Printf("App errors: store windows: %v\n", err)
 		return
 	}
-	if err := persistLogErrorGroups(groups.groups, now, retentionDays); err != nil {
+	if err := persistLogErrorGroups(clusterID, groups.groups, now, retentionDays); err != nil {
 		fmt.Printf("App errors: store log groups: %v\n", err)
 		return
 	}
 
-	reconcileServiceProblems(evaluateWindows(now), now)
+	reconcileServiceProblems(clusterID, evaluateWindows(clusterID, now), now)
 }
 
 // GetServiceProblems lists application-level problems, open ones by default.
@@ -1263,7 +1276,11 @@ func PollAppErrors() {
 // fault, which is the view to open when a service is being blamed for errors
 // it is only passing along.
 func GetServiceProblems(c *fiber.Ctx) error {
-	q := db.DB.Model(&models.ServiceProblem{})
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	q := db.DB.Model(&models.ServiceProblem{}).Where("cluster_id = ?", clusterID)
 	if c.Query("status", "open") == "open" {
 		q = q.Where("closed_at IS NULL")
 	}
@@ -1297,7 +1314,11 @@ func GetServiceErrorSeries(c *fiber.Ctx) error {
 	}
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
 
-	q := db.DB.Model(&models.ErrorWindow{}).Where("bucket_at >= ?", since)
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	q := db.DB.Model(&models.ErrorWindow{}).Where("cluster_id = ? AND bucket_at >= ?", clusterID, since)
 	if ns := c.Query("namespace"); ns != "" {
 		q = q.Where("namespace = ?", ns)
 	}
@@ -1312,7 +1333,7 @@ func GetServiceErrorSeries(c *fiber.Ctx) error {
 	}
 
 	var deps []models.DependencyFailure
-	dq := db.DB.Model(&models.DependencyFailure{}).Where("bucket_at >= ?", since)
+	dq := db.DB.Model(&models.DependencyFailure{}).Where("cluster_id = ? AND bucket_at >= ?", clusterID, since)
 	if ns := c.Query("namespace"); ns != "" {
 		dq = dq.Where("src_namespace = ?", ns)
 	}
@@ -1359,7 +1380,11 @@ func GetLogErrors(c *fiber.Ctx) error {
 	}
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
 
-	q := db.DB.Model(&models.LogErrorGroup{}).Where("bucket_at >= ?", since)
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	q := db.DB.Model(&models.LogErrorGroup{}).Where("cluster_id = ? AND bucket_at >= ?", clusterID, since)
 	if ns := c.Query("namespace"); ns != "" {
 		q = q.Where("namespace = ?", ns)
 	}

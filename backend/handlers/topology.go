@@ -1019,8 +1019,8 @@ func dedupeEdges(edges []edgeAcc) []edgeAcc {
 // discoverTopology reads the cluster once and returns the whole map. Each
 // source beyond the core (Ingress, NetworkPolicy, Istio) is best-effort: a
 // missing permission or a missing CRD costs that source's edges, not the map.
-func discoverTopology(ctx context.Context) (*topoIndex, []edgeAcc, error) {
-	typed, dyn, err := buildK8sClients()
+func discoverTopology(ctx context.Context, cl *models.Cluster) (*topoIndex, []edgeAcc, error) {
+	typed, dyn, err := collectorClients(cl)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1076,38 +1076,44 @@ func PollTopology() {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	ix, edges, err := discoverTopology(ctx)
-	if err != nil {
-		fmt.Printf("Topology discovery: %v\n", err)
-		topologyState.fail("discovery: " + err.Error())
-		return
+	// One discovery per cluster. A cluster that fails is reported and skipped:
+	// aborting would drop the map for every other cluster too.
+	failed := 0
+	for _, cl := range allClusters() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		ix, edges, err := discoverTopology(ctx, &cl)
+		cancel()
+		if err != nil {
+			fmt.Printf("Topology discovery: cluster %s: %v\n", cl.Name, err)
+			topologyState.fail("discovery " + cl.Name + ": " + err.Error())
+			failed++
+			continue
+		}
+		if err := persistTopology(cl.ID, ix, edges, time.Now(), retentionDays); err != nil {
+			fmt.Printf("Topology store: cluster %s: %v\n", cl.Name, err)
+			topologyState.fail("store " + cl.Name + ": " + err.Error())
+			failed++
+		}
 	}
-
-	if err := persistTopology(ix, edges, time.Now(), retentionDays); err != nil {
-		fmt.Printf("Topology store: %v\n", err)
-		topologyState.fail("store: " + err.Error())
-		return
+	if failed == 0 {
+		topologyState.ok()
 	}
-
-	topologyState.ok()
 }
 
 // persistTopology writes one discovery pass. It is separated from the polling
 // so the upsert can be tested against a real database: a silent write failure
 // here is indistinguishable from an empty cluster on the page, which is
 // exactly the kind of bug that needs a test rather than a log line.
-func persistTopology(ix *topoIndex, edges []edgeAcc, now time.Time, retentionDays int) error {
+func persistTopology(clusterID uint, ix *topoIndex, edges []edgeAcc, now time.Time, retentionDays int) error {
 	nodeUpsert := clause.OnConflict{
-		Columns: []clause.Column{{Name: "namespace"}, {Name: "kind"}, {Name: "name"}},
+		Columns: []clause.Column{{Name: "cluster_id"}, {Name: "namespace"}, {Name: "kind"}, {Name: "name"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"updated_at", "last_seen", "services", "hosts", "replicas", "status", "external",
 		}),
 	}
 	nodes := make([]models.ServiceNode, 0, len(ix.nodes))
 	for _, n := range ix.nodes {
+		n.ClusterID = clusterID
 		n.FirstSeen = now
 		n.LastSeen = now
 		n.UpdatedAt = now
@@ -1123,6 +1129,7 @@ func persistTopology(ix *topoIndex, edges []edgeAcc, now time.Time, retentionDay
 	// owns that column, and a discovery poll must not clear what it set.
 	edgeUpsert := clause.OnConflict{
 		Columns: []clause.Column{
+			{Name: "cluster_id"},
 			{Name: "src_namespace"}, {Name: "src_kind"}, {Name: "src_name"},
 			{Name: "dst_namespace"}, {Name: "dst_kind"}, {Name: "dst_name"},
 			{Name: "port"}, {Name: "source"},
@@ -1134,6 +1141,7 @@ func persistTopology(ix *topoIndex, edges []edgeAcc, now time.Time, retentionDay
 	rows := make([]models.ServiceEdge, 0, len(edges))
 	for _, e := range edges {
 		rows = append(rows, models.ServiceEdge{
+			ClusterID: clusterID,
 			UpdatedAt: now, FirstSeen: now, LastSeen: now,
 			SrcNamespace: e.Src.Namespace, SrcKind: e.Src.Kind, SrcName: e.Src.Name,
 			DstNamespace: e.Dst.Namespace, DstKind: e.Dst.Kind, DstName: e.Dst.Name,
@@ -1148,8 +1156,8 @@ func persistTopology(ix *topoIndex, edges []edgeAcc, now time.Time, retentionDay
 	}
 
 	cutoff := now.AddDate(0, 0, -retentionDays)
-	db.DB.Where("last_seen < ?", cutoff).Delete(&models.ServiceEdge{})
-	db.DB.Where("last_seen < ?", cutoff).Delete(&models.ServiceNode{})
+	db.DB.Where("cluster_id = ? AND last_seen < ?", clusterID, cutoff).Delete(&models.ServiceEdge{})
+	db.DB.Where("cluster_id = ? AND last_seen < ?", clusterID, cutoff).Delete(&models.ServiceNode{})
 	return nil
 }
 
@@ -1250,7 +1258,12 @@ func GetTopology(c *fiber.Ctx) error {
 	includeExternal := c.Query("include_external") != "false"
 	includeIsolated := c.Query("include_isolated") == "true"
 
-	edgeQuery := db.DB.Where("last_seen >= ?", cutoff)
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	edgeQuery := db.DB.Where("cluster_id = ? AND last_seen >= ?", clusterID, cutoff)
 	if s := c.Query("source"); s != "" {
 		edgeQuery = edgeQuery.Where("source IN ?", splitCSV(s))
 	}
@@ -1268,7 +1281,7 @@ func GetTopology(c *fiber.Ctx) error {
 	edgeQuery.Order("src_namespace, src_name, dst_namespace, dst_name").Find(&stored)
 
 	var storedNodes []models.ServiceNode
-	db.DB.Where("last_seen >= ?", cutoff).Find(&storedNodes)
+	db.DB.Where("cluster_id = ? AND last_seen >= ?", clusterID, cutoff).Find(&storedNodes)
 
 	byID := map[string]*models.ServiceNode{}
 	for i := range storedNodes {
@@ -1438,9 +1451,16 @@ func RefreshTopology(c *fiber.Ctx) error {
 	}
 	PollTopology()
 
+	// The refresh rebuilds every cluster, but the counts reported back are the
+	// ones for the cluster the caller is looking at -- a total across clusters
+	// would not match the map they are about to see.
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
 	var nodes, edges int64
-	db.DB.Model(&models.ServiceNode{}).Count(&nodes)
-	db.DB.Model(&models.ServiceEdge{}).Count(&edges)
+	db.DB.Model(&models.ServiceNode{}).Where("cluster_id = ?", clusterID).Count(&nodes)
+	db.DB.Model(&models.ServiceEdge{}).Where("cluster_id = ?", clusterID).Count(&edges)
 
 	lastRun, lastError := topologyState.snapshot()
 	if lastError != "" {
