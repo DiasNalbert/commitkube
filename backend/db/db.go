@@ -106,6 +106,11 @@ func ConnectDB() {
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_ew_cluster_workload_time ON error_windows (cluster_id, namespace, workload, bucket_at)")
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_se_cluster_src ON service_edges (cluster_id, src_namespace, src_kind, src_name)")
 
+	// The flag was briefly called impersonate_writes, before reads were
+	// covered too. Carry the old value over rather than silently turning the
+	// switch back off on anyone who had set it.
+	DB.Exec("UPDATE clusters SET impersonate = impersonate_writes WHERE impersonate = 0 AND impersonate_writes = 1")
+
 	// scan_results.updated_at is new. Rows written before it existed come back
 	// as the zero time, which would read as "never scanned" and send every
 	// repository through a full rescan on the first pass -- and would show the

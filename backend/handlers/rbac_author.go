@@ -151,6 +151,39 @@ func impersonationClusterRole(groupNames []string) *rbacv1.ClusterRole {
 	}
 }
 
+// clusterReaderRole is the companion nobody thinks to ask for and everything
+// breaks without. A RoleBinding in a namespace permits Pods("ns").List(); it
+// does not permit Pods("").List(), and it does not permit reading nodes or
+// listing namespaces at all -- both are cluster-scoped. Without this, turning
+// impersonation on leaves the namespace filter, the Nodes page and the Cluster
+// Overview empty, which reads as a broken product rather than as a policy.
+//
+// It grants no workload or secret access: those stay per namespace, which is
+// where the actual decision lives.
+func clusterReaderRole() *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
+		ObjectMeta: metav1.ObjectMeta{Name: "commitkube-cluster-reader"},
+		Rules: []rbacv1.PolicyRule{
+			{APIGroups: []string{""}, Resources: []string{"namespaces", "nodes"}, Verbs: []string{"get", "list", "watch"}},
+			{APIGroups: []string{"metrics.k8s.io"}, Resources: []string{"nodes", "pods"}, Verbs: []string{"get", "list"}},
+		},
+	}
+}
+
+func clusterReaderBinding(groupName string) *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "commitkube-cluster-reader-" + sanitize(groupName),
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind: "Group", Name: ImpersonationGroup(groupName), APIGroup: "rbac.authorization.k8s.io",
+		}},
+		RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "commitkube-cluster-reader", APIGroup: "rbac.authorization.k8s.io"},
+	}
+}
+
 func toYAML(objs ...interface{}) (string, error) {
 	var b strings.Builder
 	for i, o := range objs {
@@ -197,7 +230,7 @@ func PreviewClusterRBAC(c *fiber.Ctx) error {
 	var groupNames []string
 	db.DB.Model(&models.UserGroup{}).Pluck("name", &groupNames)
 
-	manifest, err := toYAML(role, binding)
+	manifest, err := toYAML(role, binding, clusterReaderRole(), clusterReaderBinding(group))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -270,6 +303,19 @@ func ApplyClusterRBAC(c *fiber.Ctx) error {
 			Create(ctx, binding, metav1.CreateOptions{}); err != nil {
 			return k8sError(c, err)
 		}
+	}
+
+	// Without the cluster-scoped reader, the namespace filter, the Nodes page
+	// and the Cluster Overview come back empty and it looks like a bug.
+	crole := clusterReaderRole()
+	if _, err := typed.RbacV1().ClusterRoles().Create(ctx, crole, metav1.CreateOptions{}); err != nil &&
+		!strings.Contains(err.Error(), "already exists") {
+		return k8sError(c, err)
+	}
+	cbinding := clusterReaderBinding(req.Group)
+	if _, err := typed.RbacV1().ClusterRoleBindings().Create(ctx, cbinding, metav1.CreateOptions{}); err != nil &&
+		!strings.Contains(err.Error(), "already exists") {
+		return k8sError(c, err)
 	}
 
 	db.LogAudit(currentUserID(c), "apply_cluster_rbac", "cluster", cl.Name,

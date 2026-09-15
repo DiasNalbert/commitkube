@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 
-interface ClusterRow { id: number; name: string; impersonate_writes: boolean; can_manage_rbac: boolean }
+interface ClusterRow { id: number; name: string; impersonate: boolean; can_manage_rbac: boolean }
 interface Group { id: number; name: string }
 interface Template { name: string; description: string }
 
@@ -61,7 +61,7 @@ export default function ClusterRBAC({ groups, clusters, onChanged }: {
     setMessage(body.message ?? "aplicado");
   };
 
-  const toggle = async (field: "impersonate_writes" | "can_manage_rbac", value: boolean) => {
+  const toggle = async (field: "impersonate" | "can_manage_rbac", value: boolean) => {
     setError("");
     const res = await apiFetch(`/clusters/${clusterID}/flags`, {
       method: "PUT",
@@ -155,13 +155,21 @@ export default function ClusterRBAC({ groups, clusters, onChanged }: {
       {cluster && (
         <div className="pt-3 border-t border-[var(--card-border)] space-y-2">
           <label className="flex items-start gap-3 text-sm cursor-pointer">
-            <input type="checkbox" checked={cluster.impersonate_writes} className="mt-0.5 accent-brand-green"
-              onChange={e => toggle("impersonate_writes", e.target.checked)} />
+            <input type="checkbox" checked={cluster.impersonate} className="mt-0.5 accent-brand-green"
+              onChange={e => toggle("impersonate", e.target.checked)} />
             <span>
-              Escritas com a identidade da pessoa
+              Falar com o cluster como a pessoa que pediu
               <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                Deletar, reiniciar e escalar passam a ser avaliados pelo RBAC de quem pediu, e o audit log do
-                cluster passa a ter nome de gente. Ligue só depois que os RoleBindings existirem.
+                Listar, ler manifesto, ver log, revelar Secret, deletar, reiniciar e escalar passam a ser
+                decididos pelo RBAC de quem pediu, e o audit log do cluster passa a ter nome de gente.
+                <strong className="block mt-1 text-amber-600 dark:text-amber-400">
+                  Ligue só depois que os RoleBindings existirem: sem binding, as páginas ficam vazias — por
+                  política, não por defeito.
+                </strong>
+                <span className="block mt-1">
+                  Não cobre Triage, Service Map nem histórico: esses dados foram colhidos pelo coletor antes da
+                  requisição existir, e ali o filtro de namespace do CommitKube é a única cerca.
+                </span>
               </span>
             </span>
           </label>

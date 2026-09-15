@@ -14,6 +14,8 @@ export interface ClusterInfo {
   local: boolean;
   api_server: string;
   is_default: boolean;
+  impersonate?: boolean;
+  can_manage_rbac?: boolean;
   reachable: boolean;
   version?: string;
   error?: string;
