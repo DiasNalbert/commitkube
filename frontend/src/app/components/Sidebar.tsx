@@ -329,7 +329,7 @@ export default function Sidebar() {
         </span>
         {!collapsed && <span className="truncate">{label}</span>}
         {active && (
-          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-brand-green rounded-full" />
+          <span className="absolute left-0 top-1 bottom-1 w-0.5 bg-brand-green rounded-r" />
         )}
       </a>
     );
@@ -377,11 +377,11 @@ export default function Sidebar() {
     >
       <div style={{ borderColor: "var(--rule)" }} className={`flex items-center h-12 px-3 border-b shrink-0 ${collapsed ? "justify-center" : "gap-3"}`}>
         <a href="/" className="flex items-center gap-2.5 group">
-          <div className="w-8 h-8 rounded-lg bg-brand-green/10 border border-brand-green/50 flex items-center justify-center tech-glow group-hover:bg-brand-green/20 transition-all duration-200 p-1.5 shrink-0">
+          <div className="w-7 h-7 rounded bg-brand-green/10 border border-brand-green/40 flex items-center justify-center group-hover:bg-brand-green/20 transition-colors duration-100 p-1.5 shrink-0">
             <KubeLogo className="w-full h-full" />
           </div>
           {!collapsed && (
-            <span className="text-xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-brand-green to-brand-gold whitespace-nowrap">
+            <span className="text-base font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-brand-green to-brand-gold whitespace-nowrap">
               CommitKube
             </span>
           )}
