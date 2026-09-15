@@ -427,6 +427,25 @@ func ListK8sResources(c *fiber.Ctx) error {
 		})
 	}
 
+	// A scoped account sees only its namespaces. The listing above ran with
+	// the collector's credential, which can read everything, so this filter is
+	// the only thing between one team and another team's workloads.
+	if allowed, restricted, err := requestNamespaces(c); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	} else if restricted && entry.Namespaced {
+		permitted := map[string]bool{}
+		for _, ns := range allowed {
+			permitted[ns] = true
+		}
+		kept := rows[:0]
+		for _, r := range rows {
+			if permitted[r.Namespace] {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
+	}
+
 	// Worst first, then by name, so problems surface without sorting.
 	rank := map[string]int{"critical": 0, "warning": 1, "unknown": 2, "healthy": 3}
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -476,6 +495,10 @@ func GetK8sManifest(c *fiber.Ctx) error {
 		namespace = ""
 	}
 
+	if entry.Namespaced && !namespaceAllowed(c, namespace) {
+		return forbidNamespace(c)
+	}
+
 	_, dyn, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
@@ -522,8 +545,20 @@ func ListK8sNamespaceNames(c *fiber.Ctx) error {
 	if err != nil {
 		return k8sError(c, err)
 	}
+	allowed, restricted, scopeErr := requestNamespaces(c)
+	if scopeErr != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": scopeErr.Error()})
+	}
+	permitted := map[string]bool{}
+	for _, ns := range allowed {
+		permitted[ns] = true
+	}
+
 	names := make([]string, 0, len(list.Items))
 	for i := range list.Items {
+		if restricted && !permitted[list.Items[i].Name] {
+			continue
+		}
 		names = append(names, list.Items[i].Name)
 	}
 	sort.Strings(names)

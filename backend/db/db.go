@@ -72,6 +72,7 @@ func ConnectDB() {
 		&models.ArgoCDInstance{},
 		&models.Cluster{},
 		&models.PermissionGrant{},
+		&models.NamespaceScope{},
 		&models.SMTPConfig{},
 		&models.ScanResult{},
 		&models.ScanHistory{},

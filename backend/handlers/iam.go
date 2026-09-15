@@ -274,3 +274,132 @@ func validPermission(p string) bool {
 	}
 	return false
 }
+
+// ---- namespace scope ------------------------------------------------------
+
+// allowedNamespaces returns the namespaces a user may see in one cluster, or
+// nil meaning "all of them". nil is the answer for an unscoped subject and for
+// anyone holding cluster.manage, who is administering the cluster and cannot
+// do that through a keyhole.
+//
+// Reads go through the collector's credential, not the user's, so this is the
+// only thing standing between one team's page and another team's namespaces.
+// Every handler that returns namespace-bearing data must consult it.
+func allowedNamespaces(userID uint, role string, clusterID uint) []string {
+	if permissionsFor(userID, role)[PermClusterWrite] {
+		return nil
+	}
+
+	var groupIDs []uint
+	db.DB.Model(&models.UserGroupMember{}).Where("user_id = ?", userID).Pluck("group_id", &groupIDs)
+
+	q := db.DB.Model(&models.NamespaceScope{}).Where("cluster_id = ?", clusterID)
+	if len(groupIDs) > 0 {
+		q = q.Where("(subject_type = 'user' AND subject_id = ?) OR (subject_type = 'group' AND subject_id IN ?)",
+			userID, groupIDs)
+	} else {
+		q = q.Where("subject_type = 'user' AND subject_id = ?", userID)
+	}
+
+	var namespaces []string
+	q.Distinct().Pluck("namespace", &namespaces)
+	if len(namespaces) == 0 {
+		return nil // unscoped: see everything the permission already allows
+	}
+	sort.Strings(namespaces)
+	return namespaces
+}
+
+// requestNamespaces is the handler-facing form: the namespaces this request
+// may see, and whether it is restricted at all.
+func requestNamespaces(c *fiber.Ctx) (allowed []string, restricted bool, err error) {
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return nil, false, err
+	}
+	role, _ := c.Locals("role").(string)
+	ns := allowedNamespaces(currentUserID(c), role, clusterID)
+	return ns, ns != nil, nil
+}
+
+// namespaceAllowed answers for one namespace, for the handlers that address a
+// single object rather than listing many.
+func namespaceAllowed(c *fiber.Ctx, namespace string) bool {
+	allowed, restricted, err := requestNamespaces(c)
+	if err != nil || !restricted {
+		return err == nil
+	}
+	for _, ns := range allowed {
+		if ns == namespace {
+			return true
+		}
+	}
+	return false
+}
+
+// forbidNamespace is the single refusal, so the message never varies by
+// handler and never reveals whether the namespace exists.
+func forbidNamespace(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+		"error": "your account is not scoped to that namespace",
+	})
+}
+
+// ---- namespace scope, HTTP ------------------------------------------------
+
+func ListNamespaceScopes(c *fiber.Ctx) error {
+	var scopes []models.NamespaceScope
+	q := db.DB.Model(&models.NamespaceScope{})
+	if t := c.Query("subject_type"); t != "" {
+		q = q.Where("subject_type = ?", t)
+	}
+	if id := c.QueryInt("subject_id", 0); id > 0 {
+		q = q.Where("subject_id = ?", id)
+	}
+	q.Order("cluster_id, namespace").Find(&scopes)
+	if scopes == nil {
+		scopes = []models.NamespaceScope{}
+	}
+	return c.JSON(fiber.Map{"scopes": scopes})
+}
+
+func AddNamespaceScope(c *fiber.Ctx) error {
+	var req struct {
+		SubjectType string `json:"subject_type"`
+		SubjectID   uint   `json:"subject_id"`
+		ClusterID   uint   `json:"cluster_id"`
+		Namespace   string `json:"namespace"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.SubjectID == 0 || req.Namespace == "" || req.ClusterID == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "subject_type, subject_id, cluster_id and namespace are required",
+		})
+	}
+	if req.SubjectType != "user" && req.SubjectType != "group" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "subject_type must be user or group"})
+	}
+
+	scope := models.NamespaceScope{
+		SubjectType: req.SubjectType, SubjectID: req.SubjectID,
+		ClusterID: req.ClusterID, Namespace: req.Namespace, GrantedBy: currentUserID(c),
+	}
+	if err := db.DB.Where("subject_type = ? AND subject_id = ? AND cluster_id = ? AND namespace = ?",
+		req.SubjectType, req.SubjectID, req.ClusterID, req.Namespace).
+		FirstOrCreate(&scope).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	db.LogAudit(currentUserID(c), "add_namespace_scope", req.SubjectType,
+		fmt.Sprintf("%d", req.SubjectID), `{"namespace":"`+req.Namespace+`"}`, c.IP())
+	return c.Status(fiber.StatusCreated).JSON(scope)
+}
+
+func RemoveNamespaceScope(c *fiber.Ctx) error {
+	var scope models.NamespaceScope
+	if err := db.DB.First(&scope, c.Params("id")).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "scope not found"})
+	}
+	db.DB.Delete(&scope)
+	db.LogAudit(currentUserID(c), "remove_namespace_scope", scope.SubjectType,
+		fmt.Sprintf("%d", scope.SubjectID), `{"namespace":"`+scope.Namespace+`"}`, c.IP())
+	return c.JSON(fiber.Map{"message": "scope removed"})
+}

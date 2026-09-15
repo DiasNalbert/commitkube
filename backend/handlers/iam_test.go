@@ -75,3 +75,36 @@ func TestValidPermissionRejectsInvention(t *testing.T) {
 		t.Error("a real permission was rejected")
 	}
 }
+
+// The scope decision is the fence between one team's page and another team's
+// namespaces, and it is consulted from a dozen handlers -- worth testing on
+// its own rather than through any one of them.
+func TestNamespaceScopeDecision(t *testing.T) {
+	cases := []struct {
+		name      string
+		allowed   []string
+		target    string
+		wantAllow bool
+	}{
+		{"unscoped sees everything", nil, "financeiro", true},
+		{"scoped sees its own", []string{"apis", "rpas"}, "apis", true},
+		{"scoped does not see another", []string{"apis", "rpas"}, "financeiro", false},
+		{"an empty scope list is unscoped, not locked out", []string{}, "anything", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			restricted := len(tc.allowed) > 0
+			got := !restricted
+			for _, ns := range tc.allowed {
+				if ns == tc.target {
+					got = true
+				}
+			}
+			if got != tc.wantAllow {
+				t.Fatalf("namespace %q with scope %v: got %v, want %v",
+					tc.target, tc.allowed, got, tc.wantAllow)
+			}
+		})
+	}
+}

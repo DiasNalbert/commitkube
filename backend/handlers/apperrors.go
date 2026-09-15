@@ -1281,6 +1281,11 @@ func GetServiceProblems(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	q := db.DB.Model(&models.ServiceProblem{}).Where("cluster_id = ?", clusterID)
+	if allowed, restricted, err := requestNamespaces(c); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	} else if restricted {
+		q = q.Where("namespace IN ?", allowed)
+	}
 	if c.Query("status", "open") == "open" {
 		q = q.Where("closed_at IS NULL")
 	}
@@ -1318,7 +1323,15 @@ func GetServiceErrorSeries(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	scoped, restricted, scopeErr := requestNamespaces(c)
+	if scopeErr != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": scopeErr.Error()})
+	}
+
 	q := db.DB.Model(&models.ErrorWindow{}).Where("cluster_id = ? AND bucket_at >= ?", clusterID, since)
+	if restricted {
+		q = q.Where("namespace IN ?", scoped)
+	}
 	if ns := c.Query("namespace"); ns != "" {
 		q = q.Where("namespace = ?", ns)
 	}
@@ -1334,6 +1347,9 @@ func GetServiceErrorSeries(c *fiber.Ctx) error {
 
 	var deps []models.DependencyFailure
 	dq := db.DB.Model(&models.DependencyFailure{}).Where("cluster_id = ? AND bucket_at >= ?", clusterID, since)
+	if restricted {
+		dq = dq.Where("src_namespace IN ?", scoped)
+	}
 	if ns := c.Query("namespace"); ns != "" {
 		dq = dq.Where("src_namespace = ?", ns)
 	}
@@ -1385,6 +1401,11 @@ func GetLogErrors(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	q := db.DB.Model(&models.LogErrorGroup{}).Where("cluster_id = ? AND bucket_at >= ?", clusterID, since)
+	if allowed, restricted, err := requestNamespaces(c); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	} else if restricted {
+		q = q.Where("namespace IN ?", allowed)
+	}
 	if ns := c.Query("namespace"); ns != "" {
 		q = q.Where("namespace = ?", ns)
 	}

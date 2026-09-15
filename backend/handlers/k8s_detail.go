@@ -173,6 +173,15 @@ func GetK8sResourceDetail(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name is required"})
 	}
 
+	// A namespaced detail names one object; a namespace detail names itself.
+	target := namespace
+	if kind == "namespaces" {
+		target = name
+	}
+	if target != "" && !namespaceAllowed(c, target) {
+		return forbidNamespace(c)
+	}
+
 	clientset, err := requestTyped(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})

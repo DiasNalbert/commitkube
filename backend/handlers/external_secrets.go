@@ -139,7 +139,19 @@ func ListSecrets(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to list secrets: " + err.Error()})
 	}
 
+	scopedNS, restricted, scopeErr := requestNamespaces(c)
+	if scopeErr != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": scopeErr.Error()})
+	}
+	permitted := map[string]bool{}
+	for _, ns := range scopedNS {
+		permitted[ns] = true
+	}
+
 	for _, s := range secretList.Items {
+		if restricted && !permitted[s.Namespace] {
+			continue
+		}
 		var keys []string
 		values := make(map[string]string)
 		for k := range s.Data {
@@ -186,6 +198,10 @@ func RevealSecretValue(c *fiber.Ctx) error {
 
 	if _, err := verifyCurrentUserPassword(c, req.Password); err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid password"})
+	}
+
+	if !namespaceAllowed(c, req.Namespace) {
+		return forbidNamespace(c)
 	}
 
 	typed, _, err := requestClients(c)

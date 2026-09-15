@@ -56,6 +56,9 @@ func podLogOptions(c *fiber.Ctx, follow bool) *corev1.PodLogOptions {
 // the API server rather than through ArgoCD.
 func GetPodLogs(c *fiber.Ctx) error {
 	namespace := c.Query("namespace")
+	if !namespaceAllowed(c, namespace) {
+		return forbidNamespace(c)
+	}
 	name := c.Query("pod")
 	if namespace == "" || name == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
@@ -80,6 +83,9 @@ func GetPodLogs(c *fiber.Ctx) error {
 // UI shows new lines as the container writes them.
 func StreamPodLogs(c *fiber.Ctx) error {
 	namespace := c.Query("namespace")
+	if !namespaceAllowed(c, namespace) {
+		return forbidNamespace(c)
+	}
 	name := c.Query("pod")
 	if namespace == "" || name == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
@@ -178,6 +184,9 @@ func DeletePod(c *fiber.Ctx) error {
 	}
 
 	namespace := c.Query("namespace")
+	if !namespaceAllowed(c, namespace) {
+		return forbidNamespace(c)
+	}
 	name := c.Query("pod")
 	if namespace == "" || name == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
@@ -220,6 +229,9 @@ func RestartPod(c *fiber.Ctx) error {
 	}
 
 	namespace := c.Query("namespace")
+	if !namespaceAllowed(c, namespace) {
+		return forbidNamespace(c)
+	}
 	name := c.Query("pod")
 	if namespace == "" || name == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
@@ -309,6 +321,10 @@ func ScalePodWorkload(c *fiber.Ctx) error {
 	}
 
 	ctx := context.Background()
+	if !namespaceAllowed(c, req.Namespace) {
+		return forbidNamespace(c)
+	}
+
 	pod, err := typed.CoreV1().Pods(req.Namespace).Get(ctx, req.Pod, metav1.GetOptions{})
 	if err != nil {
 		return k8sError(c, err)
