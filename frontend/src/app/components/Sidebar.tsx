@@ -310,7 +310,7 @@ export default function Sidebar() {
     .filter(item => can(item.perm));
   const visibleK8sItems = kubernetesItems.filter(item => can(item.perm));
 
-  const w = collapsed ? "w-16" : "w-60";
+  const w = collapsed ? "w-14" : "w-56";
 
   const NavItem = ({ href, label, icon }: { href: string; label: string; icon: React.ReactNode }) => {
     const active = pathname === href;
@@ -318,7 +318,7 @@ export default function Sidebar() {
       <a
         href={href}
         title={collapsed ? label : undefined}
-        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group relative
+        className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded text-[13px] font-medium transition-colors duration-100 group relative
           ${active
             ? "bg-brand-green/15 text-brand-green"
             : "text-zinc-400 hover:text-brand-green hover:bg-brand-green/8"
@@ -348,7 +348,7 @@ export default function Sidebar() {
     <>
       <button
         onClick={() => toggleGroup(groupKey)}
-        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group
+        className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded text-[13px] font-medium transition-colors duration-100 group
           ${active ? "text-brand-green" : "text-zinc-400 hover:text-brand-green hover:bg-brand-green/8"}`}
       >
         <span className={active ? "text-brand-green" : "text-zinc-500 group-hover:text-brand-green transition-colors"}>
@@ -360,7 +360,7 @@ export default function Sidebar() {
         </span>
       </button>
       {open[groupKey] && (
-        <div className="ml-3 pl-2 border-l border-brand-green/20 space-y-0.5">
+        <div style={{ borderColor: "var(--rule)" }} className="ml-3 pl-2 border-l space-y-px">
           {groupKey === "k8s" && <ClusterSelector />}
           {items.map(item => (
             <NavItem key={item.href} href={item.href} label={item.label} icon={item.icon} />
@@ -372,9 +372,10 @@ export default function Sidebar() {
 
   return (
     <aside
-      className={`fixed left-0 top-0 bottom-0 z-50 flex flex-col border-r border-brand-green/20 glass-panel transition-all duration-200 ${w}`}
+      className={`fixed left-0 top-0 bottom-0 z-50 flex flex-col border-r glass-panel transition-all duration-200 ${w}`}
+      style={{ borderColor: "var(--rule)" }}
     >
-      <div className={`flex items-center h-16 px-3 border-b border-brand-green/20 shrink-0 ${collapsed ? "justify-center" : "gap-3"}`}>
+      <div style={{ borderColor: "var(--rule)" }} className={`flex items-center h-12 px-3 border-b shrink-0 ${collapsed ? "justify-center" : "gap-3"}`}>
         <a href="/" className="flex items-center gap-2.5 group">
           <div className="w-8 h-8 rounded-lg bg-brand-green/10 border border-brand-green/50 flex items-center justify-center tech-glow group-hover:bg-brand-green/20 transition-all duration-200 p-1.5 shrink-0">
             <KubeLogo className="w-full h-full" />
@@ -395,7 +396,7 @@ export default function Sidebar() {
         {collapsed ? <IconChevronRight /> : <IconChevronLeft />}
       </button>
 
-      <nav className="flex-1 overflow-y-auto py-4 px-2 space-y-0.5">
+      <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-px">
         {/* Collapsed rail has no room for a group header, so every group's
             items render as one flat icon list instead. */}
         {collapsed ? (
@@ -431,7 +432,7 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      <div className="border-t border-brand-green/20 py-3 px-2 space-y-0.5 shrink-0">
+      <div style={{ borderColor: "var(--rule)" }} className="border-t py-2 px-2 space-y-0.5 shrink-0">
         {bottomItems.map(item => (
           <NavItem key={item.href} {...item} />
         ))}
@@ -449,5 +450,5 @@ export function useSidebarWidth() {
   useLayoutEffect(() => {
     setCollapsed(localStorage.getItem("sidebar_collapsed") === "1");
   }, []);
-  return collapsed ? "ml-16" : "ml-60";
+  return collapsed ? "ml-14" : "ml-56";
 }

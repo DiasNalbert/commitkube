@@ -48,31 +48,36 @@ interface Overview {
   degraded?: string[];
 }
 
+/** A panel. The heading sits on its own rule so a long page reads as a
+ *  sequence of sections rather than a stack of floating boxes. */
 function Card({ title, subtitle, children, className = "" }: {
   title?: string; subtitle?: string; children: React.ReactNode; className?: string;
 }) {
   return (
-    <section className={`glass-card p-4 ${className}`}>
+    <section className={`glass-card ${className}`}>
       {title && (
-        <div className="mb-3">
-          <h2 className="text-sm font-semibold">{title}</h2>
-          {subtitle && <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{subtitle}</p>}
+        <div className="px-3 py-2 border-b rule flex items-baseline gap-2">
+          <h2 className="text-[13px] font-semibold">{title}</h2>
+          {subtitle && <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{subtitle}</p>}
         </div>
       )}
-      {children}
+      <div className="p-3">{children}</div>
     </section>
   );
 }
 
 /** A headline number with its own label. No plot, so no legend and no hover. */
+/** A headline number. Smaller than it was on purpose: at 3xl the four tiles
+ *  read as the page, when they are the summary of it. The context line below
+ *  is what someone actually acts on. */
 function Tile({ label, value, note, tone = "" }: {
   label: string; value: React.ReactNode; note?: React.ReactNode; tone?: string;
 }) {
   return (
-    <div className="glass-card p-4">
+    <div className="glass-card px-3 py-2.5">
       <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{label}</p>
-      <p className={`text-3xl font-semibold mt-1 ${tone}`}>{value}</p>
-      {note && <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{note}</p>}
+      <p className={`text-xl font-semibold mt-0.5 tabular-nums ${tone}`}>{value}</p>
+      {note && <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5 leading-snug">{note}</p>}
     </div>
   );
 }
@@ -102,16 +107,16 @@ function CapacityMeter({ title, axis, format, metrics }: {
         </p>
       </div>
 
-      <p className="mt-2 text-3xl font-semibold tabular-nums">
+      <p className="mt-1 text-2xl font-semibold tabular-nums">
         {metrics ? `${usagePct.toFixed(0)}%` : "—"}
         <span className="text-sm font-normal text-zinc-500 dark:text-zinc-400 ml-2">
           {metrics ? `${format(axis.usage)} in use` : "metrics-server unavailable"}
         </span>
       </p>
 
-      <div className="relative mt-3 h-4 rounded-full bg-[var(--color-surface-hover)] overflow-hidden">
+      <div className="relative mt-2 h-2.5 rounded-sm bg-[var(--color-surface-hover)] overflow-hidden">
         {metrics && (
-          <div className={`h-full rounded-full ${s.dot}`} style={{ width: at(axis.usage) }} title={`Uso ${format(axis.usage)}`} />
+          <div className={`h-full rounded-sm ${s.dot}`} style={{ width: at(axis.usage) }} title={`Uso ${format(axis.usage)}`} />
         )}
         {axis.allocatable > 0 && (
           <span className="absolute inset-y-0 w-px bg-zinc-400 dark:bg-zinc-500" style={{ left: at(axis.allocatable) }} />
@@ -156,12 +161,14 @@ function RowBar({ value, max }: { value: number; max: number }) {
 
 function Table({ head, children }: { head: string[]; children: React.ReactNode }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400 border-b border-[var(--card-border)]">
-          <tr>{head.map(h => <th key={h} className="font-medium px-2 py-2 text-left">{h}</th>)}</tr>
+    <div className="overflow-x-auto -mx-3 -mb-3">
+      <table className="w-full text-[13px]">
+        <thead className="text-[10px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400 border-b rule">
+          <tr>{head.map(h => <th key={h} className="font-medium px-3 py-1.5 text-left whitespace-nowrap">{h}</th>)}</tr>
         </thead>
-        <tbody>{children}</tbody>
+        <tbody className="[&>tr]:border-b [&>tr]:rule [&>tr:last-child]:border-0 [&>tr:hover]:bg-[var(--color-surface-hover)]">
+          {children}
+        </tbody>
       </table>
     </div>
   );
@@ -233,11 +240,11 @@ export default function Page() {
   const maxPodMem = Math.max(...(d.top_pods_mem ?? []).map(p => p.mem_bytes), 0);
 
   return (
-    <div className="p-6 max-w-[1600px] mx-auto space-y-5">
+    <div className="p-4 max-w-[1700px] mx-auto space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Cluster Overview</h1>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
+          <h1 className="text-lg font-semibold">Cluster Overview</h1>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
             The whole cluster on one screen: how much is committed, what is broken now, and where the load sits.
           </p>
         </div>
@@ -252,12 +259,12 @@ export default function Page() {
       </div>
 
       {!d.metrics_available && (
-        <div className="glass-card p-3 border-amber-500/30 text-xs text-amber-600 dark:text-amber-400">
+        <div className="glass-card px-3 py-2 border-amber-500/30 text-xs text-amber-600 dark:text-amber-400">
           metrics-server is not answering, so live usage is unavailable. Requests, limits and counts are still correct.
         </div>
       )}
       {d.degraded && d.degraded.length > 0 && (
-        <div className="glass-card p-3 border-amber-500/30 text-xs">
+        <div className="glass-card px-3 py-2 border-amber-500/30 text-xs">
           <p className="text-amber-600 dark:text-amber-400 font-medium">Some lookups failed and were left out</p>
           <ul className="mt-1 space-y-0.5 text-zinc-500 dark:text-zinc-400 font-mono">
             {d.degraded.map(x => <li key={x}>{x}</li>)}
@@ -265,7 +272,7 @@ export default function Page() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
         <Tile label="Nodes ready" value={`${d.nodes_ready}/${d.nodes_total}`} tone={nodeTone}
           note={[
             d.nodes_not_ready > 0 ? `${d.nodes_not_ready} NotReady` : null,
@@ -282,27 +289,27 @@ export default function Page() {
           note={(d.workloads ?? []).map(w => `${w.kind.toLowerCase()}s ${w.total}`).join(" · ")} />
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-3">
+      <div className="grid lg:grid-cols-2 gap-2">
         <Card><CapacityMeter title="CPU" axis={d.cpu} format={fmtCores} metrics={d.metrics_available} /></Card>
         <Card><CapacityMeter title="Memory" axis={d.memory} format={fmtBytes} metrics={d.metrics_available} /></Card>
       </div>
 
       <Card title="Pods" subtitle={`${d.pods_total} pods · ${d.containers} containers · ${d.namespace_count} namespaces`}>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
           {["Running", "Pending", "Failed", "Succeeded"].map(phase => (
-            <div key={phase} className="rounded-lg border border-[var(--card-border)] bg-[var(--color-surface-hover)] p-3">
+            <div key={phase} className="rounded border rule bg-[var(--surface-sunken)] px-2.5 py-2">
               <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{phase}</p>
               <p className={`text-2xl font-semibold mt-0.5 ${PHASE_TONE[phase] ?? ""}`}>{d.pods_by_phase[phase] ?? 0}</p>
             </div>
           ))}
-          <div className="rounded-lg border border-[var(--card-border)] bg-[var(--color-surface-hover)] p-3">
+          <div className="rounded border rule bg-[var(--surface-sunken)] px-2.5 py-2">
             <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Restarts</p>
             <p className="text-2xl font-semibold mt-0.5">{d.pods_restarts}</p>
           </div>
         </div>
       </Card>
 
-      <div className="grid lg:grid-cols-2 gap-3">
+      <div className="grid lg:grid-cols-2 gap-2">
         <Card title="Detected problems" subtitle="the same detection the Pods and Triage pages run">
           {(d.problems ?? []).length === 0 ? (
             <p className="text-xs text-zinc-500 dark:text-zinc-400">No open problems right now.</p>
@@ -312,13 +319,13 @@ export default function Page() {
                 const s = statusStyle(p.severity);
                 return (
                   <tr key={p.kind} className="border-b border-[var(--card-border)] last:border-0">
-                    <td className="px-2 py-2">{p.title}</td>
+                    <td className="px-3 py-1.5">{p.title}</td>
                     <td className={`px-2 py-2 ${s.text}`}>
                       <span className="inline-flex items-center gap-1.5">
                         <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />{p.severity}
                       </span>
                     </td>
-                    <td className="px-2 py-2 tabular-nums">{p.count}</td>
+                    <td className="px-3 py-1.5 tabular-nums">{p.count}</td>
                   </tr>
                 );
               })}
@@ -333,9 +340,9 @@ export default function Page() {
             <Table head={["Pod", "Namespace", "Reason"]}>
               {(d.problem_pods ?? []).map((p, i) => (
                 <tr key={`${p.namespace}/${p.name}-${i}`} className="border-b border-[var(--card-border)] last:border-0">
-                  <td className="px-2 py-2 font-mono text-xs truncate max-w-[200px]" title={p.name}>{p.name}</td>
-                  <td className="px-2 py-2 text-xs">{p.namespace}</td>
-                  <td className="px-2 py-2 text-xs text-red-500 dark:text-red-400" title={p.detail}>{p.title}</td>
+                  <td className="px-3 py-1.5 font-mono text-xs truncate max-w-[200px]" title={p.name}>{p.name}</td>
+                  <td className="px-3 py-1.5 text-xs">{p.namespace}</td>
+                  <td className="px-3 py-1.5 text-xs text-red-500 dark:text-red-400" title={p.detail}>{p.title}</td>
                 </tr>
               ))}
             </Table>
@@ -347,28 +354,28 @@ export default function Page() {
         <Table head={["Namespace", "CPU", "", "CPU requests", "Memory", "Pods"]}>
           {(d.top_namespaces ?? []).map(ns => (
             <tr key={ns.name} className="border-b border-[var(--card-border)] last:border-0">
-              <td className="px-2 py-2 font-mono text-xs">
+              <td className="px-3 py-1.5 font-mono text-xs">
                 <a href={`/kubernetes/pods?namespace=${encodeURIComponent(ns.name)}`} className="hover:text-brand-green">{ns.name}</a>
               </td>
-              <td className="px-2 py-2 font-mono text-xs whitespace-nowrap">{fmtCores(ns.cpu_cores)}</td>
-              <td className="px-2 py-2 w-[120px]"><RowBar value={ns.cpu_cores} max={maxNsCPU} /></td>
-              <td className="px-2 py-2 font-mono text-xs">{fmtCores(ns.cpu_requests)}</td>
-              <td className="px-2 py-2 font-mono text-xs">{fmtBytes(ns.mem_bytes)}</td>
-              <td className="px-2 py-2 tabular-nums">{ns.pods}</td>
+              <td className="px-3 py-1.5 font-mono text-xs whitespace-nowrap">{fmtCores(ns.cpu_cores)}</td>
+              <td className="px-3 py-1.5 w-[120px]"><RowBar value={ns.cpu_cores} max={maxNsCPU} /></td>
+              <td className="px-3 py-1.5 font-mono text-xs">{fmtCores(ns.cpu_requests)}</td>
+              <td className="px-3 py-1.5 font-mono text-xs">{fmtBytes(ns.mem_bytes)}</td>
+              <td className="px-3 py-1.5 tabular-nums">{ns.pods}</td>
             </tr>
           ))}
         </Table>
       </Card>
 
-      <div className="grid lg:grid-cols-2 gap-3">
+      <div className="grid lg:grid-cols-2 gap-2">
         <Card title="Pods by CPU">
           <Table head={["Pod", "Namespace", "CPU", ""]}>
             {(d.top_pods_cpu ?? []).map(p => (
               <tr key={`${p.namespace}/${p.name}`} className="border-b border-[var(--card-border)] last:border-0">
-                <td className="px-2 py-2 font-mono text-xs truncate max-w-[180px]" title={p.name}>{p.name}</td>
-                <td className="px-2 py-2 text-xs">{p.namespace}</td>
-                <td className="px-2 py-2 font-mono text-xs whitespace-nowrap">{fmtCores(p.cpu_cores)}</td>
-                <td className="px-2 py-2 w-[90px]"><RowBar value={p.cpu_cores} max={maxPodCPU} /></td>
+                <td className="px-3 py-1.5 font-mono text-xs truncate max-w-[180px]" title={p.name}>{p.name}</td>
+                <td className="px-3 py-1.5 text-xs">{p.namespace}</td>
+                <td className="px-3 py-1.5 font-mono text-xs whitespace-nowrap">{fmtCores(p.cpu_cores)}</td>
+                <td className="px-3 py-1.5 w-[90px]"><RowBar value={p.cpu_cores} max={maxPodCPU} /></td>
               </tr>
             ))}
           </Table>
@@ -377,10 +384,10 @@ export default function Page() {
           <Table head={["Pod", "Namespace", "Memory", ""]}>
             {(d.top_pods_mem ?? []).map(p => (
               <tr key={`${p.namespace}/${p.name}`} className="border-b border-[var(--card-border)] last:border-0">
-                <td className="px-2 py-2 font-mono text-xs truncate max-w-[180px]" title={p.name}>{p.name}</td>
-                <td className="px-2 py-2 text-xs">{p.namespace}</td>
-                <td className="px-2 py-2 font-mono text-xs whitespace-nowrap">{fmtBytes(p.mem_bytes)}</td>
-                <td className="px-2 py-2 w-[90px]"><RowBar value={p.mem_bytes} max={maxPodMem} /></td>
+                <td className="px-3 py-1.5 font-mono text-xs truncate max-w-[180px]" title={p.name}>{p.name}</td>
+                <td className="px-3 py-1.5 text-xs">{p.namespace}</td>
+                <td className="px-3 py-1.5 font-mono text-xs whitespace-nowrap">{fmtBytes(p.mem_bytes)}</td>
+                <td className="px-3 py-1.5 w-[90px]"><RowBar value={p.mem_bytes} max={maxPodMem} /></td>
               </tr>
             ))}
           </Table>
@@ -395,38 +402,38 @@ export default function Page() {
             const memS = statusStyle(loadStatus(n.mem_pct));
             return (
               <tr key={n.name} className="border-b border-[var(--card-border)] last:border-0">
-                <td className="px-2 py-2 font-mono text-xs">
+                <td className="px-3 py-1.5 font-mono text-xs">
                   <span className="flex items-center gap-2">
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.dot}`} />
                     <span className="truncate max-w-[200px]" title={n.name}>{n.name}</span>
                   </span>
                 </td>
                 <td className={`px-2 py-2 text-xs ${s.text}`}>{n.status_text}</td>
-                <td className="px-2 py-2 text-xs">{n.roles || "—"}</td>
-                <td className="px-2 py-2 font-mono text-xs whitespace-nowrap">
+                <td className="px-3 py-1.5 text-xs">{n.roles || "—"}</td>
+                <td className="px-3 py-1.5 font-mono text-xs whitespace-nowrap">
                   {d.metrics_available ? (
                     <><span className={cpuS.text}>{n.cpu_pct.toFixed(0)}%</span>
                     <span className="text-zinc-500 dark:text-zinc-400"> de {fmtCores(n.cpu_cap_cores)}</span></>
                   ) : fmtCores(n.cpu_cap_cores)}
                 </td>
-                <td className="px-2 py-2 font-mono text-xs whitespace-nowrap">
+                <td className="px-3 py-1.5 font-mono text-xs whitespace-nowrap">
                   {d.metrics_available ? (
                     <><span className={memS.text}>{n.mem_pct.toFixed(0)}%</span>
                     <span className="text-zinc-500 dark:text-zinc-400"> de {fmtBytes(n.mem_cap_bytes)}</span></>
                   ) : fmtBytes(n.mem_cap_bytes)}
                 </td>
-                <td className="px-2 py-2 tabular-nums text-xs">{n.pods}/{n.pod_capacity}</td>
-                <td className="px-2 py-2 font-mono text-xs">{n.version}</td>
-                <td className="px-2 py-2 text-xs">{n.age}</td>
+                <td className="px-3 py-1.5 tabular-nums text-xs">{n.pods}/{n.pod_capacity}</td>
+                <td className="px-3 py-1.5 font-mono text-xs">{n.version}</td>
+                <td className="px-3 py-1.5 text-xs">{n.age}</td>
               </tr>
             );
           })}
         </Table>
       </Card>
 
-      <div className="grid lg:grid-cols-3 gap-3">
+      <div className="grid lg:grid-cols-3 gap-2">
         <Card title="Inventory" className="lg:col-span-2">
-          <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-3 md:grid-cols-4 gap-2">
             {Object.keys(INVENTORY_LABELS)
               .filter(k => d.inventory[k] !== undefined)
               .map(k => {
@@ -434,10 +441,10 @@ export default function Page() {
                 const body = (
                   <>
                     <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{label}</p>
-                    <p className="text-xl font-semibold mt-0.5">{d.inventory[k]}</p>
+                    <p className="text-lg font-semibold mt-0.5 tabular-nums">{d.inventory[k]}</p>
                   </>
                 );
-                const cls = "rounded-lg border border-[var(--card-border)] bg-[var(--color-surface-hover)] p-3 block";
+                const cls = "rounded border rule bg-[var(--surface-sunken)] px-2.5 py-2 block";
                 return href
                   ? <a key={k} href={href} className={`${cls} hover:border-brand-green/40 transition`}>{body}</a>
                   : <div key={k} className={cls}>{body}</div>;
