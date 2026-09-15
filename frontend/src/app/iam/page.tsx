@@ -161,6 +161,19 @@ export default function Page() {
     setNewNamespace(""); flash("saved"); load();
   };
 
+  /** Back to unrestricted. Widening access is worth a confirmation, and
+   *  removing the rows is the honest way to say it: empty is how "all" is
+   *  stored, and a second representation of the same state would drift. */
+  const clearScopes = async () => {
+    if (myScopes.length === 0) return;
+    if (!confirm("Give access to every namespace again? The current restriction is removed.")) return;
+    for (const sc of myScopes) {
+      await apiFetch(`/permissions/scopes/${sc.id}`, { method: "DELETE" });
+    }
+    flash("saved");
+    load();
+  };
+
   const removeScope = async (id: number) => {
     await apiFetch(`/permissions/scopes/${id}`, { method: "DELETE" });
     flash("saved"); load();
@@ -299,20 +312,45 @@ export default function Page() {
               <section className="glass-card p-4">
                 <h2 className="text-sm font-semibold">Namespaces</h2>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 mb-3">
-                  {myScopes.length === 0
-                    ? "Unrestricted: sees every namespace."
-                    : `Sees only these ${myScopes.length}.`}
+                  Where they may act. The permissions above decide what.
                 </p>
 
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {myScopes.map(s => (
-                    <span key={s.id} className="inline-flex items-center gap-2 px-2 py-1 rounded-md border border-[var(--card-border)] bg-[var(--color-surface-hover)] text-xs font-mono">
-                      {clusters.find(c => c.id === s.cluster_id)?.name ?? s.cluster_id}
-                      <span className="text-zinc-400">/</span>{s.namespace}
-                      <button onClick={() => removeScope(s.id)} className="text-zinc-500 hover:text-red-500">×</button>
+                {/* "No rows means everywhere" is how this is stored, and nobody
+                    guesses that from an empty list. The choice is stated. */}
+                <div className="space-y-2 mb-3">
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input type="radio" name="scope-mode" checked={myScopes.length === 0}
+                      onChange={() => clearScopes()} className="mt-0.5 accent-brand-green" />
+                    <span className="text-sm">
+                      All namespaces
+                      <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                        Every namespace their permissions already allow.
+                      </span>
                     </span>
-                  ))}
+                  </label>
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input type="radio" name="scope-mode" checked={myScopes.length > 0}
+                      onChange={() => {}} className="mt-0.5 accent-brand-green" />
+                    <span className="text-sm">
+                      Only the ones listed
+                      <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                        Add the first namespace below to switch to this.
+                      </span>
+                    </span>
+                  </label>
                 </div>
+
+                {myScopes.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-3">
+                    {myScopes.map(sc => (
+                      <span key={sc.id} className="inline-flex items-center gap-2 px-2 py-1 rounded-md border border-[var(--card-border)] bg-[var(--color-surface-hover)] text-xs font-mono">
+                        {clusters.find(c => c.id === sc.cluster_id)?.name ?? sc.cluster_id}
+                        <span className="text-zinc-400">/</span>{sc.namespace}
+                        <button onClick={() => removeScope(sc.id)} className="text-zinc-500 hover:text-red-500">×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
 
                 <div className="flex flex-wrap gap-2">
                   <select value={newCluster ?? ""} onChange={e => setNewCluster(Number(e.target.value))}
@@ -331,7 +369,7 @@ export default function Page() {
                 </div>
                 {namespaces.length === 0 && (
                   <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-                    No namespaces came back. If “let the cluster decide” is on without RoleBindings, that is why.
+                    No namespaces came back. If &ldquo;let the cluster decide&rdquo; is on without RoleBindings, that is why.
                   </p>
                 )}
               </section>
