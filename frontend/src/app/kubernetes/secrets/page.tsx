@@ -84,6 +84,8 @@ export default function SecretsPage() {
   const [saveError, setSaveError] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
   const [canWrite, setCanWrite] = useState(false);
+  const [addingTo, setAddingTo] = useState("");
+  const [newKey, setNewKey] = useState("");
 
   useEffect(() => {
     loadPermissions().then(p => setCanWrite(p.size === 0 || p.has(PERMISSIONS.secretsWrite)));
@@ -144,7 +146,7 @@ export default function SecretsPage() {
     setRevealedKeys(prev => ({ ...prev, [mapKey]: j.value }));
   }
 
-  async function saveKey(secretName: string, secretNamespace: string, key: string, acknowledge = false) {
+  async function saveKey(secretName: string, secretNamespace: string, key: string, acknowledge = false, allowNew = false) {
     const mapKey = `${secretNamespace}/${secretName}/${key}`;
     setSaveError(prev => ({ ...prev, [mapKey]: "" }));
     setSaving(prev => ({ ...prev, [mapKey]: true }));
@@ -153,7 +155,7 @@ export default function SecretsPage() {
       method: "PUT",
       body: JSON.stringify({
         password, namespace: secretNamespace, name: secretName, key,
-        value: draft[mapKey] ?? "", acknowledge_managed: acknowledge,
+        value: draft[mapKey] ?? "", acknowledge_managed: acknowledge, allow_new_key: allowNew,
       }),
     });
     setSaving(prev => ({ ...prev, [mapKey]: false }));
@@ -163,7 +165,7 @@ export default function SecretsPage() {
       // An operator owns this Secret: the edit would be reverted on its next
       // refresh, so it asks rather than letting the change quietly undo itself.
       if (body.needs_consent) {
-        if (confirm(`${body.error}\n\nApply anyway?`)) return saveKey(secretName, secretNamespace, key, true);
+        if (confirm(`${body.error}\n\nApply anyway?`)) return saveKey(secretName, secretNamespace, key, true, allowNew);
         return;
       }
       setSaveError(prev => ({ ...prev, [mapKey]: body.error ?? "could not save" }));
@@ -172,6 +174,7 @@ export default function SecretsPage() {
 
     setRevealedKeys(prev => ({ ...prev, [mapKey]: draft[mapKey] ?? "" }));
     setEditing(prev => { const n = { ...prev }; delete n[mapKey]; return n; });
+    if (allowNew) { setAddingTo(""); setNewKey(""); fetchSecrets(); }
     setNote(body.note ?? "");
     setTimeout(() => setNote(""), 6000);
   }
@@ -462,6 +465,34 @@ export default function SecretsPage() {
                     );
                   })}
                 </div>
+
+                {canWrite && (
+                  addingTo === `${s.namespace}/${s.name}` ? (
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
+                      <input value={newKey} onChange={e => setNewKey(e.target.value)} placeholder="new key"
+                        className="text-xs font-mono px-2 py-1.5 rounded bg-[var(--input-bg)] border border-[var(--input-border)] text-[var(--input-fg)] focus:outline-none focus:border-brand-green/50 w-40" />
+                      <input value={draft[`${s.namespace}/${s.name}/${newKey}`] ?? ""}
+                        onChange={e => setDraft(prev => ({ ...prev, [`${s.namespace}/${s.name}/${newKey}`]: e.target.value }))}
+                        placeholder="value"
+                        className="flex-1 min-w-[160px] text-xs font-mono px-2 py-1.5 rounded bg-[var(--input-bg)] border border-[var(--input-border)] text-[var(--input-fg)] focus:outline-none focus:border-brand-green/50" />
+                      <button onClick={() => saveKey(s.name, s.namespace, newKey, false, true)}
+                        disabled={!newKey || s.keys.includes(newKey)}
+                        className="text-xs text-brand-green hover:opacity-80 disabled:opacity-40">
+                        {s.keys.includes(newKey) ? "key exists" : "Add"}
+                      </button>
+                      <button onClick={() => { setAddingTo(""); setNewKey(""); }}
+                        className="text-xs text-zinc-500 hover:text-zinc-300">Cancel</button>
+                      {saveError[`${s.namespace}/${s.name}/${newKey}`] && (
+                        <span className="text-xs text-red-500 w-full">{saveError[`${s.namespace}/${s.name}/${newKey}`]}</span>
+                      )}
+                    </div>
+                  ) : (
+                    <button onClick={() => setAddingTo(`${s.namespace}/${s.name}`)}
+                      className="mt-2 text-xs text-zinc-500 hover:text-brand-green transition">
+                      + Add key
+                    </button>
+                  )
+                )}
               </div>
             ))}
           </div>

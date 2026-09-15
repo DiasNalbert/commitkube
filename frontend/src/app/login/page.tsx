@@ -12,7 +12,9 @@ export default function LoginPage() {
   const [mfaCode, setMfaCode] = useState("");
   const [step, setStep] = useState<"credentials" | "mfa">("credentials");
   const [error, setError] = useState("");
-  const [tempUserId, setTempUserId] = useState<number>(0);
+  // Issued by the login call, which already checked the password. Naming
+  // the account here instead would make the code the only factor.
+  const [mfaToken, setMfaToken] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,13 +31,13 @@ export default function LoginPage() {
         if (!res.ok) throw new Error(data.error || "Login failed");
 
         if (data.setup_required) {
-          localStorage.setItem("setup_user_id", String(data.temp_user_id));
+          localStorage.setItem("setup_token", data.setup_token);
           localStorage.setItem("setup_is_bootstrap", String(data.is_bootstrap));
           window.location.href = "/setup";
           return;
         }
 
-        setTempUserId(data.temp_user_id);
+        setMfaToken(data.mfa_token);
         setStep("mfa");
       } catch (err: any) {
         setError(err.message);
@@ -45,7 +47,7 @@ export default function LoginPage() {
         const res = await fetch(`${API}/auth/verify-mfa`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user_id: tempUserId, code: mfaCode }),
+          body: JSON.stringify({ mfa_token: mfaToken, code: mfaCode }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "MFA validation failed");
