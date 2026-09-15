@@ -301,6 +301,7 @@ func main() {
 	get(api, "/kubernetes/manifest/:kind/:name", handlers.PermK8sRead, handlers.GetK8sManifest)
 	get(api, "/kubernetes/detail/:kind/:name", handlers.PermK8sRead, handlers.GetK8sResourceDetail)
 	get(api, "/kubernetes/cluster-overview", handlers.PermK8sRead, handlers.GetClusterOverview)
+	get(api, "/kubernetes/pod-security", handlers.PermSecurityRead, handlers.GetPodSecurity)
 
 	get(api, "/clusters", handlers.PermK8sRead, handlers.ListClusters)
 	post(api, "/clusters", handlers.PermClusterWrite, handlers.CreateCluster)

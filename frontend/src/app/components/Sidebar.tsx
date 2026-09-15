@@ -224,6 +224,7 @@ const kubernetesItems = [
   { href: "/kubernetes/statefulsets", label: "StatefulSets", icon: <IconStatefulSet />, perm: P.k8sRead },
   { href: "/kubernetes/triage", label: "Triage", icon: <IconTriage />, perm: P.k8sRead },
   { href: "/kubernetes/pvcs", label: "Volume Claims", icon: <IconVolume />, perm: P.k8sRead },
+  { href: "/security/workloads", label: "Workload Security", icon: <IconShield />, perm: P.securityRead },
   { href: "/kubernetes/workloads", label: "Workloads", icon: <IconActivity />, perm: P.k8sRead },
 ];
 
