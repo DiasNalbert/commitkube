@@ -147,11 +147,15 @@ func pollWorkloadsFor(cl *models.Cluster) {
 	// One query for the previous sample of every workload, instead of one per
 	// workload: at a few hundred workloads the difference is the whole poll.
 	var previous []models.WorkloadSnapshot
+	// Same reason as the pod query: the index is on recorded_at, so grouping
+	// by MAX(id) forces a full scan of a table that grows all day.
 	db.DB.Raw(`
-		SELECT * FROM workload_snapshots
-		WHERE cluster_id = ?
-		  AND id IN (SELECT MAX(id) FROM workload_snapshots WHERE cluster_id = ? GROUP BY namespace, kind, name)
-	`, cl.ID, cl.ID).Scan(&previous)
+		SELECT * FROM (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY namespace, kind, name ORDER BY recorded_at DESC) AS rn
+			FROM workload_snapshots
+			WHERE cluster_id = ?
+		) WHERE rn = 1
+	`, cl.ID).Scan(&previous)
 	prevByKey := map[string]models.WorkloadSnapshot{}
 	for _, p := range previous {
 		prevByKey[p.Namespace+"/"+p.Kind+"/"+p.Name] = p

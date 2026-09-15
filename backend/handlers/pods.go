@@ -119,11 +119,19 @@ func lastThrottlingByPod(clusterID uint) map[string]float64 {
 		ThrottledPct float64
 	}
 	var rows []row
+	// Ordered by recorded_at, not by MAX(id). The index is on
+	// (cluster_id, namespace, pod_name, recorded_at), so grouping by id meant
+	// the planner could not use it and scanned the whole table -- which is how
+	// this took twelve seconds on a few hundred thousand rows that should have
+	// been an index seek.
 	db.DB.Raw(`
-		SELECT namespace, pod_name, throttled_pct FROM pod_snapshots
-		WHERE cluster_id = ?
-		  AND id IN (SELECT MAX(id) FROM pod_snapshots WHERE cluster_id = ? GROUP BY namespace, pod_name)
-	`, clusterID, clusterID).Scan(&rows)
+		SELECT namespace, pod_name, throttled_pct FROM (
+			SELECT namespace, pod_name, throttled_pct,
+				ROW_NUMBER() OVER (PARTITION BY namespace, pod_name ORDER BY recorded_at DESC) AS rn
+			FROM pod_snapshots
+			WHERE cluster_id = ?
+		) WHERE rn = 1
+	`, clusterID).Scan(&rows)
 
 	out := make(map[string]float64, len(rows))
 	for _, r := range rows {
