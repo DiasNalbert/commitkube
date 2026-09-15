@@ -27,7 +27,7 @@ export default function ThemeToggle() {
     <button
       onClick={toggle}
       title={dark ? "Mudar para modo claro" : "Mudar para modo escuro"}
-      className="w-8 h-8 flex items-center justify-center rounded-full border border-brand-green/30 hover:bg-brand-green/10 hover:scale-110 active:scale-95 transition-all duration-150 text-base"
+      className="w-7 h-7 flex items-center justify-center rounded border border-brand-green/30 hover:bg-brand-green/10 transition-colors duration-100 text-sm"
     >
       {dark ? "☀️" : "🌙"}
     </button>
