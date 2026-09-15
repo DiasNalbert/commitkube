@@ -138,6 +138,12 @@ func DeleteGroup(c *fiber.Ctx) error {
 	db.DB.Delete(&g)
 	db.DB.Where("group_id = ?", gID).Delete(&models.UserGroupMember{})
 	db.DB.Where("group_id = ?", gID).Delete(&models.UserGroupWorkspace{})
+	// Same reasoning as deleting a user: a freed id that a future group lands
+	// on would inherit these. The cluster RoleBinding is not touched -- it
+	// lives in the cluster and removing it is a cluster action, so the UI says
+	// so rather than deleting something nobody asked to delete.
+	db.DB.Where("subject_type = ? AND subject_id = ?", "group", gID).Delete(&models.PermissionGrant{})
+	db.DB.Where("subject_type = ? AND subject_id = ?", "group", gID).Delete(&models.NamespaceScope{})
 	return c.JSON(fiber.Map{"message": "group deleted"})
 }
 

@@ -335,7 +335,6 @@ func main() {
 	get(api, "/permissions/scopes", handlers.PermIAMManage, handlers.ListNamespaceScopes)
 	post(api, "/permissions/scopes", handlers.PermIAMManage, handlers.AddNamespaceScope)
 	del(api, "/permissions/scopes/:id", handlers.PermIAMManage, handlers.RemoveNamespaceScope)
-	get(api, "/rbac/templates", handlers.PermIAMManage, handlers.ListRBACTemplates)
 	get(api, "/rbac/preview", handlers.PermIAMManage, handlers.PreviewClusterRBAC)
 	post(api, "/rbac/apply", handlers.PermIAMManage, handlers.ApplyClusterRBAC)
 

@@ -11,6 +11,7 @@ import (
 	"github.com/kubecommit/backend/models"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/yaml"
 )
 
@@ -32,45 +33,68 @@ type rbacTemplate struct {
 	Rules       []rbacv1.PolicyRule
 }
 
-var rbacTemplates = map[string]rbacTemplate{
-	"viewer": {
-		Name:        "viewer",
-		Description: "Ver workloads, pods e serviços do namespace. Não lê log nem Secret.",
-		Rules: []rbacv1.PolicyRule{
-			{APIGroups: []string{""}, Resources: []string{"pods", "services", "configmaps", "persistentvolumeclaims", "events"}, Verbs: []string{"get", "list", "watch"}},
-			{APIGroups: []string{"apps"}, Resources: []string{"deployments", "replicasets", "statefulsets", "daemonsets"}, Verbs: []string{"get", "list", "watch"}},
-			{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"ingresses"}, Verbs: []string{"get", "list", "watch"}},
-		},
-	},
-	"operator": {
-		Name:        "operator",
-		Description: "Tudo do viewer, mais ler log, reiniciar pod e escalar workload.",
-		Rules: []rbacv1.PolicyRule{
-			{APIGroups: []string{""}, Resources: []string{"pods", "services", "configmaps", "persistentvolumeclaims", "events"}, Verbs: []string{"get", "list", "watch"}},
-			{APIGroups: []string{""}, Resources: []string{"pods/log"}, Verbs: []string{"get"}},
-			{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
-			{APIGroups: []string{"apps"}, Resources: []string{"deployments", "replicasets", "statefulsets", "daemonsets"}, Verbs: []string{"get", "list", "watch"}},
-			{APIGroups: []string{"apps"}, Resources: []string{"deployments/scale", "statefulsets/scale"}, Verbs: []string{"get", "update"}},
-			{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"ingresses"}, Verbs: []string{"get", "list", "watch"}},
-		},
-	},
-	"secret-reader": {
-		Name:        "secret-reader",
-		Description: "Ler o valor de Secrets do namespace. Conceda isoladamente.",
-		Rules: []rbacv1.PolicyRule{
-			{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list"}},
-		},
-	},
+// The rules are derived from the permissions the subject already holds, not
+// chosen a second time. Asking twice is how the two halves drift: someone
+// grants k8s.scale here and forgets the binding there, and the product says
+// yes while the cluster says no.
+//
+// Only the k8s.* permissions have a cluster meaning. scm.read and settings.write
+// describe this product and translate to nothing.
+func rulesForPermissions(held map[string]bool) []rbacv1.PolicyRule {
+	rules := []rbacv1.PolicyRule{}
+
+	if held[PermK8sRead] {
+		rules = append(rules,
+			rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods", "services", "configmaps", "persistentvolumeclaims", "events"}, Verbs: []string{"get", "list", "watch"}},
+			rbacv1.PolicyRule{APIGroups: []string{"apps"}, Resources: []string{"deployments", "replicasets", "statefulsets", "daemonsets"}, Verbs: []string{"get", "list", "watch"}},
+			rbacv1.PolicyRule{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"ingresses"}, Verbs: []string{"get", "list", "watch"}},
+			rbacv1.PolicyRule{APIGroups: []string{"batch"}, Resources: []string{"jobs", "cronjobs"}, Verbs: []string{"get", "list", "watch"}},
+		)
+	}
+	if held[PermK8sLogsRead] {
+		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/log"}, Verbs: []string{"get"}})
+	}
+	if held[PermK8sPodDelete] {
+		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}})
+	}
+	if held[PermK8sScale] {
+		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{"apps"}, Resources: []string{"deployments/scale", "statefulsets/scale"}, Verbs: []string{"get", "update"}})
+	}
+	// Kubernetes has no "names without values" on Secrets: list returns the
+	// objects. So both secret permissions map to the same cluster rule, and
+	// the difference between seeing a key and seeing a value is enforced by
+	// CommitKube masking, not by the cluster. Said out loud in the UI, because
+	// assuming otherwise is the kind of mistake that matters.
+	if held[PermK8sSecretsRead] || held[PermK8sSecretsShow] {
+		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list"}})
+	}
+	return rules
 }
 
-func roleName(template string) string { return "commitkube-" + template }
-func bindingName(group, template string) string {
-	return "commitkube-" + sanitize(group) + "-" + template
+// permissionsForSubject resolves what a group or user holds, so the rules can
+// be derived from the same answer the product itself enforces.
+func permissionsForSubject(subjectType string, subjectID uint) map[string]bool {
+	if subjectType == "user" {
+		var u models.User
+		if err := db.DB.First(&u, subjectID).Error; err != nil {
+			return map[string]bool{}
+		}
+		return permissionsFor(u.ID, u.Role)
+	}
+	held := map[string]bool{}
+	var grants []models.PermissionGrant
+	db.DB.Where("subject_type = ? AND subject_id = ?", "group", subjectID).Find(&grants)
+	for _, g := range grants {
+		held[g.Permission] = true
+	}
+	return held
 }
+
+func roleName(groupName string) string    { return "commitkube-" + sanitize(groupName) }
+func bindingName(groupName string) string { return "commitkube-" + sanitize(groupName) }
 
 // sanitize turns a CommitKube group name into something Kubernetes accepts as
-// an object name, without pretending the result is unique on its own -- the
-// binding name carries the template too.
+// an object name.
 func sanitize(s string) string {
 	out := strings.Map(func(r rune) rune {
 		switch {
@@ -86,33 +110,51 @@ func sanitize(s string) string {
 	return strings.Trim(out, "-")
 }
 
-func buildRBAC(groupName, namespace, template string) (*rbacv1.Role, *rbacv1.RoleBinding, error) {
-	tpl, ok := rbacTemplates[template]
-	if !ok {
-		names := make([]string, 0, len(rbacTemplates))
-		for k := range rbacTemplates {
-			names = append(names, k)
-		}
-		sort.Strings(names)
-		return nil, nil, fmt.Errorf("unknown template %q; known: %s", template, strings.Join(names, ", "))
+// AllNamespaces is the namespace value that means cluster-wide. A Role cannot
+// span namespaces, so this produces a ClusterRole and a ClusterRoleBinding
+// instead -- the same rules, unbounded.
+const AllNamespaces = "*"
+
+// buildRBAC returns the objects for one group, derived from what that group
+// already holds. Returns interface{} because the cluster-wide case is a
+// different pair of kinds, and pretending otherwise would mean two functions
+// that drift.
+func buildRBAC(groupName, namespace string, rules []rbacv1.PolicyRule) (role, binding interface{}, err error) {
+	if len(rules) == 0 {
+		return nil, nil, fmt.Errorf("this group holds no Kubernetes permission, so there is nothing to bind; grant k8s.read first")
 	}
 
-	role := &rbacv1.Role{
+	subject := rbacv1.Subject{
+		Kind: "Group", Name: ImpersonationGroup(groupName), APIGroup: "rbac.authorization.k8s.io",
+	}
+
+	if namespace == AllNamespaces {
+		cr := &rbacv1.ClusterRole{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
+			ObjectMeta: metav1.ObjectMeta{Name: roleName(groupName)},
+			Rules:      rules,
+		}
+		crb := &rbacv1.ClusterRoleBinding{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
+			ObjectMeta: metav1.ObjectMeta{Name: bindingName(groupName)},
+			Subjects:   []rbacv1.Subject{subject},
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: roleName(groupName), APIGroup: "rbac.authorization.k8s.io"},
+		}
+		return cr, crb, nil
+	}
+
+	r := &rbacv1.Role{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
-		ObjectMeta: metav1.ObjectMeta{Name: roleName(template), Namespace: namespace},
-		Rules:      tpl.Rules,
+		ObjectMeta: metav1.ObjectMeta{Name: roleName(groupName), Namespace: namespace},
+		Rules:      rules,
 	}
-	binding := &rbacv1.RoleBinding{
+	rb := &rbacv1.RoleBinding{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName(groupName, template), Namespace: namespace},
-		Subjects: []rbacv1.Subject{{
-			Kind:     "Group",
-			Name:     ImpersonationGroup(groupName),
-			APIGroup: "rbac.authorization.k8s.io",
-		}},
-		RoleRef: rbacv1.RoleRef{Kind: "Role", Name: roleName(template), APIGroup: "rbac.authorization.k8s.io"},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName(groupName), Namespace: namespace},
+		Subjects:   []rbacv1.Subject{subject},
+		RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: roleName(groupName), APIGroup: "rbac.authorization.k8s.io"},
 	}
-	return role, binding, nil
+	return r, rb, nil
 }
 
 // impersonationClusterRole is the rule CommitKube's own credential needs, and
@@ -143,8 +185,7 @@ func impersonationClusterRole(groupNames []string) *rbacv1.ClusterRole {
 				Verbs:     []string{"impersonate"},
 				// Users are named per person and the list would change with
 				// every hire, so the bindings carry the groups and the user
-				// name exists only to land in the audit log. Narrow this to
-				// explicit names if you would rather not allow the shape.
+				// name exists only to land in the audit log.
 				ResourceNames: nil,
 			},
 		},
@@ -201,28 +242,24 @@ func toYAML(objs ...interface{}) (string, error) {
 
 // ---- HTTP -----------------------------------------------------------------
 
-func ListRBACTemplates(c *fiber.Ctx) error {
-	out := make([]fiber.Map, 0, len(rbacTemplates))
-	names := make([]string, 0, len(rbacTemplates))
-	for k := range rbacTemplates {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		out = append(out, fiber.Map{"name": n, "description": rbacTemplates[n].Description})
-	}
-	return c.JSON(fiber.Map{"templates": out})
-}
-
-// PreviewClusterRBAC returns the manifest without touching the cluster. It
-// needs no cluster privilege at all, which is the point: a team that does not
-// want CommitKube writing RBAC can still get the exact YAML to apply.
+// PreviewClusterRBAC returns the manifest without touching the cluster, and
+// needs no cluster privilege at all -- enough for a team that would rather
+// apply it themselves.
 func PreviewClusterRBAC(c *fiber.Ctx) error {
-	group, namespace, template := c.Query("group"), c.Query("namespace"), c.Query("template", "viewer")
+	group := c.Query("group")
+	namespace := c.Query("namespace")
 	if group == "" || namespace == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "group and namespace are required"})
 	}
-	role, binding, err := buildRBAC(group, namespace, template)
+
+	var g models.UserGroup
+	if err := db.DB.Where("name = ?", group).First(&g).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "group not found"})
+	}
+
+	held := permissionsForSubject("group", g.ID)
+	rules := rulesForPermissions(held)
+	role, binding, err := buildRBAC(group, namespace, rules)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -230,7 +267,13 @@ func PreviewClusterRBAC(c *fiber.Ctx) error {
 	var groupNames []string
 	db.DB.Model(&models.UserGroup{}).Pluck("name", &groupNames)
 
-	manifest, err := toYAML(role, binding, clusterReaderRole(), clusterReaderBinding(group))
+	objs := []interface{}{role, binding}
+	// The cluster-scoped reader is only needed alongside a namespaced binding:
+	// a cluster-wide grant already covers listing namespaces and nodes.
+	if namespace != AllNamespaces {
+		objs = append(objs, clusterReaderRole(), clusterReaderBinding(group))
+	}
+	manifest, err := toYAML(objs...)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -239,21 +282,31 @@ func PreviewClusterRBAC(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	// What the rules came from, so the reader can see the derivation rather
+	// than take the YAML on faith.
+	from := []string{}
+	for _, p := range []string{PermK8sRead, PermK8sLogsRead, PermK8sPodDelete, PermK8sScale, PermK8sSecretsRead, PermK8sSecretsShow} {
+		if held[p] {
+			from = append(from, p)
+		}
+	}
+
 	return c.JSON(fiber.Map{
 		"manifest":            manifest,
 		"impersonator":        impersonator,
 		"impersonation_group": ImpersonationGroup(group),
+		"derived_from":        from,
+		"cluster_wide":        namespace == AllNamespaces,
 	})
 }
 
-// ApplyClusterRBAC writes it. Two gates, both deliberate: iam.manage on the
-// route, which only root holds, and the cluster's own opt-in flag.
+// ApplyClusterRBAC writes it. Two gates: iam.manage on the route, which only
+// root holds, and the cluster's own opt-in flag.
 func ApplyClusterRBAC(c *fiber.Ctx) error {
 	var req struct {
 		ClusterID uint   `json:"cluster_id"`
 		Group     string `json:"group"`
 		Namespace string `json:"namespace"`
-		Template  string `json:"template"`
 	}
 	if err := c.BodyParser(&req); err != nil || req.Group == "" || req.Namespace == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cluster_id, group and namespace are required"})
@@ -265,11 +318,16 @@ func ApplyClusterRBAC(c *fiber.Ctx) error {
 	}
 	if !cl.CanManageRBAC {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-			"error": "this cluster does not allow CommitKube to write RBAC; use the preview and apply it yourself, or enable it on the cluster",
+			"error": "este cluster não permite que o CommitKube escreva RBAC; use o manifesto e aplique você mesmo, ou libere na caixa abaixo",
 		})
 	}
 
-	role, binding, err := buildRBAC(req.Group, req.Namespace, req.Template)
+	var g models.UserGroup
+	if err := db.DB.Where("name = ?", req.Group).First(&g).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "group not found"})
+	}
+	rules := rulesForPermissions(permissionsForSubject("group", g.ID))
+	role, binding, err := buildRBAC(req.Group, req.Namespace, rules)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -280,49 +338,77 @@ func ApplyClusterRBAC(c *fiber.Ctx) error {
 	}
 	ctx := context.Background()
 
-	if _, err := typed.RbacV1().Roles(req.Namespace).Create(ctx, role, metav1.CreateOptions{}); err != nil {
-		if !strings.Contains(err.Error(), "already exists") {
-			return k8sError(c, err)
-		}
-		if _, err := typed.RbacV1().Roles(req.Namespace).Update(ctx, role, metav1.UpdateOptions{}); err != nil {
-			return k8sError(c, err)
-		}
-	}
-	if _, err := typed.RbacV1().RoleBindings(req.Namespace).Create(ctx, binding, metav1.CreateOptions{}); err != nil {
-		if !strings.Contains(err.Error(), "already exists") {
-			return k8sError(c, err)
-		}
-		// A RoleBinding's roleRef is immutable, so an existing one is replaced
-		// rather than updated -- otherwise a template change would fail here
-		// with an error that reads like a bug.
-		if err := typed.RbacV1().RoleBindings(req.Namespace).
-			Delete(ctx, binding.Name, metav1.DeleteOptions{}); err != nil {
-			return k8sError(c, err)
-		}
-		if _, err := typed.RbacV1().RoleBindings(req.Namespace).
-			Create(ctx, binding, metav1.CreateOptions{}); err != nil {
-			return k8sError(c, err)
-		}
-	}
-
-	// Without the cluster-scoped reader, the namespace filter, the Nodes page
-	// and the Cluster Overview come back empty and it looks like a bug.
-	crole := clusterReaderRole()
-	if _, err := typed.RbacV1().ClusterRoles().Create(ctx, crole, metav1.CreateOptions{}); err != nil &&
-		!strings.Contains(err.Error(), "already exists") {
+	if err := applyRBACObjects(ctx, typed, req.Namespace, role, binding); err != nil {
 		return k8sError(c, err)
 	}
-	cbinding := clusterReaderBinding(req.Group)
-	if _, err := typed.RbacV1().ClusterRoleBindings().Create(ctx, cbinding, metav1.CreateOptions{}); err != nil &&
-		!strings.Contains(err.Error(), "already exists") {
-		return k8sError(c, err)
+	if req.Namespace != AllNamespaces {
+		if err := applyRBACObjects(ctx, typed, AllNamespaces, clusterReaderRole(), clusterReaderBinding(req.Group)); err != nil {
+			return k8sError(c, err)
+		}
 	}
 
 	db.LogAudit(currentUserID(c), "apply_cluster_rbac", "cluster", cl.Name,
-		fmt.Sprintf(`{"group":"%s","namespace":"%s","template":"%s"}`, req.Group, req.Namespace, req.Template), c.IP())
+		fmt.Sprintf(`{"group":"%s","namespace":"%s"}`, req.Group, req.Namespace), c.IP())
 
 	return c.JSON(fiber.Map{
-		"message":             fmt.Sprintf("%s applied for %s in %s", req.Template, req.Group, req.Namespace),
+		"message":             fmt.Sprintf("RBAC aplicado para %s em %s", req.Group, req.Namespace),
 		"impersonation_group": ImpersonationGroup(req.Group),
 	})
+}
+
+// applyRBACObjects creates or replaces one role/binding pair. A RoleBinding's
+// roleRef is immutable, so an existing binding is replaced rather than
+// updated: otherwise a permission change fails here with an error that reads
+// like a bug.
+func applyRBACObjects(ctx context.Context, typed *kubernetes.Clientset, namespace string, role, binding interface{}) error {
+	exists := func(err error) bool { return err != nil && strings.Contains(err.Error(), "already exists") }
+
+	switch r := role.(type) {
+	case *rbacv1.Role:
+		if _, err := typed.RbacV1().Roles(namespace).Create(ctx, r, metav1.CreateOptions{}); err != nil {
+			if !exists(err) {
+				return err
+			}
+			if _, err := typed.RbacV1().Roles(namespace).Update(ctx, r, metav1.UpdateOptions{}); err != nil {
+				return err
+			}
+		}
+	case *rbacv1.ClusterRole:
+		if _, err := typed.RbacV1().ClusterRoles().Create(ctx, r, metav1.CreateOptions{}); err != nil {
+			if !exists(err) {
+				return err
+			}
+			if _, err := typed.RbacV1().ClusterRoles().Update(ctx, r, metav1.UpdateOptions{}); err != nil {
+				return err
+			}
+		}
+	}
+
+	switch b := binding.(type) {
+	case *rbacv1.RoleBinding:
+		if _, err := typed.RbacV1().RoleBindings(namespace).Create(ctx, b, metav1.CreateOptions{}); err != nil {
+			if !exists(err) {
+				return err
+			}
+			if err := typed.RbacV1().RoleBindings(namespace).Delete(ctx, b.Name, metav1.DeleteOptions{}); err != nil {
+				return err
+			}
+			if _, err := typed.RbacV1().RoleBindings(namespace).Create(ctx, b, metav1.CreateOptions{}); err != nil {
+				return err
+			}
+		}
+	case *rbacv1.ClusterRoleBinding:
+		if _, err := typed.RbacV1().ClusterRoleBindings().Create(ctx, b, metav1.CreateOptions{}); err != nil {
+			if !exists(err) {
+				return err
+			}
+			if err := typed.RbacV1().ClusterRoleBindings().Delete(ctx, b.Name, metav1.DeleteOptions{}); err != nil {
+				return err
+			}
+			if _, err := typed.RbacV1().ClusterRoleBindings().Create(ctx, b, metav1.CreateOptions{}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

@@ -111,7 +111,14 @@ func DeleteUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Admins cannot delete other admins"})
 	}
 
+	// Everything keyed to this user goes with it. Leaving grants and scopes
+	// behind is not just untidy: ids are assigned by the database, and a
+	// future user landing on a freed id would silently inherit what this one
+	// was allowed to do.
 	db.DB.Where("user_id = ?", target.ID).Delete(&models.RefreshToken{})
+	db.DB.Where("user_id = ?", target.ID).Delete(&models.UserGroupMember{})
+	db.DB.Where("subject_type = ? AND subject_id = ?", "user", target.ID).Delete(&models.PermissionGrant{})
+	db.DB.Where("subject_type = ? AND subject_id = ?", "user", target.ID).Delete(&models.NamespaceScope{})
 	db.DB.Unscoped().Delete(&target)
 
 	db.LogAudit(caller.ID, "delete_user", "user", target.Email, "", c.IP())
