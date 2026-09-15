@@ -12,12 +12,12 @@ const ALL_NAMESPACES = "*";
  *  apply by hand -- the preview needs no privilege, and is shown before
  *  anything is written, because a product that silently creates RoleBindings
  *  is a product nobody should install. */
-export default function ClusterRBAC({ groups, clusters, onChanged }: {
+export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }: {
   groups: Group[];
   clusters: ClusterRow[];
+  namespaces: string[];
   onChanged: () => void;
 }) {
-  const [namespaces, setNamespaces] = useState<string[]>([]);
   const [derivedFrom, setDerivedFrom] = useState<string[]>([]);
   const [clusterID, setClusterID] = useState<number | null>(null);
   const [group, setGroup] = useState("");
@@ -29,13 +29,6 @@ export default function ClusterRBAC({ groups, clusters, onChanged }: {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  // The namespaces of the selected cluster, so nobody has to type one from
-  // memory and discover the typo only when the page stays empty.
-  useEffect(() => {
-    if (clusterID === null) return;
-    apiFetch(`/kubernetes/namespaces?cluster=${clusterID}`)
-      .then(r => r.json()).then(b => setNamespaces(b.namespaces ?? [])).catch(() => setNamespaces([]));
-  }, [clusterID]);
   useEffect(() => {
     if (clusterID === null && clusters.length > 0) setClusterID(clusters[0].id);
   }, [clusters, clusterID]);
@@ -170,33 +163,26 @@ export default function ClusterRBAC({ groups, clusters, onChanged }: {
       )}
 
       {cluster && (
-        <div className="pt-3 border-t border-[var(--card-border)] space-y-2">
+        <div className="pt-3 border-t border-[var(--card-border)] space-y-3">
           <label className="flex items-start gap-3 text-sm cursor-pointer">
             <input type="checkbox" checked={cluster.impersonate} className="mt-0.5 accent-brand-green"
               onChange={e => toggle("impersonate", e.target.checked)} />
             <span>
-              Falar com o cluster como a pessoa que pediu
+              Deixar o cluster decidir
               <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                Listar, ler manifesto, ver log, revelar Secret, deletar, reiniciar e escalar passam a ser
-                decididos pelo RBAC de quem pediu, e o audit log do cluster passa a ter nome de gente.
-                <strong className="block mt-1 text-amber-600 dark:text-amber-400">
-                  Ligue só depois que os RoleBindings existirem: sem binding, as páginas ficam vazias — por
-                  política, não por defeito.
-                </strong>
-                <span className="block mt-1">
-                  Não cobre Triage, Service Map nem histórico: esses dados foram colhidos pelo coletor antes da
-                  requisição existir, e ali o filtro de namespace do CommitKube é a única cerca.
-                </span>
+                Sem isto, o CommitKube usa a própria credencial e decide sozinho. Com isto, cada pessoa fala
+                com o cluster em nome dela. Marque depois de aplicar o manifesto acima.
               </span>
             </span>
           </label>
+
           <label className="flex items-start gap-3 text-sm cursor-pointer">
             <input type="checkbox" checked={cluster.can_manage_rbac} className="mt-0.5 accent-amber-500"
               onChange={e => toggle("can_manage_rbac", e.target.checked)} />
             <span>
-              Permitir que o CommitKube escreva RBAC neste cluster
-              <span className="block text-xs text-amber-600 dark:text-amber-400">
-                É o privilégio mais forte que o produto pode ter: quem escreve RoleBinding escreve um para si.
+              Deixar o CommitKube aplicar sozinho
+              <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                Sem isto, você aplica o manifesto com <code>kubectl</code>. Com isto, o botão acima faz por você.
               </span>
             </span>
           </label>

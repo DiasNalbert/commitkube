@@ -246,9 +246,7 @@ const mainItems = [
 ];
 
 const adminItems = [
-  { href: "/access", label: "Access", icon: <IconShield />, perm: P.iamManage },
-  { href: "/groups", label: "Groups", icon: <IconGroups />, perm: P.userManage },
-  { href: "/users", label: "Users", icon: <IconUsers />, perm: P.userManage },
+  { href: "/iam", label: "IAM", icon: <IconShield />, perm: P.userManage },
 ];
 
 // Sub-routes that belong to a group but are not themselves nav entries, so the

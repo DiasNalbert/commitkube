@@ -106,21 +106,27 @@ func permissionsFor(userID uint, role string) map[string]bool {
 		held[p] = true
 	}
 
-	var grants []models.PermissionGrant
-	db.DB.Where("subject_type = ? AND subject_id = ?", "user", userID).Find(&grants)
-	for _, g := range grants {
-		held[g.Permission] = true
-	}
-
+	// Groups first, then the user's own rows, so a decision made about one
+	// person wins over one made about a team they happen to be in.
 	var groupIDs []uint
 	db.DB.Model(&models.UserGroupMember{}).Where("user_id = ?", userID).Pluck("group_id", &groupIDs)
 	if len(groupIDs) > 0 {
 		var groupGrants []models.PermissionGrant
 		db.DB.Where("subject_type = ? AND subject_id IN ?", "group", groupIDs).Find(&groupGrants)
 		for _, g := range groupGrants {
-			held[g.Permission] = true
+			held[g.Permission] = !g.Denied
 		}
 	}
+
+	var grants []models.PermissionGrant
+	db.DB.Where("subject_type = ? AND subject_id = ?", "user", userID).Find(&grants)
+	for _, g := range grants {
+		held[g.Permission] = !g.Denied
+	}
+
+	// Editing the policy is the one thing a grant cannot confer, whatever the
+	// rows say: root-only stops being a rule the moment it is grantable.
+	held[PermIAMManage] = role == "root"
 	return held
 }
 
@@ -221,6 +227,10 @@ func GrantPermission(c *fiber.Ctx) error {
 		SubjectType string `json:"subject_type"` // user | group
 		SubjectID   uint   `json:"subject_id"`
 		Permission  string `json:"permission"`
+		// Denied writes a subtraction instead of an addition, which is how a
+		// permission that arrives with the role is taken away from one person
+		// without demoting them.
+		Denied bool `json:"denied"`
 	}
 	if err := c.BodyParser(&req); err != nil || req.SubjectID == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "subject_type, subject_id and permission are required"})
@@ -234,13 +244,19 @@ func GrantPermission(c *fiber.Ctx) error {
 
 	grant := models.PermissionGrant{
 		SubjectType: req.SubjectType, SubjectID: req.SubjectID,
-		Permission: req.Permission, GrantedBy: currentUserID(c),
+		Permission: req.Permission, Denied: req.Denied, GrantedBy: currentUserID(c),
 	}
 	if err := db.DB.Where("subject_type = ? AND subject_id = ? AND permission = ?",
-		req.SubjectType, req.SubjectID, req.Permission).FirstOrCreate(&grant).Error; err != nil {
+		req.SubjectType, req.SubjectID, req.Permission).
+		Assign(map[string]interface{}{"denied": req.Denied, "granted_by": currentUserID(c)}).
+		FirstOrCreate(&grant).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	db.LogAudit(currentUserID(c), "grant_permission", req.SubjectType,
+	action := "grant_permission"
+	if req.Denied {
+		action = "deny_permission"
+	}
+	db.LogAudit(currentUserID(c), action, req.SubjectType,
 		fmt.Sprintf("%d", req.SubjectID), `{"permission":"`+req.Permission+`"}`, c.IP())
 	return c.Status(fiber.StatusCreated).JSON(grant)
 }
