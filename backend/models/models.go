@@ -217,6 +217,18 @@ type Cluster struct {
 	InsecureTLS bool `gorm:"default:false" json:"insecure_tls"`
 	IsDefault   bool `gorm:"default:false" json:"is_default"`
 	CreatedBy   uint `json:"created_by"`
+
+	// ImpersonateWrites makes writes run as the person who asked for them
+	// rather than as the collector. Off by default: a cluster with no RBAC
+	// bound to the ck: identities would refuse every write the moment this
+	// shipped, so turning it on is a deliberate act taken once the bindings
+	// exist.
+	ImpersonateWrites bool `gorm:"default:false" json:"impersonate_writes"`
+	// CanManageRBAC lets CommitKube create Roles and RoleBindings here. It is
+	// the strongest privilege the product can hold -- whoever can write a
+	// RoleBinding can write themselves one -- so it is opt-in per cluster,
+	// and the YAML preview works without it.
+	CanManageRBAC bool `gorm:"default:false" json:"can_manage_rbac"`
 }
 
 // PermissionGrant attaches one permission to a user or a group, on top of

@@ -287,6 +287,7 @@ func main() {
 	get(api, "/clusters", handlers.PermK8sRead, handlers.ListClusters)
 	post(api, "/clusters", handlers.PermClusterWrite, handlers.CreateCluster)
 	del(api, "/clusters/:id", handlers.PermClusterWrite, handlers.DeleteCluster)
+	put(api, "/clusters/:id/flags", handlers.PermIAMManage, handlers.UpdateClusterFlags)
 
 	get(api, "/kubernetes/pods/logs", handlers.PermK8sLogsRead, handlers.GetPodLogs)
 	get(api, "/kubernetes/pods/logs/stream", handlers.PermK8sLogsRead, handlers.StreamPodLogs)
@@ -334,6 +335,9 @@ func main() {
 	get(api, "/permissions/scopes", handlers.PermIAMManage, handlers.ListNamespaceScopes)
 	post(api, "/permissions/scopes", handlers.PermIAMManage, handlers.AddNamespaceScope)
 	del(api, "/permissions/scopes/:id", handlers.PermIAMManage, handlers.RemoveNamespaceScope)
+	get(api, "/rbac/templates", handlers.PermIAMManage, handlers.ListRBACTemplates)
+	get(api, "/rbac/preview", handlers.PermIAMManage, handlers.PreviewClusterRBAC)
+	post(api, "/rbac/apply", handlers.PermIAMManage, handlers.ApplyClusterRBAC)
 
 	get(api, "/groups", handlers.PermUserManage, handlers.ListGroups)
 	post(api, "/groups", handlers.PermUserManage, handlers.CreateGroup)
