@@ -85,6 +85,7 @@ export default function SecretsPage() {
   const [note, setNote] = useState("");
   const [canWrite, setCanWrite] = useState(false);
   const [addingTo, setAddingTo] = useState("");
+  const [copied, setCopied] = useState("");
   const [newKey, setNewKey] = useState("");
 
   useEffect(() => {
@@ -177,6 +178,33 @@ export default function SecretsPage() {
     if (allowNew) { setAddingTo(""); setNewKey(""); fetchSecrets(); }
     setNote(body.note ?? "");
     setTimeout(() => setNote(""), 6000);
+  }
+
+  /** Every value of one Secret, in the shape someone is about to paste it
+   *  into. Quoting is done server-side because a value with a space pasted
+   *  unquoted truncates in a shell and fails much later as an auth error. */
+  async function copyAll(secretName: string, secretNamespace: string, as: "env" | "json") {
+    const mapKey = `${secretNamespace}/${secretName}`;
+    setSaveError(prev => ({ ...prev, [mapKey]: "" }));
+
+    const res = await apiFetch("/secrets/reveal-bundle", {
+      method: "POST",
+      body: JSON.stringify({ password, namespace: secretNamespace, name: secretName }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setSaveError(prev => ({ ...prev, [mapKey]: body.error ?? "could not read the values" }));
+      return;
+    }
+
+    const text = as === "env" ? (body.env ?? "") : JSON.stringify(body.values ?? {}, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(`${mapKey}:${as}`);
+      setTimeout(() => setCopied(""), 2000);
+    } catch {
+      setSaveError(prev => ({ ...prev, [mapKey]: "the browser refused clipboard access" }));
+    }
   }
 
   function hideKey(secretName: string, secretNamespace: string, key: string) {
@@ -464,6 +492,26 @@ export default function SecretsPage() {
                       </div>
                     );
                   })}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 mt-2">
+                  {isAdmin && (
+                    <>
+                      <button onClick={() => copyAll(s.name, s.namespace, "env")}
+                        title="Copy every value as KEY=value"
+                        className="text-xs text-zinc-500 hover:text-brand-green transition">
+                        {copied === `${s.namespace}/${s.name}:env` ? "copied" : "Copy all as .env"}
+                      </button>
+                      <button onClick={() => copyAll(s.name, s.namespace, "json")}
+                        title="Copy every value as JSON"
+                        className="text-xs text-zinc-500 hover:text-brand-green transition">
+                        {copied === `${s.namespace}/${s.name}:json` ? "copied" : "as JSON"}
+                      </button>
+                    </>
+                  )}
+                  {saveError[`${s.namespace}/${s.name}`] && (
+                    <span className="text-xs text-red-500">{saveError[`${s.namespace}/${s.name}`]}</span>
+                  )}
                 </div>
 
                 {canWrite && (

@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
@@ -221,6 +223,12 @@ func RevealSecretValue(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "key not found in secret"})
 	}
 
+	// Reading a credential was not recorded, while changing one was. Both are
+	// worth the same row: "who has seen this" is the first question asked
+	// after a credential turns up somewhere it should not be.
+	db.LogAudit(currentUserID(c), "reveal_secret", "secret", req.Namespace+"/"+req.Name,
+		fmt.Sprintf(`{"key":"%s"}`, req.Key), c.IP())
+
 	return c.JSON(fiber.Map{"value": string(data)})
 }
 
@@ -347,4 +355,83 @@ func UpdateSecretValue(c *fiber.Ctx) error {
 		// saying so here saves the hour spent wondering why nothing changed.
 		"note": "workloads that read this Secret as environment variables keep the old value until their pods restart",
 	})
+}
+
+// RevealSecretBundle returns every value of one Secret at once.
+//
+// Separate from the single-key reveal rather than a flag on it, because it is
+// a different act: one key is looking something up, all of them is taking a
+// copy of every credential a workload holds. It is gated the same way and
+// audited more loudly, and the audit row says how many keys left -- that
+// number is what makes an access review readable later.
+func RevealSecretBundle(c *fiber.Ctx) error {
+	var req struct {
+		Password  string `json:"password"`
+		Namespace string `json:"namespace"`
+		Name      string `json:"name"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.Password == "" || req.Namespace == "" || req.Name == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "password, namespace and name are required",
+		})
+	}
+
+	if _, err := verifyCurrentUserPassword(c, req.Password); err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid password"})
+	}
+	if !namespaceAllowed(c, req.Namespace) {
+		return forbidNamespace(c)
+	}
+
+	typed, _, err := requestClients(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
+	}
+
+	secret, err := typed.CoreV1().Secrets(req.Namespace).Get(context.Background(), req.Name, metav1.GetOptions{})
+	if err != nil {
+		return k8sError(c, err)
+	}
+
+	keys := make([]string, 0, len(secret.Data))
+	for k := range secret.Data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	values := make(map[string]string, len(secret.Data))
+	envLines := make([]string, 0, len(secret.Data))
+	for _, k := range keys {
+		v := string(secret.Data[k])
+		values[k] = v
+		envLines = append(envLines, formatEnvLine(k, v))
+	}
+
+	db.LogAudit(currentUserID(c), "reveal_secret_bundle", "secret", req.Namespace+"/"+req.Name,
+		fmt.Sprintf(`{"keys":%d}`, len(keys)), c.IP())
+
+	return c.JSON(fiber.Map{
+		"keys":   keys,
+		"values": values,
+		"env":    strings.Join(envLines, "\n"),
+	})
+}
+
+// formatEnvLine renders one pair the way a .env file expects it. A value with
+// a space, a quote or a newline is quoted and escaped: pasting an unquoted one
+// into a shell silently truncates the credential at the first space, which
+// fails much later as an authentication error nobody connects back to here.
+func formatEnvLine(key, value string) string {
+	if !strings.ContainsAny(value, " \t\n\r\"'$`\\#") {
+		return key + "=" + value
+	}
+	escaped := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		"$", `\$`,
+		"`", "\\`",
+		"\n", `\n`,
+		"\r", `\r`,
+	).Replace(value)
+	return key + `="` + escaped + `"`
 }
