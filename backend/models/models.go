@@ -218,12 +218,16 @@ type Cluster struct {
 	IsDefault   bool `gorm:"default:false" json:"is_default"`
 	CreatedBy   uint `json:"created_by"`
 
-	// ImpersonateWrites makes writes run as the person who asked for them
-	// rather than as the collector. Off by default: a cluster with no RBAC
-	// bound to the ck: identities would refuse every write the moment this
-	// shipped, so turning it on is a deliberate act taken once the bindings
-	// exist.
-	ImpersonateWrites bool `gorm:"default:false" json:"impersonate_writes"`
+	// Impersonate makes every call made for a request -- read and write alike
+	// -- run as the person who asked, so the cluster decides and its audit log
+	// names them. It does not and cannot cover data the pollers already
+	// collected: that was gathered by the collector before any request
+	// existed, and CommitKube's own namespace filter is the only fence there.
+	//
+	// Off by default: a cluster with no RBAC bound to the ck: identities would
+	// refuse everything the moment this shipped, so turning it on is a
+	// deliberate act taken once the bindings exist.
+	Impersonate bool `gorm:"default:false" json:"impersonate"`
 	// CanManageRBAC lets CommitKube create Roles and RoleBindings here. It is
 	// the strongest privilege the product can hold -- whoever can write a
 	// RoleBinding can write themselves one -- so it is opt-in per cluster,

@@ -121,310 +121,332 @@ func ListK8sResources(c *fiber.Ctx) error {
 	opts := metav1.ListOptions{}
 	rows := []ResourceRow{}
 
-	switch kind {
-	case "namespaces":
-		list, err := typed.CoreV1().Namespaces().List(ctx, opts)
-		if err != nil {
-			return k8sError(c, err)
-		}
-		// Pod counts make the namespace list actionable rather than decorative.
-		podsByNS := map[string]int{}
-		if pods, err := typed.CoreV1().Pods("").List(ctx, opts); err == nil {
-			for i := range pods.Items {
-				podsByNS[pods.Items[i].Namespace]++
-			}
-		}
-		for i := range list.Items {
-			ns := &list.Items[i]
-			phase := string(ns.Status.Phase)
-			status := "healthy"
-			if phase != "Active" {
-				status = "warning"
-			}
-			rows = append(rows, ResourceRow{
-				Name: ns.Name, Age: shortAge(ns.CreationTimestamp.Time),
-				Status: status, StatusText: phase,
-				Fields: map[string]string{
-					"phase": phase,
-					"pods":  fmt.Sprintf("%d", podsByNS[ns.Name]),
-				},
-			})
-		}
+	// Which namespaces to actually query. One cluster-wide call when nothing
+	// narrows it; one call per namespace when impersonating for a scoped
+	// account, because a RoleBinding permits Pods("apis").List() and never
+	// Pods("").List().
+	queryNS, err := listNamespaces(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if namespace != "" {
+		queryNS = []string{namespace}
+	}
+	if !entry.Namespaced {
+		queryNS = []string{""}
+	}
 
-	case "ingresses":
-		list, err := typed.NetworkingV1().Ingresses(namespace).List(ctx, opts)
-		if err != nil {
-			return k8sError(c, err)
-		}
-		for i := range list.Items {
-			ing := &list.Items[i]
-
-			hosts := []string{}
-			backends := map[string]bool{}
-			paths := 0
-			for _, rule := range ing.Spec.Rules {
-				if rule.Host != "" {
-					hosts = append(hosts, rule.Host)
+	for _, ns := range queryNS {
+		if err := func() error {
+			switch kind {
+			case "namespaces":
+				list, err := typed.CoreV1().Namespaces().List(ctx, opts)
+				if err != nil {
+					return k8sError(c, err)
 				}
-				if rule.HTTP == nil {
-					continue
-				}
-				for _, pth := range rule.HTTP.Paths {
-					paths++
-					if pth.Backend.Service != nil {
-						backends[pth.Backend.Service.Name] = true
+				// Pod counts make the namespace list actionable rather than decorative.
+				podsByNS := map[string]int{}
+				if pods, err := typed.CoreV1().Pods("").List(ctx, opts); err == nil {
+					for i := range pods.Items {
+						podsByNS[pods.Items[i].Namespace]++
 					}
 				}
-			}
-
-			// The address is filled in by the ingress controller once it has
-			// actually programmed the load balancer, so its absence is the
-			// signal that an Ingress exists but is not serving yet.
-			addresses := []string{}
-			for _, lb := range ing.Status.LoadBalancer.Ingress {
-				if lb.IP != "" {
-					addresses = append(addresses, lb.IP)
-				} else if lb.Hostname != "" {
-					addresses = append(addresses, lb.Hostname)
+				for i := range list.Items {
+					ns := &list.Items[i]
+					phase := string(ns.Status.Phase)
+					status := "healthy"
+					if phase != "Active" {
+						status = "warning"
+					}
+					rows = append(rows, ResourceRow{
+						Name: ns.Name, Age: shortAge(ns.CreationTimestamp.Time),
+						Status: status, StatusText: phase,
+						Fields: map[string]string{
+							"phase": phase,
+							"pods":  fmt.Sprintf("%d", podsByNS[ns.Name]),
+						},
+					})
 				}
-			}
 
-			tlsHosts := 0
-			for _, t := range ing.Spec.TLS {
-				tlsHosts += len(t.Hosts)
-			}
-
-			class := ""
-			if ing.Spec.IngressClassName != nil {
-				class = *ing.Spec.IngressClassName
-			} else if v, ok := ing.Annotations["kubernetes.io/ingress.class"]; ok {
-				class = v + " (annotation)"
-			}
-
-			status, statusText := "healthy", "Serving"
-			if len(addresses) == 0 {
-				status, statusText = "warning", "No address assigned"
-			}
-			if paths == 0 {
-				status, statusText = "warning", "No backend paths"
-			}
-
-			tls := "no"
-			if len(ing.Spec.TLS) > 0 {
-				tls = fmt.Sprintf("yes (%d host%s)", tlsHosts, plural(tlsHosts))
-			}
-
-			rows = append(rows, ResourceRow{
-				Name: ing.Name, Namespace: ing.Namespace, Age: shortAge(ing.CreationTimestamp.Time),
-				Status: status, StatusText: statusText,
-				Fields: map[string]string{
-					"class":    class,
-					"hosts":    strings.Join(hosts, ", "),
-					"paths":    strconv.Itoa(paths),
-					"backends": strings.Join(sortedKeys(backends), ", "),
-					"tls":      tls,
-					"address":  strings.Join(addresses, ", "),
-				},
-			})
-		}
-
-	case "services":
-		list, err := typed.CoreV1().Services(namespace).List(ctx, opts)
-		if err != nil {
-			return k8sError(c, err)
-		}
-		for i := range list.Items {
-			svc := &list.Items[i]
-
-			ports := []string{}
-			for _, p := range svc.Spec.Ports {
-				entry := strconv.Itoa(int(p.Port))
-				if p.NodePort > 0 {
-					entry += ":" + strconv.Itoa(int(p.NodePort))
+			case "ingresses":
+				list, err := typed.NetworkingV1().Ingresses(ns).List(ctx, opts)
+				if err != nil {
+					return k8sError(c, err)
 				}
-				ports = append(ports, entry+"/"+string(p.Protocol))
-			}
+				for i := range list.Items {
+					ing := &list.Items[i]
 
-			external := []string{}
-			for _, lb := range svc.Status.LoadBalancer.Ingress {
-				if lb.IP != "" {
-					external = append(external, lb.IP)
-				} else if lb.Hostname != "" {
-					external = append(external, lb.Hostname)
+					hosts := []string{}
+					backends := map[string]bool{}
+					paths := 0
+					for _, rule := range ing.Spec.Rules {
+						if rule.Host != "" {
+							hosts = append(hosts, rule.Host)
+						}
+						if rule.HTTP == nil {
+							continue
+						}
+						for _, pth := range rule.HTTP.Paths {
+							paths++
+							if pth.Backend.Service != nil {
+								backends[pth.Backend.Service.Name] = true
+							}
+						}
+					}
+
+					// The address is filled in by the ingress controller once it has
+					// actually programmed the load balancer, so its absence is the
+					// signal that an Ingress exists but is not serving yet.
+					addresses := []string{}
+					for _, lb := range ing.Status.LoadBalancer.Ingress {
+						if lb.IP != "" {
+							addresses = append(addresses, lb.IP)
+						} else if lb.Hostname != "" {
+							addresses = append(addresses, lb.Hostname)
+						}
+					}
+
+					tlsHosts := 0
+					for _, t := range ing.Spec.TLS {
+						tlsHosts += len(t.Hosts)
+					}
+
+					class := ""
+					if ing.Spec.IngressClassName != nil {
+						class = *ing.Spec.IngressClassName
+					} else if v, ok := ing.Annotations["kubernetes.io/ingress.class"]; ok {
+						class = v + " (annotation)"
+					}
+
+					status, statusText := "healthy", "Serving"
+					if len(addresses) == 0 {
+						status, statusText = "warning", "No address assigned"
+					}
+					if paths == 0 {
+						status, statusText = "warning", "No backend paths"
+					}
+
+					tls := "no"
+					if len(ing.Spec.TLS) > 0 {
+						tls = fmt.Sprintf("yes (%d host%s)", tlsHosts, plural(tlsHosts))
+					}
+
+					rows = append(rows, ResourceRow{
+						Name: ing.Name, Namespace: ing.Namespace, Age: shortAge(ing.CreationTimestamp.Time),
+						Status: status, StatusText: statusText,
+						Fields: map[string]string{
+							"class":    class,
+							"hosts":    strings.Join(hosts, ", "),
+							"paths":    strconv.Itoa(paths),
+							"backends": strings.Join(sortedKeys(backends), ", "),
+							"tls":      tls,
+							"address":  strings.Join(addresses, ", "),
+						},
+					})
 				}
-			}
 
-			// A LoadBalancer with no external address is still being
-			// provisioned; every other type is ready as soon as it exists.
-			status, statusText := "healthy", string(svc.Spec.Type)
-			if svc.Spec.Type == corev1.ServiceTypeLoadBalancer && len(external) == 0 {
-				status, statusText = "warning", "LoadBalancer pending"
-			}
+			case "services":
+				list, err := typed.CoreV1().Services(ns).List(ctx, opts)
+				if err != nil {
+					return k8sError(c, err)
+				}
+				for i := range list.Items {
+					svc := &list.Items[i]
 
-			rows = append(rows, ResourceRow{
-				Name: svc.Name, Namespace: svc.Namespace, Age: shortAge(svc.CreationTimestamp.Time),
-				Status: status, StatusText: statusText,
-				Fields: map[string]string{
-					"type":       string(svc.Spec.Type),
-					"clusterIP":  svc.Spec.ClusterIP,
-					"externalIP": strings.Join(external, ", "),
-					"ports":      strings.Join(ports, ", "),
-				},
-			})
-		}
+					ports := []string{}
+					for _, p := range svc.Spec.Ports {
+						entry := strconv.Itoa(int(p.Port))
+						if p.NodePort > 0 {
+							entry += ":" + strconv.Itoa(int(p.NodePort))
+						}
+						ports = append(ports, entry+"/"+string(p.Protocol))
+					}
 
-	case "deployments":
-		list, err := typed.AppsV1().Deployments(namespace).List(ctx, opts)
-		if err != nil {
-			return k8sError(c, err)
-		}
-		for i := range list.Items {
-			d := &list.Items[i]
-			desired := int64(1)
-			if d.Spec.Replicas != nil {
-				desired = int64(*d.Spec.Replicas)
-			}
-			status, text := readyStatus(int64(d.Status.ReadyReplicas), desired)
-			rows = append(rows, ResourceRow{
-				Name: d.Name, Namespace: d.Namespace, Age: shortAge(d.CreationTimestamp.Time),
-				Status: status, StatusText: text,
-				Fields: map[string]string{
-					"ready":     fmt.Sprintf("%d/%d", d.Status.ReadyReplicas, desired),
-					"upToDate":  fmt.Sprintf("%d", d.Status.UpdatedReplicas),
-					"available": fmt.Sprintf("%d", d.Status.AvailableReplicas),
-					"image":     podImage((d.Spec.Template.Spec.Containers)),
-				},
-			})
-		}
+					external := []string{}
+					for _, lb := range svc.Status.LoadBalancer.Ingress {
+						if lb.IP != "" {
+							external = append(external, lb.IP)
+						} else if lb.Hostname != "" {
+							external = append(external, lb.Hostname)
+						}
+					}
 
-	case "replicasets":
-		list, err := typed.AppsV1().ReplicaSets(namespace).List(ctx, opts)
-		if err != nil {
-			return k8sError(c, err)
-		}
-		for i := range list.Items {
-			r := &list.Items[i]
-			desired := int64(0)
-			if r.Spec.Replicas != nil {
-				desired = int64(*r.Spec.Replicas)
-			}
-			status, text := readyStatus(int64(r.Status.ReadyReplicas), desired)
-			// A scaled-to-zero ReplicaSet is the normal resting state of a
-			// superseded revision, not a problem.
-			if desired == 0 {
-				status, text = "unknown", "scaled to zero"
-			}
-			owner := ""
-			if len(r.OwnerReferences) > 0 {
-				owner = r.OwnerReferences[0].Name
-			}
-			rows = append(rows, ResourceRow{
-				Name: r.Name, Namespace: r.Namespace, Age: shortAge(r.CreationTimestamp.Time),
-				Status: status, StatusText: text,
-				Fields: map[string]string{
-					"desired": fmt.Sprintf("%d", desired),
-					"current": fmt.Sprintf("%d", r.Status.Replicas),
-					"ready":   fmt.Sprintf("%d", r.Status.ReadyReplicas),
-					"owner":   owner,
-					"image":   podImage((r.Spec.Template.Spec.Containers)),
-				},
-			})
-		}
+					// A LoadBalancer with no external address is still being
+					// provisioned; every other type is ready as soon as it exists.
+					status, statusText := "healthy", string(svc.Spec.Type)
+					if svc.Spec.Type == corev1.ServiceTypeLoadBalancer && len(external) == 0 {
+						status, statusText = "warning", "LoadBalancer pending"
+					}
 
-	case "daemonsets":
-		list, err := typed.AppsV1().DaemonSets(namespace).List(ctx, opts)
-		if err != nil {
-			return k8sError(c, err)
-		}
-		for i := range list.Items {
-			d := &list.Items[i]
-			status, text := readyStatus(int64(d.Status.NumberReady), int64(d.Status.DesiredNumberScheduled))
-			rows = append(rows, ResourceRow{
-				Name: d.Name, Namespace: d.Namespace, Age: shortAge(d.CreationTimestamp.Time),
-				Status: status, StatusText: text,
-				Fields: map[string]string{
-					"desired":   fmt.Sprintf("%d", d.Status.DesiredNumberScheduled),
-					"current":   fmt.Sprintf("%d", d.Status.CurrentNumberScheduled),
-					"ready":     fmt.Sprintf("%d", d.Status.NumberReady),
-					"upToDate":  fmt.Sprintf("%d", d.Status.UpdatedNumberScheduled),
-					"available": fmt.Sprintf("%d", d.Status.NumberAvailable),
-					"image":     podImage((d.Spec.Template.Spec.Containers)),
-				},
-			})
-		}
+					rows = append(rows, ResourceRow{
+						Name: svc.Name, Namespace: svc.Namespace, Age: shortAge(svc.CreationTimestamp.Time),
+						Status: status, StatusText: statusText,
+						Fields: map[string]string{
+							"type":       string(svc.Spec.Type),
+							"clusterIP":  svc.Spec.ClusterIP,
+							"externalIP": strings.Join(external, ", "),
+							"ports":      strings.Join(ports, ", "),
+						},
+					})
+				}
 
-	case "statefulsets":
-		list, err := typed.AppsV1().StatefulSets(namespace).List(ctx, opts)
-		if err != nil {
-			return k8sError(c, err)
-		}
-		for i := range list.Items {
-			s := &list.Items[i]
-			desired := int64(1)
-			if s.Spec.Replicas != nil {
-				desired = int64(*s.Spec.Replicas)
-			}
-			status, text := readyStatus(int64(s.Status.ReadyReplicas), desired)
-			rows = append(rows, ResourceRow{
-				Name: s.Name, Namespace: s.Namespace, Age: shortAge(s.CreationTimestamp.Time),
-				Status: status, StatusText: text,
-				Fields: map[string]string{
-					"ready":   fmt.Sprintf("%d/%d", s.Status.ReadyReplicas, desired),
-					"current": fmt.Sprintf("%d", s.Status.CurrentReplicas),
-					"service": s.Spec.ServiceName,
-					"image":   podImage((s.Spec.Template.Spec.Containers)),
-				},
-			})
-		}
+			case "deployments":
+				list, err := typed.AppsV1().Deployments(ns).List(ctx, opts)
+				if err != nil {
+					return k8sError(c, err)
+				}
+				for i := range list.Items {
+					d := &list.Items[i]
+					desired := int64(1)
+					if d.Spec.Replicas != nil {
+						desired = int64(*d.Spec.Replicas)
+					}
+					status, text := readyStatus(int64(d.Status.ReadyReplicas), desired)
+					rows = append(rows, ResourceRow{
+						Name: d.Name, Namespace: d.Namespace, Age: shortAge(d.CreationTimestamp.Time),
+						Status: status, StatusText: text,
+						Fields: map[string]string{
+							"ready":     fmt.Sprintf("%d/%d", d.Status.ReadyReplicas, desired),
+							"upToDate":  fmt.Sprintf("%d", d.Status.UpdatedReplicas),
+							"available": fmt.Sprintf("%d", d.Status.AvailableReplicas),
+							"image":     podImage((d.Spec.Template.Spec.Containers)),
+						},
+					})
+				}
 
-	case "persistentvolumeclaims":
-		list, err := typed.CoreV1().PersistentVolumeClaims(namespace).List(ctx, opts)
-		if err != nil {
-			return k8sError(c, err)
-		}
-		for i := range list.Items {
-			p := &list.Items[i]
-			phase := string(p.Status.Phase)
-			status := "unknown"
-			switch phase {
-			case "Bound":
-				status = "healthy"
-			case "Pending":
-				status = "warning"
-			case "Lost":
-				status = "critical"
-			}
-			capacity := ""
-			if q, ok := p.Status.Capacity["storage"]; ok {
-				capacity = q.String()
-			} else if q, ok := p.Spec.Resources.Requests["storage"]; ok {
-				capacity = q.String() + " (requested)"
-			}
-			modes := make([]string, 0, len(p.Spec.AccessModes))
-			for _, m := range p.Spec.AccessModes {
-				modes = append(modes, string(m))
-			}
-			sc := ""
-			if p.Spec.StorageClassName != nil {
-				sc = *p.Spec.StorageClassName
-			}
-			rows = append(rows, ResourceRow{
-				Name: p.Name, Namespace: p.Namespace, Age: shortAge(p.CreationTimestamp.Time),
-				Status: status, StatusText: phase,
-				Fields: map[string]string{
-					"phase":        phase,
-					"capacity":     capacity,
-					"accessModes":  strings.Join(modes, ","),
-					"storageClass": sc,
-					"volume":       p.Spec.VolumeName,
-				},
-			})
-		}
+			case "replicasets":
+				list, err := typed.AppsV1().ReplicaSets(ns).List(ctx, opts)
+				if err != nil {
+					return k8sError(c, err)
+				}
+				for i := range list.Items {
+					r := &list.Items[i]
+					desired := int64(0)
+					if r.Spec.Replicas != nil {
+						desired = int64(*r.Spec.Replicas)
+					}
+					status, text := readyStatus(int64(r.Status.ReadyReplicas), desired)
+					// A scaled-to-zero ReplicaSet is the normal resting state of a
+					// superseded revision, not a problem.
+					if desired == 0 {
+						status, text = "unknown", "scaled to zero"
+					}
+					owner := ""
+					if len(r.OwnerReferences) > 0 {
+						owner = r.OwnerReferences[0].Name
+					}
+					rows = append(rows, ResourceRow{
+						Name: r.Name, Namespace: r.Namespace, Age: shortAge(r.CreationTimestamp.Time),
+						Status: status, StatusText: text,
+						Fields: map[string]string{
+							"desired": fmt.Sprintf("%d", desired),
+							"current": fmt.Sprintf("%d", r.Status.Replicas),
+							"ready":   fmt.Sprintf("%d", r.Status.ReadyReplicas),
+							"owner":   owner,
+							"image":   podImage((r.Spec.Template.Spec.Containers)),
+						},
+					})
+				}
 
-	default:
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": fmt.Sprintf("kind %q is registered but has no list implementation", kind),
-		})
+			case "daemonsets":
+				list, err := typed.AppsV1().DaemonSets(ns).List(ctx, opts)
+				if err != nil {
+					return k8sError(c, err)
+				}
+				for i := range list.Items {
+					d := &list.Items[i]
+					status, text := readyStatus(int64(d.Status.NumberReady), int64(d.Status.DesiredNumberScheduled))
+					rows = append(rows, ResourceRow{
+						Name: d.Name, Namespace: d.Namespace, Age: shortAge(d.CreationTimestamp.Time),
+						Status: status, StatusText: text,
+						Fields: map[string]string{
+							"desired":   fmt.Sprintf("%d", d.Status.DesiredNumberScheduled),
+							"current":   fmt.Sprintf("%d", d.Status.CurrentNumberScheduled),
+							"ready":     fmt.Sprintf("%d", d.Status.NumberReady),
+							"upToDate":  fmt.Sprintf("%d", d.Status.UpdatedNumberScheduled),
+							"available": fmt.Sprintf("%d", d.Status.NumberAvailable),
+							"image":     podImage((d.Spec.Template.Spec.Containers)),
+						},
+					})
+				}
+
+			case "statefulsets":
+				list, err := typed.AppsV1().StatefulSets(ns).List(ctx, opts)
+				if err != nil {
+					return k8sError(c, err)
+				}
+				for i := range list.Items {
+					s := &list.Items[i]
+					desired := int64(1)
+					if s.Spec.Replicas != nil {
+						desired = int64(*s.Spec.Replicas)
+					}
+					status, text := readyStatus(int64(s.Status.ReadyReplicas), desired)
+					rows = append(rows, ResourceRow{
+						Name: s.Name, Namespace: s.Namespace, Age: shortAge(s.CreationTimestamp.Time),
+						Status: status, StatusText: text,
+						Fields: map[string]string{
+							"ready":   fmt.Sprintf("%d/%d", s.Status.ReadyReplicas, desired),
+							"current": fmt.Sprintf("%d", s.Status.CurrentReplicas),
+							"service": s.Spec.ServiceName,
+							"image":   podImage((s.Spec.Template.Spec.Containers)),
+						},
+					})
+				}
+
+			case "persistentvolumeclaims":
+				list, err := typed.CoreV1().PersistentVolumeClaims(ns).List(ctx, opts)
+				if err != nil {
+					return k8sError(c, err)
+				}
+				for i := range list.Items {
+					p := &list.Items[i]
+					phase := string(p.Status.Phase)
+					status := "unknown"
+					switch phase {
+					case "Bound":
+						status = "healthy"
+					case "Pending":
+						status = "warning"
+					case "Lost":
+						status = "critical"
+					}
+					capacity := ""
+					if q, ok := p.Status.Capacity["storage"]; ok {
+						capacity = q.String()
+					} else if q, ok := p.Spec.Resources.Requests["storage"]; ok {
+						capacity = q.String() + " (requested)"
+					}
+					modes := make([]string, 0, len(p.Spec.AccessModes))
+					for _, m := range p.Spec.AccessModes {
+						modes = append(modes, string(m))
+					}
+					sc := ""
+					if p.Spec.StorageClassName != nil {
+						sc = *p.Spec.StorageClassName
+					}
+					rows = append(rows, ResourceRow{
+						Name: p.Name, Namespace: p.Namespace, Age: shortAge(p.CreationTimestamp.Time),
+						Status: status, StatusText: phase,
+						Fields: map[string]string{
+							"phase":        phase,
+							"capacity":     capacity,
+							"accessModes":  strings.Join(modes, ","),
+							"storageClass": sc,
+							"volume":       p.Spec.VolumeName,
+						},
+					})
+				}
+
+			default:
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": fmt.Sprintf("kind %q is registered but has no list implementation", kind),
+				})
+			}
+			return nil
+		}(); err != nil {
+			return err
+		}
 	}
 
 	// A scoped account sees only its namespaces. The listing above ran with

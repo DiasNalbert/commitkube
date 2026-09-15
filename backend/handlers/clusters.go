@@ -153,12 +153,49 @@ func clusterFromRequest(c *fiber.Ctx) (*models.Cluster, error) {
 }
 
 // requestClients is what a Fiber handler calls instead of building its own.
+//
+// With impersonation on, every live call a request makes -- listing pods,
+// reading a manifest, tailing a log, deleting something -- carries the
+// caller's identity, and the cluster decides. With it off, this is the
+// collector, exactly as before.
+//
+// What this cannot cover is the data the pollers already collected. That was
+// read with the collector's credential before any request existed, so Triage,
+// the service map and the stored history are protected by CommitKube's
+// namespace filter and nothing else. The two guarantees are different and the
+// UI says so.
 func requestClients(c *fiber.Ctx) (*kubernetes.Clientset, dynamic.Interface, error) {
 	cl, err := clusterFromRequest(c)
 	if err != nil {
 		return nil, nil, err
 	}
-	return clientsFor(cl)
+	if !cl.Impersonate {
+		return clientsFor(cl)
+	}
+
+	cfg, err := clusterRestConfig(cl)
+	if err != nil {
+		return nil, nil, err
+	}
+	imp, err := impersonationFor(c)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Built per request, never cached: the identity is part of the config, and
+	// a cached client would carry the previous caller's. The underlying
+	// connection pool is still shared, keyed on the TLS config.
+	cfg = rest.CopyConfig(cfg)
+	cfg.Impersonate = imp
+
+	typed, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return typed, dyn, nil
 }
 
 // requestClusterID is what a read of collected data scopes itself by. Every
@@ -171,6 +208,36 @@ func requestClusterID(c *fiber.Ctx) (uint, error) {
 		return 0, err
 	}
 	return cl.ID, nil
+}
+
+// listNamespaces says which namespaces a listing should actually query.
+//
+// A cluster-wide List is a cluster-scoped permission. A RoleBinding in one
+// namespace permits Pods("apis").List() and nothing wider, so once
+// impersonation is on, the old "list everything, then filter" stops working
+// for exactly the people it was meant to protect. Querying the scoped
+// namespaces one at a time is both what the cluster will allow and what makes
+// the two policies agree: the scope decides what we ask for, the cluster
+// decides whether we may have it.
+//
+// The empty string means one cluster-wide call, which is right for an
+// unscoped account and for every cluster that is not impersonating.
+func listNamespaces(c *fiber.Ctx) ([]string, error) {
+	cl, err := clusterFromRequest(c)
+	if err != nil {
+		return nil, err
+	}
+	if !cl.Impersonate {
+		return []string{""}, nil
+	}
+	allowed, restricted, err := requestNamespaces(c)
+	if err != nil {
+		return nil, err
+	}
+	if !restricted {
+		return []string{""}, nil
+	}
+	return allowed, nil
 }
 
 // requestTyped is requestClients for the handlers that only need the typed
@@ -210,8 +277,8 @@ func ListClusters(c *fiber.Ctx) error {
 		row := fiber.Map{
 			"id": cl.ID, "name": cl.Name, "local": cl.Local,
 			"api_server": cl.APIServer, "is_default": cl.IsDefault,
-			"impersonate_writes": cl.ImpersonateWrites,
-			"can_manage_rbac":    cl.CanManageRBAC,
+			"impersonate":     cl.Impersonate,
+			"can_manage_rbac": cl.CanManageRBAC,
 		}
 		if typed, _, err := clientsFor(cl); err != nil {
 			row["reachable"], row["error"] = false, err.Error()
@@ -344,32 +411,12 @@ func impersonationFor(c *fiber.Ctx) (rest.ImpersonationConfig, error) {
 	return rest.ImpersonationConfig{UserName: ImpersonationName(user.Email), Groups: groups}, nil
 }
 
-// writeClients returns the client a mutating handler should use. When the
-// cluster has impersonation on, the call carries the caller's identity and the
-// cluster decides; when it does not, this is the collector, exactly as before.
+// writeClients is requestClients for the mutating handlers. Kept as its own
+// name because a reader scanning a delete wants to see that the identity was
+// considered, not have to know that requestClients handles it.
 func writeClients(c *fiber.Ctx) (*kubernetes.Clientset, error) {
-	cl, err := clusterFromRequest(c)
-	if err != nil {
-		return nil, err
-	}
-	if !cl.ImpersonateWrites {
-		typed, _, err := clientsFor(cl)
-		return typed, err
-	}
-
-	cfg, err := clusterRestConfig(cl)
-	if err != nil {
-		return nil, err
-	}
-	imp, err := impersonationFor(c)
-	if err != nil {
-		return nil, err
-	}
-	// A fresh config per request on purpose: the identity is part of it, and a
-	// cached client would carry the previous caller's.
-	cfg = rest.CopyConfig(cfg)
-	cfg.Impersonate = imp
-	return kubernetes.NewForConfig(cfg)
+	typed, _, err := requestClients(c)
+	return typed, err
 }
 
 // UpdateClusterFlags toggles the two switches that change how much this
@@ -380,16 +427,16 @@ func UpdateClusterFlags(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "cluster not found"})
 	}
 	var req struct {
-		ImpersonateWrites *bool `json:"impersonate_writes"`
-		CanManageRBAC     *bool `json:"can_manage_rbac"`
+		Impersonate   *bool `json:"impersonate"`
+		CanManageRBAC *bool `json:"can_manage_rbac"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
 	}
 
 	updates := map[string]interface{}{}
-	if req.ImpersonateWrites != nil {
-		updates["impersonate_writes"] = *req.ImpersonateWrites
+	if req.Impersonate != nil {
+		updates["impersonate"] = *req.Impersonate
 	}
 	if req.CanManageRBAC != nil {
 		updates["can_manage_rbac"] = *req.CanManageRBAC

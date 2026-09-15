@@ -8,7 +8,7 @@ interface User { id: number; email: string; role: string; is_active: boolean }
 interface Group { id: number; name: string; description: string }
 interface Grant { id: number; subject_type: string; subject_id: number; permission: string }
 interface Scope { id: number; subject_type: string; subject_id: number; cluster_id: number; namespace: string }
-interface ClusterRow { id: number; name: string; impersonate_writes: boolean; can_manage_rbac: boolean }
+interface ClusterRow { id: number; name: string; impersonate: boolean; can_manage_rbac: boolean }
 
 type SubjectType = "user" | "group";
 
