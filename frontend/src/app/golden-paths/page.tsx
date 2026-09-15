@@ -149,7 +149,7 @@ export default function GoldenPathsPage() {
     <div className="max-w-5xl mx-auto space-y-8">
       <header className="flex items-start justify-between">
         <div>
-          <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-brand-green to-brand-gold">
+          <h1 className="text-lg font-semibold bg-clip-text text-transparent bg-gradient-to-r from-brand-green to-brand-gold">
             Golden Paths
           </h1>
           <p className="text-zinc-400 mt-1 text-sm">

@@ -323,7 +323,7 @@ export default function TopologyPage() {
     <div className="p-6 max-w-[1800px] mx-auto">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-semibold">Service Map</h1>
+          <h1 className="text-lg font-semibold">Service Map</h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1 max-w-3xl">
             Discovered from the cluster itself — no registration, no instrumentation, no agent.
             Every edge is a declaration the cluster makes about itself: a Service name in an env

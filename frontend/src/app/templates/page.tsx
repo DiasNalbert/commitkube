@@ -252,7 +252,7 @@ export default function TemplatesPage() {
   return (
     <div className="max-w-5xl mx-auto space-y-8">
       <header>
-        <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-brand-green to-brand-gold">
+        <h1 className="text-lg font-semibold bg-clip-text text-transparent bg-gradient-to-r from-brand-green to-brand-gold">
           Templates & Variables
         </h1>
         <p className="mt-1 text-sm" style={{ color: "var(--color-fg)", opacity: 0.6 }}>Manage YAML templates and variables per project.</p>

@@ -164,7 +164,7 @@ export default function Dashboard() {
       )}
 
       <header>
-        <h1 className="text-3xl font-bold">Repositories Dashboard</h1>
+        <h1 className="text-lg font-semibold">Repositories Dashboard</h1>
         <p className="text-zinc-400 mt-2">The repositories this platform manages — Bitbucket, GitHub and GitLab — with each scan result and the health of what they ship.</p>
       </header>
 
@@ -217,19 +217,19 @@ export default function Dashboard() {
         {summary ? (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4">
             <div>
-              <div className="text-3xl font-black text-emerald-400">{summary.monitoring.healthy}</div>
+              <div className="text-xl font-semibold tabular-nums text-emerald-400">{summary.monitoring.healthy}</div>
               <div className="text-xs text-zinc-500 mt-0.5">Healthy</div>
             </div>
             <div>
-              <div className={`text-3xl font-black ${summary.monitoring.degraded > 0 ? "text-red-400" : "text-zinc-600"}`}>{summary.monitoring.degraded}</div>
+              <div className={`text-xl font-semibold tabular-nums ${summary.monitoring.degraded > 0 ? "text-red-400" : "text-zinc-600"}`}>{summary.monitoring.degraded}</div>
               <div className="text-xs text-zinc-500 mt-0.5">Degraded</div>
             </div>
             <div>
-              <div className="text-3xl font-black text-blue-400">{summary.pods.ready}<span className="text-lg text-zinc-500">/{summary.pods.total}</span></div>
+              <div className="text-xl font-semibold tabular-nums text-blue-400">{summary.pods.ready}<span className="text-sm text-zinc-500">/{summary.pods.total}</span></div>
               <div className="text-xs text-zinc-500 mt-0.5">Ready pods</div>
             </div>
             <div>
-              <div className={`text-3xl font-black ${summary.pods.unhealthy_apps > 0 ? "text-red-400" : "text-zinc-600"}`}>{summary.pods.unhealthy_apps}</div>
+              <div className={`text-xl font-semibold tabular-nums ${summary.pods.unhealthy_apps > 0 ? "text-red-400" : "text-zinc-600"}`}>{summary.pods.unhealthy_apps}</div>
               <div className="text-xs text-zinc-500 mt-0.5">Apps with missing pod</div>
             </div>
           </div>
@@ -263,7 +263,7 @@ export default function Dashboard() {
       <div className="space-y-4">
         <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
           <h2 className="text-xl font-bold">All Managed Repositories</h2>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm">🔍</span>
               <input
@@ -288,7 +288,7 @@ export default function Dashboard() {
               {repos.map(repo => (
                 <div
                   key={repo.id}
-                  className="glass-card p-5 group hover:border-brand-gold/40 transition-colors relative"
+                  className="glass-card px-3 py-2.5 group hover:border-brand-gold/40 transition-colors relative"
                 >
                   <div
                     className="cursor-pointer"

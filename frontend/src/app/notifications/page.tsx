@@ -202,7 +202,7 @@ export default function NotificationsPage() {
     <div className="space-y-6">
       <header className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-3xl font-bold">Notifications</h1>
+          <h1 className="text-lg font-semibold">Notifications</h1>
           <p className="text-zinc-400 mt-1">Configure where CommitKube sends alerts for key events.</p>
         </div>
         <button

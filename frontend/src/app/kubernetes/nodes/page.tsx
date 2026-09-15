@@ -178,10 +178,10 @@ export default function NodesPage() {
   const ready = nodes.filter(n => n.status === "Ready").length;
 
   return (
-    <div className="p-6 max-w-[1600px] mx-auto space-y-5">
+    <div className="p-4 max-w-[1700px] mx-auto space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Nodes</h1>
+          <h1 className="text-lg font-semibold">Nodes</h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
             Capacity and live usage per node, from{" "}
             <code className="text-xs px-1 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800">metrics.k8s.io</code>
@@ -212,18 +212,18 @@ export default function NodesPage() {
       )}
 
       {nodes.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           <div className="glass-card p-4">
             <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Nodes</p>
-            <p className="text-3xl font-semibold mt-1 text-zinc-600 dark:text-zinc-300">{nodes.length}</p>
+            <p className="text-xl font-semibold mt-0.5 tabular-nums text-zinc-600 dark:text-zinc-300">{nodes.length}</p>
           </div>
           <div className="glass-card p-4">
             <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Ready</p>
-            <p className="text-3xl font-semibold mt-1 text-brand-green">{ready}</p>
+            <p className="text-xl font-semibold mt-0.5 tabular-nums text-brand-green">{ready}</p>
           </div>
           <div className="glass-card p-4">
             <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Not ready</p>
-            <p className={`text-3xl font-semibold mt-1 ${nodes.length - ready > 0 ? "text-red-500 dark:text-red-400" : "text-zinc-600 dark:text-zinc-300"}`}>
+            <p className={`text-xl font-semibold mt-0.5 tabular-nums ${nodes.length - ready > 0 ? "text-red-500 dark:text-red-400" : "text-zinc-600 dark:text-zinc-300"}`}>
               {nodes.length - ready}
             </p>
           </div>

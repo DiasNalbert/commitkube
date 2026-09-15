@@ -274,14 +274,14 @@ export default function PodsPage() {
     <div className="p-6 max-w-[1600px] mx-auto space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Pods</h1>
+          <h1 className="text-lg font-semibold">Pods</h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
             Live resource usage from{" "}
             <code className="text-xs px-1 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800">metrics.k8s.io</code>,
             read straight from the cluster
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <label className="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
             <input
               type="checkbox"
@@ -322,17 +322,17 @@ export default function PodsPage() {
       )}
 
       {cards.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {cards.map(([key, label, value, color]) => {
             const active = sevFilter === key || (key === "total" && sevFilter === null);
             return (
               <button
                 key={key}
                 onClick={() => setSevFilter(key === "total" || sevFilter === key ? null : key)}
-                className={`glass-card p-4 text-left transition ${active ? "border-brand-green/50 ring-1 ring-brand-green/30" : ""}`}
+                className={`glass-card px-3 py-2.5 text-left transition ${active ? "border-brand-green/50 ring-1 ring-brand-green/30" : ""}`}
               >
                 <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{label}</p>
-                <p className={`text-3xl font-semibold mt-1 ${color}`}>{value}</p>
+                <p className={`text-xl font-semibold mt-0.5 tabular-nums ${color}`}>{value}</p>
               </button>
             );
           })}
@@ -375,7 +375,7 @@ export default function PodsPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-2">
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
@@ -441,7 +441,7 @@ export default function PodsPage() {
                         onClick={() => toggle(pod)}
                         className="border-b border-[var(--card-border)] hover:bg-[var(--color-surface-hover)] cursor-pointer"
                       >
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-1.5">
                           <div className="flex items-center gap-2">
                             <span className={`w-2 h-2 rounded-full shrink-0 ${s ? s.dot : "bg-brand-green"}`} />
                             <div className="min-w-0">
@@ -453,8 +453,8 @@ export default function PodsPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">{pod.namespace}</td>
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-1.5 text-zinc-500 dark:text-zinc-400">{pod.namespace}</td>
+                        <td className="px-3 py-1.5">
                           <div className="flex items-baseline justify-between gap-2 text-xs">
                             <span>{fmtCores(pod.cpu_cores)}</span>
                             <span className="text-zinc-500">
@@ -463,7 +463,7 @@ export default function PodsPage() {
                           </div>
                           <div className="mt-1"><UsageBar pct={pod.cpu_pct} hasLimit={pod.cpu_limits > 0} /></div>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-1.5">
                           <div className="flex items-baseline justify-between gap-2 text-xs">
                             <span>{fmtBytes(pod.mem_bytes)}</span>
                             <span className="text-zinc-500">
@@ -472,19 +472,19 @@ export default function PodsPage() {
                           </div>
                           <div className="mt-1"><UsageBar pct={pod.mem_pct} hasLimit={pod.mem_limits > 0} /></div>
                         </td>
-                        <td className={`px-4 py-3 text-right tabular-nums ${
+                        <td className={`px-3 py-1.5 text-right tabular-nums ${
                           pod.throttled_pct >= 50 ? "text-red-400" :
                           pod.throttled_pct >= 25 ? "text-amber-400" : "text-zinc-500"
                         }`}>
                           {pod.throttled_pct > 0 ? `${pod.throttled_pct.toFixed(1)}%` : "—"}
                         </td>
-                        <td className={`px-4 py-3 text-right tabular-nums ${pod.restart_count > 5 ? "text-amber-400" : ""}`}>
+                        <td className={`px-3 py-1.5 text-right tabular-nums ${pod.restart_count > 5 ? "text-amber-400" : ""}`}>
                           {pod.restart_count}
                         </td>
-                        <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400 truncate max-w-[160px]">
+                        <td className="px-3 py-1.5 text-zinc-500 dark:text-zinc-400 truncate max-w-[160px]">
                           {pod.node_name || "—"}
                         </td>
-                        <td className="px-4 py-3 text-right text-zinc-500 dark:text-zinc-400 tabular-nums">{pod.age}</td>
+                        <td className="px-3 py-1.5 text-right text-zinc-500 dark:text-zinc-400 tabular-nums">{pod.age}</td>
                       </tr>
 
                       {expanded === key && (

@@ -410,9 +410,9 @@ function NamespaceOverview({ d }: { d: NamespaceDetail }) {
       </Card>
 
       <Card title="Pods">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {podStates.map(([label, value, color]) => (
-            <div key={label} className="rounded-lg border border-[var(--card-border)] bg-[var(--color-surface-hover)] p-3">
+            <div key={label} className="rounded border rule bg-[var(--surface-sunken)] px-2.5 py-2">
               <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{label}</p>
               <p className={`text-2xl font-semibold mt-0.5 ${color}`}>{value}</p>
             </div>
@@ -421,7 +421,7 @@ function NamespaceOverview({ d }: { d: NamespaceDetail }) {
       </Card>
 
       <Card title="Resources">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {Object.keys(COUNT_LABELS)
             .filter(key => d.counts[key] !== undefined)
             .map(key => {
@@ -433,7 +433,7 @@ function NamespaceOverview({ d }: { d: NamespaceDetail }) {
                   <p className="text-2xl font-semibold mt-0.5">{d.counts[key]}</p>
                 </>
               );
-              const cls = "rounded-lg border border-[var(--card-border)] bg-[var(--color-surface-hover)] p-3 block";
+              const cls = "rounded border rule bg-[var(--surface-sunken)] px-2.5 py-2 block";
               return href
                 ? <a key={key} href={href} className={`${cls} hover:border-brand-green/40 transition`}>{body}</a>
                 : <div key={key} className={cls}>{body}</div>;

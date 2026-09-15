@@ -208,10 +208,10 @@ export default function Page() {
   const labelOf = (s: User | Group) => ("email" in s ? s.email : s.name);
 
   return (
-    <div className="p-6 max-w-[1500px] mx-auto space-y-5">
-      <header className="flex flex-wrap items-start justify-between gap-3">
+    <div className="p-4 max-w-[1600px] mx-auto space-y-3">
+      <header className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold">IAM</h1>
+          <h1 className="text-lg font-semibold">IAM</h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
             Who someone is, what they may do, and in which namespaces. Every change saves as you make it.
           </p>
@@ -233,7 +233,7 @@ export default function Page() {
       {tab === "clusters" ? (
         <div className="space-y-4">
           <section className="glass-card p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm font-semibold">Clusters</h2>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">

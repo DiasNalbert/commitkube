@@ -231,7 +231,7 @@ export default function TriagePage() {
   const externalPct = errorTotal > 0 ? Math.round((externalTotal / errorTotal) * 100) : 0;
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto">
+    <div className="p-4 max-w-[1500px] mx-auto">
       <header className="mb-6">
         <h1 className="text-2xl font-black tracking-tight">Triage</h1>
         <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1 max-w-3xl">
@@ -242,7 +242,7 @@ export default function TriagePage() {
       </header>
 
       {error && (
-        <div className="mb-4 rounded border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500 dark:text-red-400">
+        <div className="mb-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500 dark:text-red-400">
           {error}
         </div>
       )}
@@ -389,7 +389,7 @@ function Tile({
       className="rounded border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-900/40"
       title={hint}
     >
-      <div className={`text-3xl font-black ${accent ?? ""}`}>{value}</div>
+      <div className={`text-xl font-semibold tabular-nums ${accent ?? ""}`}>{value}</div>
       <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{label}</div>
     </div>
   );
@@ -438,7 +438,7 @@ function ProblemList({
                 : "border-zinc-300 dark:border-zinc-700"
             }`}
           >
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-2">
               <span className={`w-2.5 h-2.5 rounded-full mt-1.5 shrink-0 ${s.dot}`} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">

@@ -76,10 +76,10 @@ export default function Page() {
   const t = data.totals ?? {};
 
   return (
-    <div className="p-6 max-w-[1500px] mx-auto space-y-5">
+    <div className="p-4 max-w-[1600px] mx-auto space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Workload Security</h1>
+          <h1 className="text-lg font-semibold">Workload Security</h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1 max-w-3xl">
             What each pod is <em>permitted</em> to do, read from its spec. A pod can be perfectly healthy and
             still be one YAML line away from being the node — nothing in a health check notices that.
@@ -91,14 +91,14 @@ export default function Page() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {([["critical", "Critical", "text-red-500 dark:text-red-400"],
            ["warning", "Warning", "text-amber-600 dark:text-amber-400"],
            ["info", "Info", "text-zinc-500 dark:text-zinc-400"],
            ["healthy", "Clean", "text-brand-green"]] as [string, string, string][]).map(([k, label, tone]) => (
           <div key={k} className="glass-card p-4">
             <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{label}</p>
-            <p className={`text-3xl font-semibold mt-1 ${tone}`}>{t[k] ?? 0}</p>
+            <p className={`text-xl font-semibold mt-0.5 tabular-nums ${tone}`}>{t[k] ?? 0}</p>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">pods</p>
           </div>
         ))}
@@ -132,7 +132,7 @@ export default function Page() {
         )}
       </section>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <input value={search} onChange={e => setSearch(e.target.value)}
           placeholder="Search pod, namespace or workload…"
           className="flex-1 min-w-[240px] px-3 py-2 text-sm rounded-lg bg-[var(--input-bg)] border border-[var(--input-border)] text-[var(--input-fg)] focus:outline-none focus:border-brand-green/50" />
@@ -170,7 +170,7 @@ export default function Page() {
                   {r.findings.map((f, i) => {
                     const fs = toneOf(f.severity);
                     return (
-                      <div key={`${f.kind}-${i}`} className="flex items-start gap-3">
+                      <div key={`${f.kind}-${i}`} className="flex items-start gap-2">
                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${fs.dot}`} />
                         <div className="min-w-0">
                           <p className="text-sm">
