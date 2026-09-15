@@ -165,7 +165,7 @@ export default function Dashboard() {
 
       <header>
         <h1 className="text-3xl font-bold">Repositories Dashboard</h1>
-        <p className="text-zinc-400 mt-2">Os repositórios geridos pela plataforma — Bitbucket, GitHub e GitLab — com o estado de cada scan e a saúde do que eles entregam.</p>
+        <p className="text-zinc-400 mt-2">The repositories this platform manages — Bitbucket, GitHub and GitLab — with each scan result and the health of what they ship.</p>
       </header>
 
       <WorkspaceFilter

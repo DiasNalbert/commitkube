@@ -96,7 +96,7 @@ function CapacityMeter({ title, axis, format, metrics }: {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 className="text-sm font-semibold">{title}</h3>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          alocável <span className="font-mono text-zinc-700 dark:text-zinc-200">{format(axis.allocatable)}</span>
+          allocatable <span className="font-mono text-zinc-700 dark:text-zinc-200">{format(axis.allocatable)}</span>
           {" de "}
           <span className="font-mono text-zinc-700 dark:text-zinc-200">{format(axis.capacity)}</span>
         </p>
@@ -105,7 +105,7 @@ function CapacityMeter({ title, axis, format, metrics }: {
       <p className="mt-2 text-3xl font-semibold tabular-nums">
         {metrics ? `${usagePct.toFixed(0)}%` : "—"}
         <span className="text-sm font-normal text-zinc-500 dark:text-zinc-400 ml-2">
-          {metrics ? `${format(axis.usage)} em uso` : "metrics-server indisponível"}
+          {metrics ? `${format(axis.usage)} in use` : "metrics-server unavailable"}
         </span>
       </p>
 
@@ -126,18 +126,18 @@ function CapacityMeter({ title, axis, format, metrics }: {
 
       <dl className="grid grid-cols-3 gap-3 mt-3 text-xs">
         <div>
-          <dt className="text-zinc-500 dark:text-zinc-400">Uso</dt>
+          <dt className="text-zinc-500 dark:text-zinc-400">Usage</dt>
           <dd className="font-mono mt-0.5">{metrics ? format(axis.usage) : "—"}</dd>
         </div>
         <div>
-          <dt className="text-zinc-500 dark:text-zinc-400">Requests (comprometido)</dt>
+          <dt className="text-zinc-500 dark:text-zinc-400">Requests (committed)</dt>
           <dd className="font-mono mt-0.5">
             {format(axis.requests)}
             <span className={`ml-1 ${reqS.text}`}>{reqPct.toFixed(0)}%</span>
           </dd>
         </div>
         <div>
-          <dt className="text-zinc-500 dark:text-zinc-400">Limits (estouro possível)</dt>
+          <dt className="text-zinc-500 dark:text-zinc-400">Limits (possible overcommit)</dt>
           <dd className="font-mono mt-0.5">{format(axis.limits)}</dd>
         </div>
       </dl>
@@ -202,7 +202,7 @@ export default function Page() {
       setError("");
       setData(body);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Falha ao falar com a API");
+      setError(e instanceof Error ? e.message : "Could not reach the API");
     } finally {
       setLoading(false);
     }
@@ -210,13 +210,13 @@ export default function Page() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return <div className="p-6 text-zinc-500">Lendo o cluster…</div>;
+  if (loading) return <div className="p-6 text-zinc-500">Reading the cluster…</div>;
 
   if (error) {
     return (
       <div className="p-6 max-w-[1600px] mx-auto">
         <div className="glass-card p-4 border-red-500/30 text-sm">
-          <p className="text-red-500 dark:text-red-400 font-medium">Não consegui ler o cluster</p>
+          <p className="text-red-500 dark:text-red-400 font-medium">Could not read the cluster</p>
           <p className="text-zinc-500 dark:text-zinc-400 mt-1 break-words">{error}</p>
         </div>
       </div>
@@ -238,27 +238,27 @@ export default function Page() {
         <div>
           <h1 className="text-2xl font-semibold">Cluster Overview</h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-            O cluster inteiro numa tela: quanto está comprometido, o que está quebrado agora e onde o consumo se concentra.
+            The whole cluster on one screen: how much is committed, what is broken now, and where the load sits.
           </p>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
-            {d.kubernetes_version || "versão desconhecida"}
+            {d.kubernetes_version || "unknown version"}
           </span>
           <button onClick={load} className="px-3 py-1.5 text-sm rounded-lg border border-brand-green/30 text-brand-green hover:bg-brand-green/10 transition">
-            Atualizar
+            Refresh
           </button>
         </div>
       </div>
 
       {!d.metrics_available && (
         <div className="glass-card p-3 border-amber-500/30 text-xs text-amber-600 dark:text-amber-400">
-          metrics-server não está respondendo: uso ao vivo indisponível. Requests, limits e contagens continuam corretos.
+          metrics-server is not answering, so live usage is unavailable. Requests, limits and counts are still correct.
         </div>
       )}
       {d.degraded && d.degraded.length > 0 && (
         <div className="glass-card p-3 border-amber-500/30 text-xs">
-          <p className="text-amber-600 dark:text-amber-400 font-medium">Algumas leituras falharam e foram omitidas</p>
+          <p className="text-amber-600 dark:text-amber-400 font-medium">Some lookups failed and were left out</p>
           <ul className="mt-1 space-y-0.5 text-zinc-500 dark:text-zinc-400 font-mono">
             {d.degraded.map(x => <li key={x}>{x}</li>)}
           </ul>
@@ -266,25 +266,25 @@ export default function Page() {
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Tile label="Nodes prontos" value={`${d.nodes_ready}/${d.nodes_total}`} tone={nodeTone}
+        <Tile label="Nodes ready" value={`${d.nodes_ready}/${d.nodes_total}`} tone={nodeTone}
           note={[
             d.nodes_not_ready > 0 ? `${d.nodes_not_ready} NotReady` : null,
             d.nodes_cordoned > 0 ? `${d.nodes_cordoned} cordoned` : null,
-            d.nodes_under_pressure > 0 ? `${d.nodes_under_pressure} sob pressão` : null,
-          ].filter(Boolean).join(" · ") || `cluster com ${d.oldest_node_age}`} />
-        <Tile label="Pods rodando" value={d.pods_running}
-          note={`${podPct.toFixed(0)}% de ${d.pod_capacity} slots · ${d.pods_ready} prontos`} />
-        <Tile label="Problemas críticos" value={d.critical_count}
+            d.nodes_under_pressure > 0 ? `${d.nodes_under_pressure} under pressure` : null,
+          ].filter(Boolean).join(" · ") || `cluster is ${d.oldest_node_age} old`} />
+        <Tile label="Pods running" value={d.pods_running}
+          note={`${podPct.toFixed(0)}% of ${d.pod_capacity} slots · ${d.pods_ready} ready`} />
+        <Tile label="Critical problems" value={d.critical_count}
           tone={d.critical_count > 0 ? "text-red-500 dark:text-red-400" : "text-brand-green"}
-          note={`${d.warning_count} avisos`} />
-        <Tile label="Workloads degradados" value={degradedWorkloads}
+          note={`${d.warning_count} warnings`} />
+        <Tile label="Degraded workloads" value={degradedWorkloads}
           tone={degradedWorkloads > 0 ? "text-amber-600 dark:text-amber-400" : "text-brand-green"}
           note={(d.workloads ?? []).map(w => `${w.kind.toLowerCase()}s ${w.total}`).join(" · ")} />
       </div>
 
       <div className="grid lg:grid-cols-2 gap-3">
         <Card><CapacityMeter title="CPU" axis={d.cpu} format={fmtCores} metrics={d.metrics_available} /></Card>
-        <Card><CapacityMeter title="Memória" axis={d.memory} format={fmtBytes} metrics={d.metrics_available} /></Card>
+        <Card><CapacityMeter title="Memory" axis={d.memory} format={fmtBytes} metrics={d.metrics_available} /></Card>
       </div>
 
       <Card title="Pods" subtitle={`${d.pods_total} pods · ${d.containers} containers · ${d.namespace_count} namespaces`}>
@@ -303,11 +303,11 @@ export default function Page() {
       </Card>
 
       <div className="grid lg:grid-cols-2 gap-3">
-        <Card title="Problemas detectados" subtitle="mesma detecção das páginas de Pods e Triage">
+        <Card title="Detected problems" subtitle="the same detection the Pods and Triage pages run">
           {(d.problems ?? []).length === 0 ? (
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">Nenhum problema aberto no momento.</p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">No open problems right now.</p>
           ) : (
-            <Table head={["Problema", "Severidade", "Pods"]}>
+            <Table head={["Problem", "Severity", "Pods"]}>
               {(d.problems ?? []).map(p => {
                 const s = statusStyle(p.severity);
                 return (
@@ -326,11 +326,11 @@ export default function Page() {
           )}
         </Card>
 
-        <Card title="Pods em estado crítico" subtitle="os dez primeiros">
+        <Card title="Pods in a critical state" subtitle="first ten">
           {(d.problem_pods ?? []).length === 0 ? (
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">Nenhum pod em estado crítico.</p>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">No pod is in a critical state.</p>
           ) : (
-            <Table head={["Pod", "Namespace", "Motivo"]}>
+            <Table head={["Pod", "Namespace", "Reason"]}>
               {(d.problem_pods ?? []).map((p, i) => (
                 <tr key={`${p.namespace}/${p.name}-${i}`} className="border-b border-[var(--card-border)] last:border-0">
                   <td className="px-2 py-2 font-mono text-xs truncate max-w-[200px]" title={p.name}>{p.name}</td>
@@ -343,8 +343,8 @@ export default function Page() {
         </Card>
       </div>
 
-      <Card title="Namespaces que mais consomem" subtitle="ordenado por CPU em uso">
-        <Table head={["Namespace", "CPU", "", "Requests CPU", "Memória", "Pods"]}>
+      <Card title="Busiest namespaces" subtitle="ordered by CPU in use">
+        <Table head={["Namespace", "CPU", "", "CPU requests", "Memory", "Pods"]}>
           {(d.top_namespaces ?? []).map(ns => (
             <tr key={ns.name} className="border-b border-[var(--card-border)] last:border-0">
               <td className="px-2 py-2 font-mono text-xs">
@@ -361,7 +361,7 @@ export default function Page() {
       </Card>
 
       <div className="grid lg:grid-cols-2 gap-3">
-        <Card title="Pods por CPU">
+        <Card title="Pods by CPU">
           <Table head={["Pod", "Namespace", "CPU", ""]}>
             {(d.top_pods_cpu ?? []).map(p => (
               <tr key={`${p.namespace}/${p.name}`} className="border-b border-[var(--card-border)] last:border-0">
@@ -373,8 +373,8 @@ export default function Page() {
             ))}
           </Table>
         </Card>
-        <Card title="Pods por memória">
-          <Table head={["Pod", "Namespace", "Memória", ""]}>
+        <Card title="Pods by memory">
+          <Table head={["Pod", "Namespace", "Memory", ""]}>
             {(d.top_pods_mem ?? []).map(p => (
               <tr key={`${p.namespace}/${p.name}`} className="border-b border-[var(--card-border)] last:border-0">
                 <td className="px-2 py-2 font-mono text-xs truncate max-w-[180px]" title={p.name}>{p.name}</td>
@@ -387,8 +387,8 @@ export default function Page() {
         </Card>
       </div>
 
-      <Card title="Nodes" subtitle="pior primeiro">
-        <Table head={["Node", "Estado", "Roles", "CPU", "Memória", "Pods", "Versão", "Idade"]}>
+      <Card title="Nodes" subtitle="worst first">
+        <Table head={["Node", "State", "Roles", "CPU", "Memory", "Pods", "Version", "Age"]}>
           {(d.nodes ?? []).map(n => {
             const s = statusStyle(n.status);
             const cpuS = statusStyle(loadStatus(n.cpu_pct));
@@ -425,7 +425,7 @@ export default function Page() {
       </Card>
 
       <div className="grid lg:grid-cols-3 gap-3">
-        <Card title="Inventário" className="lg:col-span-2">
+        <Card title="Inventory" className="lg:col-span-2">
           <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
             {Object.keys(INVENTORY_LABELS)
               .filter(k => d.inventory[k] !== undefined)
@@ -445,7 +445,7 @@ export default function Page() {
           </div>
         </Card>
 
-        <Card title="Versões em uso" subtitle="kubelet por node">
+        <Card title="Versions in use" subtitle="kubelet per node">
           <div className="space-y-2">
             {(d.versions ?? []).map(v => (
               <div key={v.value} className="flex items-center justify-between gap-2 text-xs">
@@ -455,7 +455,7 @@ export default function Page() {
             ))}
             {(d.os_images ?? []).length > 0 && (
               <>
-                <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400 pt-2">Sistema</p>
+                <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400 pt-2">OS</p>
                 {(d.os_images ?? []).map(v => (
                   <div key={v.value} className="flex items-center justify-between gap-2 text-xs">
                     <span className="truncate" title={v.value}>{v.value}</span>

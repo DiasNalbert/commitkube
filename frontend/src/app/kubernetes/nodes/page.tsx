@@ -320,7 +320,7 @@ export default function NodesPage() {
                                   : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
                               }`}
                             >
-                              Top {m === "cpu" ? "CPU" : "memória"}
+                              Top {m === "cpu" ? "CPU" : "memory"}
                             </button>
                           ))}
                         </div>
@@ -338,7 +338,7 @@ export default function NodesPage() {
 
                       <p className="text-[10px] text-zinc-500 dark:text-zinc-400 mt-3">
                         A soma dos pods fica abaixo do total do node: kubelet, runtime de container e
-                        daemons do sistema não são pods e não aparecem aqui.
+                        system daemons are not pods and do not show up here.
                       </p>
                     </>
                   )}

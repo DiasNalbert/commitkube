@@ -37,11 +37,11 @@ export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }:
 
   const preview = useCallback(async () => {
     setError(""); setMessage("");
-    if (!group || !namespace) { setError("escolha o grupo e o namespace"); return; }
+    if (!group || !namespace) { setError("pick a group and a namespace"); return; }
     const qs = new URLSearchParams({ group, namespace }).toString();
     const res = await apiFetch(`/rbac/preview?${qs}`);
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) { setError(body.error ?? "não foi possível gerar o manifesto"); return; }
+    if (!res.ok) { setError(body.error ?? "could not generate the manifest"); return; }
     setManifest(body.manifest ?? "");
     setImpersonator(body.impersonator ?? "");
     setIdentity(body.impersonation_group ?? "");
@@ -55,8 +55,8 @@ export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }:
       body: JSON.stringify({ cluster_id: clusterID, group, namespace }),
     });
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) { setError(body.error ?? "não foi possível aplicar"); return; }
-    setMessage(body.message ?? "aplicado");
+    if (!res.ok) { setError(body.error ?? "could not apply"); return; }
+    setMessage(body.message ?? "applied");
   };
 
   const toggle = async (field: "impersonate" | "can_manage_rbac", value: boolean) => {
@@ -67,7 +67,7 @@ export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }:
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setError(body.error ?? "não foi possível alterar o cluster");
+      setError(body.error ?? "could not change the cluster");
       return;
     }
     onChanged();
@@ -76,11 +76,18 @@ export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }:
   return (
     <section className="glass-card p-4 space-y-4">
       <div>
-        <h2 className="text-sm font-semibold">RBAC do cluster</h2>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-          O escopo acima decide o que o CommitKube mostra. Isto decide o que o <strong>cluster</strong> deixa
-          o grupo fazer quando uma escrita sai com a identidade da pessoa.
+        <h2 className="text-sm font-semibold">Cluster RBAC</h2>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1 max-w-3xl">
+          Everything above is enforced by CommitKube. This is the second fence, enforced by Kubernetes
+          itself — so a mistake in ours is not the only thing standing between a team and someone else&apos;s
+          workloads. Optional: leave the switches off and CommitKube decides alone, exactly as before.
         </p>
+        <ol className="text-xs text-zinc-500 dark:text-zinc-400 mt-2 space-y-1 list-decimal list-inside max-w-3xl">
+          <li>Pick a group and a namespace. The rules come from the permissions that group already holds.</li>
+          <li><strong>Generate</strong> the manifest and apply it — with kubectl, or let CommitKube do it.</li>
+          <li>Only then turn on <em>let the cluster decide</em>. Before the bindings exist, it would answer
+              “no” to everything.</li>
+        </ol>
       </div>
 
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2">
@@ -90,35 +97,35 @@ export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }:
         </select>
         <select value={group} onChange={e => setGroup(e.target.value)}
           className="px-3 py-2 text-sm rounded-lg bg-[var(--input-bg)] border border-[var(--input-border)] text-[var(--input-fg)] focus:outline-none focus:border-brand-green/50">
-          <option value="">Grupo…</option>
+          <option value="">Group…</option>
           {groups.map(g => <option key={g.id} value={g.name}>{g.name}</option>)}
         </select>
         <select value={namespace} onChange={e => setNamespace(e.target.value)}
           className="px-3 py-2 text-sm font-mono rounded-lg bg-[var(--input-bg)] border border-[var(--input-border)] text-[var(--input-fg)] focus:outline-none focus:border-brand-green/50">
           <option value="">Namespace…</option>
-          <option value={ALL_NAMESPACES}>Todos os namespaces</option>
+          <option value={ALL_NAMESPACES}>All namespaces</option>
           {namespaces.map(ns => <option key={ns} value={ns}>{ns}</option>)}
         </select>
       </div>
 
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
-        As regras vêm das permissões que o grupo já tem acima — você não escolhe duas vezes. Conceder
-        <span className="font-mono"> k8s.scale </span> aqui em cima e esquecer o binding aqui embaixo é
-        exatamente como as duas metades passam a discordar.
+        The rules come from the permissions the group already holds — you do not pick twice. Granting
+        <span className="font-mono"> k8s.scale </span> above and forgetting the binding below is exactly how the two halves
+        come to disagree.
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={preview}
           className="px-3 py-1.5 text-sm rounded-lg border border-brand-green/30 text-brand-green hover:bg-brand-green/10 transition">
-          Gerar manifesto
+          Generate manifest
         </button>
         <button onClick={apply} disabled={!cluster?.can_manage_rbac || !manifest}
           className="px-3 py-1.5 text-sm rounded-lg border border-amber-500/40 text-amber-500 hover:bg-amber-500/10 transition disabled:opacity-40"
-          title={cluster?.can_manage_rbac ? "" : "este cluster não permite que o CommitKube escreva RBAC"}>
-          Aplicar no cluster
+          title={cluster?.can_manage_rbac ? "" : "this cluster does not let CommitKube write RBAC"}>
+          Apply to cluster
         </button>
         {!cluster?.can_manage_rbac && (
-          <span className="text-xs text-zinc-500">aplique você mesmo, ou libere abaixo</span>
+          <span className="text-xs text-zinc-500">apply it yourself, or allow it below</span>
         )}
       </div>
 
@@ -129,19 +136,19 @@ export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }:
         <div className="space-y-3">
           {identity && (
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Identidade personificada: <span className="font-mono text-brand-green">{identity}</span>
+              Impersonated identity: <span className="font-mono text-brand-green">{identity}</span>
             </p>
           )}
           {derivedFrom.length > 0 && (
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Derivado de: {derivedFrom.map(p => <span key={p} className="font-mono text-brand-green mr-2">{p}</span>)}
+              Derived from: {derivedFrom.map(p => <span key={p} className="font-mono text-brand-green mr-2">{p}</span>)}
             </p>
           )}
           {(derivedFrom.includes("k8s.secrets.read") || derivedFrom.includes("k8s.secrets.show")) && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
-              O Kubernetes não tem “ler o nome sem o valor”: <code>list</code> em Secrets devolve os objetos
-              inteiros. As duas permissões de Secret viram a mesma regra no cluster, e a diferença entre ver a
-              chave e ver o valor é o CommitKube que mascara — não o cluster.
+              Kubernetes has no “names without values” for Secrets: <code>list</code> returns whole objects. Both
+              Secret permissions become the same cluster rule, and the difference between seeing a key and
+              seeing a value is CommitKube masking it — not the cluster refusing.
             </p>
           )}
           <pre className="text-xs font-mono leading-relaxed whitespace-pre overflow-x-auto p-3 rounded-lg bg-zinc-100 dark:bg-zinc-900 border border-[var(--card-border)]">
@@ -149,11 +156,11 @@ export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }:
           </pre>
           <details>
             <summary className="text-xs text-zinc-500 dark:text-zinc-400 cursor-pointer">
-              ClusterRole que a credencial do CommitKube precisa (aplicar uma vez)
+              ClusterRole CommitKube’s own credential needs (apply once)
             </summary>
             <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-              O <code>resourceNames</code> não é detalhe: sem ele, quem personifica pode virar qualquer usuário do
-              cluster, inclusive um cluster-admin.
+              The <code>resourceNames</code> list is not a detail: without it, whoever impersonates can become any
+              user in the cluster, cluster-admins included.
             </p>
             <pre className="mt-2 text-xs font-mono leading-relaxed whitespace-pre overflow-x-auto p-3 rounded-lg bg-zinc-100 dark:bg-zinc-900 border border-[var(--card-border)]">
 {impersonator}
@@ -168,10 +175,10 @@ export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }:
             <input type="checkbox" checked={cluster.impersonate} className="mt-0.5 accent-brand-green"
               onChange={e => toggle("impersonate", e.target.checked)} />
             <span>
-              Deixar o cluster decidir
+              Let the cluster decide
               <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                Sem isto, o CommitKube usa a própria credencial e decide sozinho. Com isto, cada pessoa fala
-                com o cluster em nome dela. Marque depois de aplicar o manifesto acima.
+                Without this, CommitKube uses its own credential and decides alone. With it, each person talks to
+                the cluster as themselves. Turn it on after the manifest above is applied.
               </span>
             </span>
           </label>
@@ -180,9 +187,9 @@ export default function ClusterRBAC({ groups, clusters, namespaces, onChanged }:
             <input type="checkbox" checked={cluster.can_manage_rbac} className="mt-0.5 accent-amber-500"
               onChange={e => toggle("can_manage_rbac", e.target.checked)} />
             <span>
-              Deixar o CommitKube aplicar sozinho
+              Let CommitKube apply it for you
               <span className="block text-xs text-zinc-500 dark:text-zinc-400">
-                Sem isto, você aplica o manifesto com <code>kubectl</code>. Com isto, o botão acima faz por você.
+                Without this, you apply the manifest with <code>kubectl</code>. With it, the button above does it.
               </span>
             </span>
           </label>
