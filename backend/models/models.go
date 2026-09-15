@@ -244,7 +244,12 @@ type PermissionGrant struct {
 	SubjectType string    `gorm:"uniqueIndex:idx_pg_ident;not null" json:"subject_type"` // user | group
 	SubjectID   uint      `gorm:"uniqueIndex:idx_pg_ident;not null" json:"subject_id"`
 	Permission  string    `gorm:"uniqueIndex:idx_pg_ident;not null" json:"permission"`
-	GrantedBy   uint      `json:"granted_by"`
+	// Denied turns the row into a subtraction. Without it, a permission that
+	// arrives with the role could never be taken away from one person without
+	// demoting them, and the checkbox for it had to be disabled -- which reads
+	// as a broken control rather than as a rule.
+	Denied    bool `gorm:"default:false" json:"denied"`
+	GrantedBy uint `json:"granted_by"`
 }
 
 // NamespaceScope narrows which namespaces of a cluster a subject may see.

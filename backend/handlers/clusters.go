@@ -173,6 +173,15 @@ func requestClients(c *fiber.Ctx) (*kubernetes.Clientset, dynamic.Interface, err
 		return clientsFor(cl)
 	}
 
+	// Whoever administers the cluster is never impersonated. Otherwise the
+	// person who turns this on is the first one locked out: their ck: identity
+	// has no RBAC yet, every page goes blank, and the switch that would undo
+	// it is on a page that just went blank too.
+	role, _ := c.Locals("role").(string)
+	if permissionsFor(currentUserID(c), role)[PermClusterWrite] {
+		return clientsFor(cl)
+	}
+
 	cfg, err := clusterRestConfig(cl)
 	if err != nil {
 		return nil, nil, err
