@@ -5,7 +5,7 @@ import { apiFetch } from "@/lib/api";
 
 interface ClusterRow { id: number; name: string; impersonate: boolean; can_manage_rbac: boolean }
 interface Group { id: number; name: string }
-interface Template { name: string; description: string }
+const ALL_NAMESPACES = "*";
 
 /** Impersonation only decides anything if the cluster holds RBAC naming the
  *  identities being impersonated. This writes that, or hands over the YAML to
@@ -17,11 +17,11 @@ export default function ClusterRBAC({ groups, clusters, onChanged }: {
   clusters: ClusterRow[];
   onChanged: () => void;
 }) {
-  const [templates, setTemplates] = useState<Template[]>([]);
+  const [namespaces, setNamespaces] = useState<string[]>([]);
+  const [derivedFrom, setDerivedFrom] = useState<string[]>([]);
   const [clusterID, setClusterID] = useState<number | null>(null);
   const [group, setGroup] = useState("");
   const [namespace, setNamespace] = useState("");
-  const [template, setTemplate] = useState("viewer");
 
   const [manifest, setManifest] = useState("");
   const [impersonator, setImpersonator] = useState("");
@@ -29,9 +29,13 @@ export default function ClusterRBAC({ groups, clusters, onChanged }: {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  // The namespaces of the selected cluster, so nobody has to type one from
+  // memory and discover the typo only when the page stays empty.
   useEffect(() => {
-    apiFetch("/rbac/templates").then(r => r.json()).then(b => setTemplates(b.templates ?? [])).catch(() => {});
-  }, []);
+    if (clusterID === null) return;
+    apiFetch(`/kubernetes/namespaces?cluster=${clusterID}`)
+      .then(r => r.json()).then(b => setNamespaces(b.namespaces ?? [])).catch(() => setNamespaces([]));
+  }, [clusterID]);
   useEffect(() => {
     if (clusterID === null && clusters.length > 0) setClusterID(clusters[0].id);
   }, [clusters, clusterID]);
@@ -41,20 +45,21 @@ export default function ClusterRBAC({ groups, clusters, onChanged }: {
   const preview = useCallback(async () => {
     setError(""); setMessage("");
     if (!group || !namespace) { setError("escolha o grupo e o namespace"); return; }
-    const qs = new URLSearchParams({ group, namespace, template }).toString();
+    const qs = new URLSearchParams({ group, namespace }).toString();
     const res = await apiFetch(`/rbac/preview?${qs}`);
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { setError(body.error ?? "não foi possível gerar o manifesto"); return; }
     setManifest(body.manifest ?? "");
     setImpersonator(body.impersonator ?? "");
     setIdentity(body.impersonation_group ?? "");
-  }, [group, namespace, template]);
+    setDerivedFrom(body.derived_from ?? []);
+  }, [group, namespace]);
 
   const apply = async () => {
     setError(""); setMessage("");
     const res = await apiFetch("/rbac/apply", {
       method: "POST",
-      body: JSON.stringify({ cluster_id: clusterID, group, namespace, template }),
+      body: JSON.stringify({ cluster_id: clusterID, group, namespace }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) { setError(body.error ?? "não foi possível aplicar"); return; }
@@ -95,19 +100,19 @@ export default function ClusterRBAC({ groups, clusters, onChanged }: {
           <option value="">Grupo…</option>
           {groups.map(g => <option key={g.id} value={g.name}>{g.name}</option>)}
         </select>
-        <input value={namespace} onChange={e => setNamespace(e.target.value)} placeholder="namespace"
-          className="px-3 py-2 text-sm font-mono rounded-lg bg-[var(--input-bg)] border border-[var(--input-border)] text-[var(--input-fg)] focus:outline-none focus:border-brand-green/50" />
-        <select value={template} onChange={e => setTemplate(e.target.value)}
-          className="px-3 py-2 text-sm rounded-lg bg-[var(--input-bg)] border border-[var(--input-border)] text-[var(--input-fg)] focus:outline-none focus:border-brand-green/50">
-          {templates.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+        <select value={namespace} onChange={e => setNamespace(e.target.value)}
+          className="px-3 py-2 text-sm font-mono rounded-lg bg-[var(--input-bg)] border border-[var(--input-border)] text-[var(--input-fg)] focus:outline-none focus:border-brand-green/50">
+          <option value="">Namespace…</option>
+          <option value={ALL_NAMESPACES}>Todos os namespaces</option>
+          {namespaces.map(ns => <option key={ns} value={ns}>{ns}</option>)}
         </select>
       </div>
 
-      {templates.find(t => t.name === template) && (
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          {templates.find(t => t.name === template)!.description}
-        </p>
-      )}
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+        As regras vêm das permissões que o grupo já tem acima — você não escolhe duas vezes. Conceder
+        <span className="font-mono"> k8s.scale </span> aqui em cima e esquecer o binding aqui embaixo é
+        exatamente como as duas metades passam a discordar.
+      </p>
 
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={preview}
@@ -132,6 +137,18 @@ export default function ClusterRBAC({ groups, clusters, onChanged }: {
           {identity && (
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
               Identidade personificada: <span className="font-mono text-brand-green">{identity}</span>
+            </p>
+          )}
+          {derivedFrom.length > 0 && (
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Derivado de: {derivedFrom.map(p => <span key={p} className="font-mono text-brand-green mr-2">{p}</span>)}
+            </p>
+          )}
+          {(derivedFrom.includes("k8s.secrets.read") || derivedFrom.includes("k8s.secrets.show")) && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              O Kubernetes não tem “ler o nome sem o valor”: <code>list</code> em Secrets devolve os objetos
+              inteiros. As duas permissões de Secret viram a mesma regra no cluster, e a diferença entre ver a
+              chave e ver o valor é o CommitKube que mascara — não o cluster.
             </p>
           )}
           <pre className="text-xs font-mono leading-relaxed whitespace-pre overflow-x-auto p-3 rounded-lg bg-zinc-100 dark:bg-zinc-900 border border-[var(--card-border)]">

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import ClusterRBAC from "./ClusterRBAC";
+import AddCluster from "./AddCluster";
 
 interface User { id: number; email: string; role: string; is_active: boolean }
 interface Group { id: number; name: string; description: string }
@@ -268,6 +269,18 @@ export default function Page() {
           </section>
         </div>
       )}
+
+      <section className="glass-card p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">Clusters</h2>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">
+              {clusters.map(c => c.name).join(", ") || "nenhum"}
+            </p>
+          </div>
+          <AddCluster onAdded={load} />
+        </div>
+      </section>
 
       <ClusterRBAC groups={groups} clusters={clusters} onChanged={load} />
     </div>

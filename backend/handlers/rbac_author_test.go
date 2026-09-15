@@ -3,6 +3,8 @@ package handlers
 import (
 	"strings"
 	"testing"
+
+	rbacv1 "k8s.io/api/rbac/v1"
 )
 
 // Without resourceNames, a credential that may impersonate can become any user
@@ -40,52 +42,91 @@ func TestImpersonatorIsNarrowedToKnownGroups(t *testing.T) {
 }
 
 func TestRBACBindsTheGroupNotThePerson(t *testing.T) {
-	role, binding, err := buildRBAC("apis-team", "apis", "operator")
+	rules := rulesForPermissions(map[string]bool{PermK8sRead: true, PermK8sPodDelete: true})
+	role, binding, err := buildRBAC("apis-team", "apis", rules)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if role.Namespace != "apis" || binding.Namespace != "apis" {
+
+	r, ok := role.(*rbacv1.Role)
+	if !ok {
+		t.Fatalf("a namespaced request produced %T, not a Role", role)
+	}
+	b, ok := binding.(*rbacv1.RoleBinding)
+	if !ok {
+		t.Fatalf("a namespaced request produced %T, not a RoleBinding", binding)
+	}
+	if r.Namespace != "apis" || b.Namespace != "apis" {
 		t.Error("the objects are not scoped to the namespace they were asked for")
 	}
-	if len(binding.Subjects) != 1 || binding.Subjects[0].Kind != "Group" {
+	if len(b.Subjects) != 1 || b.Subjects[0].Kind != "Group" {
 		t.Fatal("the binding does not name a group, so it would need rewriting per person")
 	}
-	if binding.Subjects[0].Name != "ck:group:apis-team" {
-		t.Errorf("binding names %q, which is not what impersonation sends", binding.Subjects[0].Name)
+	if b.Subjects[0].Name != "ck:group:apis-team" {
+		t.Errorf("binding names %q, which is not what impersonation sends", b.Subjects[0].Name)
 	}
-	if binding.RoleRef.Name != role.Name {
+	if b.RoleRef.Name != r.Name {
 		t.Error("the binding points at a role that is not the one being created")
 	}
 }
 
-func TestViewerCannotReadLogsOrSecrets(t *testing.T) {
-	role, _, err := buildRBAC("team", "ns", "viewer")
+// A Role cannot span namespaces, so "all namespaces" has to become a different
+// pair of kinds -- getting this wrong would produce a Role that silently
+// covers one namespace while the UI says it covers every one.
+func TestAllNamespacesProducesClusterScopedObjects(t *testing.T) {
+	rules := rulesForPermissions(map[string]bool{PermK8sRead: true})
+	role, binding, err := buildRBAC("platform", AllNamespaces, rules)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, rule := range role.Rules {
-		for _, res := range rule.Resources {
-			if res == "pods/log" || res == "secrets" {
-				t.Errorf("the viewer template grants %q, which is what the separate templates are for", res)
-			}
-			if res == "pods" {
-				for _, v := range rule.Verbs {
-					if v == "delete" {
-						t.Error("the viewer template can delete pods")
-					}
-				}
-			}
-		}
+	if _, ok := role.(*rbacv1.ClusterRole); !ok {
+		t.Fatalf("got %T, want a ClusterRole", role)
+	}
+	crb, ok := binding.(*rbacv1.ClusterRoleBinding)
+	if !ok {
+		t.Fatalf("got %T, want a ClusterRoleBinding", binding)
+	}
+	if crb.RoleRef.Kind != "ClusterRole" {
+		t.Errorf("the binding refers to a %s, which cannot span namespaces", crb.RoleRef.Kind)
 	}
 }
 
-func TestUnknownTemplateIsRefusedWithTheKnownOnes(t *testing.T) {
-	_, _, err := buildRBAC("team", "ns", "superuser")
-	if err == nil {
-		t.Fatal("an unknown template was accepted")
+// The rules come from the permissions already granted, so the two halves
+// cannot disagree. A group with no Kubernetes permission has nothing to bind,
+// and saying so beats writing an empty Role.
+func TestRulesFollowThePermissionsGranted(t *testing.T) {
+	if rules := rulesForPermissions(map[string]bool{PermSCMRead: true}); len(rules) != 0 {
+		t.Errorf("an SCM-only group produced %d cluster rules", len(rules))
 	}
-	if !strings.Contains(err.Error(), "viewer") {
-		t.Errorf("the refusal does not say what is available: %v", err)
+	if _, _, err := buildRBAC("team", "ns", nil); err == nil {
+		t.Error("a group with no Kubernetes permission produced a binding anyway")
+	}
+
+	readOnly := rulesForPermissions(map[string]bool{PermK8sRead: true})
+	for _, r := range readOnly {
+		for _, v := range r.Verbs {
+			if v == "delete" || v == "update" {
+				t.Errorf("k8s.read alone granted %q", v)
+			}
+		}
+		for _, res := range r.Resources {
+			if res == "pods/log" || res == "secrets" {
+				t.Errorf("k8s.read alone granted %q", res)
+			}
+		}
+	}
+
+	withLogs := rulesForPermissions(map[string]bool{PermK8sRead: true, PermK8sLogsRead: true})
+	found := false
+	for _, r := range withLogs {
+		for _, res := range r.Resources {
+			if res == "pods/log" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("k8s.logs.read did not produce a pods/log rule")
 	}
 }
 
