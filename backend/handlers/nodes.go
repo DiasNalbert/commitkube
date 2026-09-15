@@ -14,9 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"os"
 )
 
 type NodeInfo struct {
@@ -54,19 +51,16 @@ var (
 	nodeAlertState = map[string]string{}
 )
 
+// buildK8sClient is the typed-only variant of buildK8sClients, with the same
+// caveat: it resolves the default cluster, so it belongs to pollers and to
+// code that genuinely has no request in hand.
 func buildK8sClient() (*kubernetes.Clientset, error) {
-	config, err := rest.InClusterConfig()
+	cl, err := defaultCluster()
 	if err != nil {
-		kubeconfig := os.Getenv("KUBECONFIG")
-		if kubeconfig == "" {
-			return nil, fmt.Errorf("not running in-cluster and KUBECONFIG is not set")
-		}
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load kubeconfig: %v", err)
-		}
+		return nil, err
 	}
-	return kubernetes.NewForConfig(config)
+	typed, _, err := clientsFor(cl)
+	return typed, err
 }
 
 func fetchNodeMetrics(clientset *kubernetes.Clientset) map[string]nodeUsage {
@@ -108,7 +102,7 @@ func fetchNodeMetrics(clientset *kubernetes.Clientset) map[string]nodeUsage {
 }
 
 func GetNodeStatus(c *fiber.Ctx) error {
-	clientset, err := buildK8sClient()
+	clientset, err := requestTyped(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -307,7 +301,7 @@ func GetNodePods(c *fiber.Ctx) error {
 		limit = 10
 	}
 
-	clientset, err := buildK8sClient()
+	clientset, err := requestTyped(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -323,7 +317,11 @@ func GetNodePods(c *fiber.Ctx) error {
 
 	// Throttling is not scraped here: this view ranks consumption, and the
 	// cadvisor scrape belongs to the poller.
-	pods, metricsAvail, err := collectPods(clientset, "", false)
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	pods, metricsAvail, err := collectPods(clientset, clusterID, "", false)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}

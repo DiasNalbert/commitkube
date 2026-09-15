@@ -1,4 +1,14 @@
+import { isClusterScoped, selectedCluster } from "./cluster";
+
 const API = process.env.NEXT_PUBLIC_API_URL ?? "/api";
+
+/** Cluster-bound requests carry the selected cluster. Doing it here rather
+ *  than at each call site means a page added later cannot forget it. */
+function withCluster(path: string): string {
+  const cluster = selectedCluster();
+  if (!cluster || !isClusterScoped(path)) return path;
+  return path + (path.includes("?") ? "&" : "?") + "cluster=" + encodeURIComponent(cluster);
+}
 
 async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = localStorage.getItem("refresh_token");
@@ -34,7 +44,9 @@ export async function apiFetch(
     ...(t ? { Authorization: `Bearer ${t}` } : {}),
   });
 
-  let res = await fetch(`${API}${path}`, {
+  const url = `${API}${withCluster(path)}`;
+
+  let res = await fetch(url, {
     ...options,
     headers: makeHeaders(token),
   });
@@ -42,7 +54,7 @@ export async function apiFetch(
   if (res.status === 401) {
     const newToken = await refreshAccessToken();
     if (newToken) {
-      res = await fetch(`${API}${path}`, {
+      res = await fetch(url, {
         ...options,
         headers: makeHeaders(newToken),
       });

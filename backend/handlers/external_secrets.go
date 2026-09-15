@@ -2,18 +2,15 @@ package handlers
 
 import (
 	"context"
-	"os"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
+	"golang.org/x/crypto/bcrypt"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var externalSecretGVR = schema.GroupVersionResource{
@@ -43,27 +40,17 @@ type SecretsListResponse struct {
 	ExternalSecretsError string               `json:"external_secrets_error,omitempty"`
 }
 
+// buildK8sClients is the pre-multicluster entry point, kept for callers that
+// have no request to resolve a cluster from -- the background pollers. It now
+// goes through the default cluster row rather than reaching for the ambient
+// credential directly. A handler serving a user should call requestClients
+// instead, so ?cluster= is honoured.
 func buildK8sClients() (kubernetes.Interface, dynamic.Interface, error) {
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		kubeconfig := os.Getenv("KUBECONFIG")
-		if kubeconfig == "" {
-			kubeconfig = os.Getenv("HOME") + "/.kube/config"
-		}
-		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-	typed, err := kubernetes.NewForConfig(cfg)
+	cl, err := defaultCluster()
 	if err != nil {
 		return nil, nil, err
 	}
-	dyn, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	return typed, dyn, nil
+	return clientsFor(cl)
 }
 
 func verifyCurrentUserPassword(c *fiber.Ctx, password string) (*models.User, error) {
@@ -91,7 +78,7 @@ func ListSecrets(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid password"})
 	}
 
-	typed, dyn, err := buildK8sClients()
+	typed, dyn, err := requestClients(c)
 	if err != nil {
 		return c.Status(503).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
 	}
@@ -201,7 +188,7 @@ func RevealSecretValue(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid password"})
 	}
 
-	typed, _, err := buildK8sClients()
+	typed, _, err := requestClients(c)
 	if err != nil {
 		return c.Status(503).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
 	}

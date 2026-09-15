@@ -88,15 +88,17 @@ func TestParseTraefikAccess(t *testing.T) {
 func TestUpstreamIndexResolvesAmbiguousNames(t *testing.T) {
 	useTestDB(t)
 	db.DB.Create(&models.ServiceNode{
+		ClusterID: testClusterID,
 		Namespace: "shop-prod", Kind: "Deployment", Name: "checkout",
 		Services: "checkout-api",
 	})
 	db.DB.Create(&models.ServiceNode{
+		ClusterID: testClusterID,
 		Namespace: "shop", Kind: "Deployment", Name: "prod-checkout",
 		Services: "prod-checkout",
 	})
 
-	ix := buildUpstreamIndex()
+	ix := buildUpstreamIndex(testClusterID)
 
 	ref := ix.resolve("shop-prod-checkout-api-8080")
 	if ref.Name != "checkout" || ref.Namespace != "shop-prod" {
@@ -144,7 +146,7 @@ func TestIsErrorLogLine(t *testing.T) {
 func TestAttributeCauseWithoutTrafficLayerIsUnknown(t *testing.T) {
 	useTestDB(t)
 	now := time.Now()
-	got := attributeCause(workloadRef{"prod", "Deployment", "checkout"},
+	got := attributeCause(testClusterID, workloadRef{"prod", "Deployment", "checkout"},
 		now.Add(-15*time.Minute), now)
 	if got.Kind != "unknown" {
 		t.Fatalf("cause = %q, want unknown when no dependency data exists", got.Kind)
@@ -157,19 +159,21 @@ func TestAttributeCauseNamesTheFailingDependency(t *testing.T) {
 
 	// A healthy in-cluster dependency alongside a third party that is down.
 	db.DB.Create(&models.DependencyFailure{
-		BucketAt: bucket, Source: "ebpf",
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Source: "ebpf",
 		SrcNamespace: "prod", SrcKind: "Deployment", SrcName: "checkout",
 		DstNamespace: "prod", DstKind: "Deployment", DstName: "postgres",
 		Attempts: 400,
 	})
 	db.DB.Create(&models.DependencyFailure{
-		BucketAt: bucket, Source: "ebpf",
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Source: "ebpf",
 		SrcNamespace: "prod", SrcKind: "Deployment", SrcName: "checkout",
 		DstKind: "External", DstName: "api.vendor.com", DstHost: "api.vendor.com",
 		Attempts: 120, ConnTimeout: 90, ConnRefused: 18,
 	})
 
-	got := attributeCause(workloadRef{"prod", "Deployment", "checkout"},
+	got := attributeCause(testClusterID, workloadRef{"prod", "Deployment", "checkout"},
 		bucket.Add(-10*time.Minute), bucket.Add(time.Minute))
 	if got.Kind != "dependency" {
 		t.Fatalf("cause = %q, want dependency", got.Kind)
@@ -186,13 +190,14 @@ func TestAttributeCauseIsSelfWhenDependenciesAnswer(t *testing.T) {
 	useTestDB(t)
 	bucket := bucketOf(time.Now())
 	db.DB.Create(&models.DependencyFailure{
-		BucketAt: bucket, Source: "ebpf",
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Source: "ebpf",
 		SrcNamespace: "prod", SrcKind: "Deployment", SrcName: "checkout",
 		DstNamespace: "prod", DstKind: "Deployment", DstName: "postgres",
 		Attempts: 400,
 	})
 
-	got := attributeCause(workloadRef{"prod", "Deployment", "checkout"},
+	got := attributeCause(testClusterID, workloadRef{"prod", "Deployment", "checkout"},
 		bucket.Add(-10*time.Minute), bucket.Add(time.Minute))
 	if got.Kind != "self" {
 		t.Fatalf("cause = %q, want self when every call completed", got.Kind)
@@ -207,18 +212,20 @@ func TestEvaluateAndReconcileOpensThenClosesAProblem(t *testing.T) {
 	bucket := bucketOf(now)
 
 	db.DB.Create(&models.ErrorWindow{
-		BucketAt: bucket, Namespace: "prod", WorkloadKind: "Deployment",
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Namespace: "prod", WorkloadKind: "Deployment",
 		Workload: "checkout", Source: "ingress",
 		Requests: 200, Status5xx: 60, TopStatus: "502 x60", TopPath: "/pay",
 	})
 	db.DB.Create(&models.DependencyFailure{
-		BucketAt: bucket, Source: "ebpf",
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Source: "ebpf",
 		SrcNamespace: "prod", SrcKind: "Deployment", SrcName: "checkout",
 		DstKind: "External", DstName: "api.vendor.com", DstHost: "api.vendor.com",
 		Attempts: 60, ConnTimeout: 60,
 	})
 
-	reconcileServiceProblems(evaluateWindows(now), now)
+	reconcileServiceProblems(testClusterID, evaluateWindows(testClusterID, now), now)
 
 	var open []models.ServiceProblem
 	db.DB.Where("closed_at IS NULL AND kind = ?", "http_5xx").Find(&open)
@@ -234,7 +241,7 @@ func TestEvaluateAndReconcileOpensThenClosesAProblem(t *testing.T) {
 	}
 
 	// A second pass over the same data accumulates rather than duplicating.
-	reconcileServiceProblems(evaluateWindows(now), now)
+	reconcileServiceProblems(testClusterID, evaluateWindows(testClusterID, now), now)
 	db.DB.Where("closed_at IS NULL AND kind = ?", "http_5xx").Find(&open)
 	if len(open) != 1 {
 		t.Fatalf("second pass produced %d open problems, want 1", len(open))
@@ -247,7 +254,7 @@ func TestEvaluateAndReconcileOpensThenClosesAProblem(t *testing.T) {
 	db.DB.Where("1 = 1").Delete(&models.ErrorWindow{})
 	db.DB.Where("1 = 1").Delete(&models.DependencyFailure{})
 	later := now.Add(errorBucket)
-	reconcileServiceProblems(evaluateWindows(later), later)
+	reconcileServiceProblems(testClusterID, evaluateWindows(testClusterID, later), later)
 
 	db.DB.Where("closed_at IS NULL").Find(&open)
 	if len(open) != 0 {
@@ -262,11 +269,12 @@ func TestEvaluateIgnoresLowTraffic(t *testing.T) {
 	useTestDB(t)
 	now := time.Now()
 	db.DB.Create(&models.ErrorWindow{
-		BucketAt: bucketOf(now), Namespace: "prod", WorkloadKind: "Deployment",
+		ClusterID: testClusterID,
+		BucketAt:  bucketOf(now), Namespace: "prod", WorkloadKind: "Deployment",
 		Workload: "batch", Source: "ingress", Requests: 3, Status5xx: 3,
 	})
 
-	if got := evaluateWindows(now); len(got) != 0 {
+	if got := evaluateWindows(testClusterID, now); len(got) != 0 {
 		t.Fatalf("got %d problems from 3 requests, want 0", len(got))
 	}
 }
@@ -347,7 +355,8 @@ func TestRPAFailureIsBlamedOnTheThirdParty(t *testing.T) {
 
 	line := `ERROR run failed: net::ERR_CONNECTION_TIMED_OUT at https://portal.vendor.com/nfe`
 	db.DB.Create(&models.LogErrorGroup{
-		BucketAt: bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind, Workload: ref.Name,
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind, Workload: ref.Name,
 		Fingerprint: fingerprint(logTemplate(line)), Template: logTemplate(line),
 		Class: classifyLogError(line), Target: extractTarget(line),
 		Count: 3, Sample: line, LastPod: "rpa-nfe-29284560-x7k2",
@@ -355,11 +364,12 @@ func TestRPAFailureIsBlamedOnTheThirdParty(t *testing.T) {
 	// Only three error lines across fifteen minutes: far below the per-minute
 	// rate a continuously serving workload is held to.
 	db.DB.Create(&models.ErrorWindow{
-		BucketAt: bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind,
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind,
 		Workload: ref.Name, Source: "logs", ErrorLogs: 3,
 	})
 
-	found := evaluateWindows(now)
+	found := evaluateWindows(testClusterID, now)
 	if len(found) != 1 {
 		t.Fatalf("got %d problems, want 1 -- a batch workload must not be held to a per-minute rate", len(found))
 	}
@@ -377,7 +387,7 @@ func TestRPAFailureIsBlamedOnTheThirdParty(t *testing.T) {
 		t.Errorf("title does not name the third party: %q", d.Title)
 	}
 
-	reconcileServiceProblems(found, now)
+	reconcileServiceProblems(testClusterID, found, now)
 	var open []models.ServiceProblem
 	db.DB.Where("closed_at IS NULL").Find(&open)
 	if len(open) != 1 || open[0].CauseSource != "logs" {
@@ -396,17 +406,19 @@ func TestBrokenAutomationIsNotBlamedOnTheThirdParty(t *testing.T) {
 
 	line := `selenium.common.exceptions.NoSuchElementException: Unable to locate element: #cpf`
 	db.DB.Create(&models.LogErrorGroup{
-		BucketAt: bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind, Workload: ref.Name,
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind, Workload: ref.Name,
 		Fingerprint: fingerprint(logTemplate(line)), Template: logTemplate(line),
 		Class: classifyLogError(line), Target: extractTarget(line),
 		Count: 2, Sample: line,
 	})
 	db.DB.Create(&models.ErrorWindow{
-		BucketAt: bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind,
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind,
 		Workload: ref.Name, Source: "logs", ErrorLogs: 2,
 	})
 
-	found := evaluateWindows(now)
+	found := evaluateWindows(testClusterID, now)
 	if len(found) != 1 {
 		t.Fatalf("got %d problems, want 1", len(found))
 	}
@@ -425,18 +437,20 @@ func TestObservedCauseWinsOverInferredCause(t *testing.T) {
 
 	line := `ERROR net::ERR_CONNECTION_TIMED_OUT at https://stale.vendor.com`
 	db.DB.Create(&models.LogErrorGroup{
-		BucketAt: bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind, Workload: ref.Name,
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind, Workload: ref.Name,
 		Fingerprint: "deadbeef", Template: logTemplate(line),
 		Class: classifyLogError(line), Target: extractTarget(line), Count: 50, Sample: line,
 	})
 	db.DB.Create(&models.DependencyFailure{
-		BucketAt: bucket, Source: "ebpf",
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Source: "ebpf",
 		SrcNamespace: ref.Namespace, SrcKind: ref.Kind, SrcName: ref.Name,
 		DstKind: "External", DstName: "real.vendor.com", DstHost: "real.vendor.com",
 		Attempts: 10, ConnRefused: 10,
 	})
 
-	got := attributeCause(ref, bucket.Add(-10*time.Minute), bucket.Add(time.Minute))
+	got := attributeCause(testClusterID, ref, bucket.Add(-10*time.Minute), bucket.Add(time.Minute))
 	if got.Source != "ebpf" || got.Host != "real.vendor.com" {
 		t.Fatalf("got %s/%s, want ebpf/real.vendor.com", got.Source, got.Host)
 	}
@@ -452,19 +466,21 @@ func TestLayer7FailureIsNotReportedAsSelf(t *testing.T) {
 	ref := workloadRef{"prod", "Deployment", "checkout"}
 
 	db.DB.Create(&models.DependencyFailure{
-		BucketAt: bucket, Source: "ebpf",
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Source: "ebpf",
 		SrcNamespace: ref.Namespace, SrcKind: ref.Kind, SrcName: ref.Name,
 		DstKind: "External", DstName: "api.vendor.com", DstHost: "api.vendor.com",
 		Attempts: 500, // every connection completed
 	})
 	line := `ERROR received status code 503 Service Unavailable from https://api.vendor.com/v1/pay`
 	db.DB.Create(&models.LogErrorGroup{
-		BucketAt: bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind, Workload: ref.Name,
+		ClusterID: testClusterID,
+		BucketAt:  bucket, Namespace: ref.Namespace, WorkloadKind: ref.Kind, Workload: ref.Name,
 		Fingerprint: fingerprint(logTemplate(line)), Template: logTemplate(line),
 		Class: classifyLogError(line), Target: extractTarget(line), Count: 120, Sample: line,
 	})
 
-	got := attributeCause(ref, bucket.Add(-10*time.Minute), bucket.Add(time.Minute))
+	got := attributeCause(testClusterID, ref, bucket.Add(-10*time.Minute), bucket.Add(time.Minute))
 	if got.Kind != "dependency" {
 		t.Fatalf("cause = %q, want dependency: L4 was clean but the vendor answered 503", got.Kind)
 	}

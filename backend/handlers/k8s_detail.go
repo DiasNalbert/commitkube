@@ -173,7 +173,7 @@ func GetK8sResourceDetail(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name is required"})
 	}
 
-	clientset, err := buildK8sClient()
+	clientset, err := requestTyped(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
 	}

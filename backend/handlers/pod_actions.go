@@ -61,7 +61,7 @@ func GetPodLogs(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
 	}
 
-	typed, _, err := buildK8sClients()
+	typed, _, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -85,7 +85,7 @@ func StreamPodLogs(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
 	}
 
-	typed, _, err := buildK8sClients()
+	typed, _, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -183,7 +183,7 @@ func DeletePod(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
 	}
 
-	typed, _, err := buildK8sClients()
+	typed, _, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -225,7 +225,7 @@ func RestartPod(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
 	}
 
-	typed, _, err := buildK8sClients()
+	typed, _, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -303,7 +303,7 @@ func ScalePodWorkload(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "replicas must be between 0 and 100"})
 	}
 
-	typed, _, err := buildK8sClients()
+	typed, _, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -376,7 +376,7 @@ func GetPodScaleTarget(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
 	}
 
-	typed, _, err := buildK8sClients()
+	typed, _, err := requestClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}

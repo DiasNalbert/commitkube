@@ -17,6 +17,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// testClusterID stands in for the cluster every fixture belongs to; the
+// point of the tests is the persistence, not which cluster it came from.
+const testClusterID = uint(1)
+
 // testIndex builds a cluster with two namespaces: `prod` holds api, payments
 // and a postgres StatefulSet; `data` holds a redis the prod side is not
 // supposed to be able to address by bare name.
@@ -327,7 +331,7 @@ func TestPersistTopologyUpserts(t *testing.T) {
 	}}
 
 	first := time.Now().Add(-time.Hour)
-	if err := persistTopology(ix, edges, first, 7); err != nil {
+	if err := persistTopology(testClusterID, ix, edges, first, 7); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
 
@@ -346,7 +350,7 @@ func TestPersistTopologyUpserts(t *testing.T) {
 
 	second := time.Now()
 	edges[0].Evidence = "PAYMENTS_URL=http://payments:8080/v2"
-	if err := persistTopology(ix, edges, second, 7); err != nil {
+	if err := persistTopology(testClusterID, ix, edges, second, 7); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
 
@@ -390,7 +394,7 @@ func TestPersistTopologyPrunes(t *testing.T) {
 
 	ix, _ := testIndex(t)
 	stale := time.Now().AddDate(0, 0, -30)
-	if err := persistTopology(ix, []edgeAcc{{
+	if err := persistTopology(testClusterID, ix, []edgeAcc{{
 		Src: nodeRef{"prod", "Deployment", "api"}, Dst: nodeRef{"prod", "Deployment", "payments"},
 		Source: "env", Confidence: "high",
 	}}, stale, 7); err != nil {
@@ -398,7 +402,7 @@ func TestPersistTopologyPrunes(t *testing.T) {
 	}
 
 	// A pass that discovers nothing must still prune what aged out.
-	if err := persistTopology(newTopoIndex(), nil, time.Now(), 7); err != nil {
+	if err := persistTopology(testClusterID, newTopoIndex(), nil, time.Now(), 7); err != nil {
 		t.Fatalf("empty pass: %v", err)
 	}
 

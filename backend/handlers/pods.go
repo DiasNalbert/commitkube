@@ -112,7 +112,7 @@ var metricsDerived = map[string]bool{
 
 // lastThrottlingByPod returns the most recent throttling percentage the poller
 // recorded for each pod.
-func lastThrottlingByPod() map[string]float64 {
+func lastThrottlingByPod(clusterID uint) map[string]float64 {
 	type row struct {
 		Namespace    string
 		PodName      string
@@ -121,8 +121,9 @@ func lastThrottlingByPod() map[string]float64 {
 	var rows []row
 	db.DB.Raw(`
 		SELECT namespace, pod_name, throttled_pct FROM pod_snapshots
-		WHERE id IN (SELECT MAX(id) FROM pod_snapshots GROUP BY namespace, pod_name)
-	`).Scan(&rows)
+		WHERE cluster_id = ?
+		  AND id IN (SELECT MAX(id) FROM pod_snapshots WHERE cluster_id = ? GROUP BY namespace, pod_name)
+	`, clusterID, clusterID).Scan(&rows)
 
 	out := make(map[string]float64, len(rows))
 	for _, r := range rows {
@@ -563,7 +564,7 @@ func humanBytes(b int64) string {
 
 // collectPods gathers every pod with its metrics in one pass. Shared by the
 // HTTP handler and the background poller.
-func collectPods(clientset *kubernetes.Clientset, namespace string, scrapeThrottling bool) ([]PodInfo, bool, error) {
+func collectPods(clientset *kubernetes.Clientset, clusterID uint, namespace string, scrapeThrottling bool) ([]PodInfo, bool, error) {
 	podList, err := clientset.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to list pods: %v", err)
@@ -590,7 +591,7 @@ func collectPods(clientset *kubernetes.Clientset, namespace string, scrapeThrott
 		}
 		throttleMap = fetchThrottling(clientset, nodeNames)
 	} else {
-		throttleMap = lastThrottlingByPod()
+		throttleMap = lastThrottlingByPod(clusterID)
 	}
 
 	pods := make([]PodInfo, 0, len(podList.Items))
@@ -605,12 +606,17 @@ func collectPods(clientset *kubernetes.Clientset, namespace string, scrapeThrott
 // GetPodStatus returns live pod resource usage and detected problems, read
 // straight from metrics.k8s.io rather than through ArgoCD.
 func GetPodStatus(c *fiber.Ctx) error {
-	clientset, err := buildK8sClient()
+	clientset, err := requestTyped(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	pods, metricsAvail, err := collectPods(clientset, c.Query("namespace"), false)
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	pods, metricsAvail, err := collectPods(clientset, clusterID, c.Query("namespace"), false)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -654,7 +660,12 @@ func GetPodHistory(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "pod or workload is required"})
 	}
 
-	q := db.DB.Model(&models.PodSnapshot{})
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	q := db.DB.Model(&models.PodSnapshot{}).Where("cluster_id = ?", clusterID)
 	if namespace != "" {
 		q = q.Where("namespace = ?", namespace)
 	}
@@ -667,7 +678,7 @@ func GetPodHistory(c *fiber.Ctx) error {
 	var snapshots []models.PodSnapshot
 	q.Order("recorded_at desc").Limit(2000).Find(&snapshots)
 
-	pq := db.DB.Model(&models.PodProblem{})
+	pq := db.DB.Model(&models.PodProblem{}).Where("cluster_id = ?", clusterID)
 	if namespace != "" {
 		pq = pq.Where("namespace = ?", namespace)
 	}
@@ -684,7 +695,11 @@ func GetPodHistory(c *fiber.Ctx) error {
 
 // GetPodProblems lists problems across the cluster, open ones by default.
 func GetPodProblems(c *fiber.Ctx) error {
-	q := db.DB.Model(&models.PodProblem{})
+	clusterID, err := requestClusterID(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	q := db.DB.Model(&models.PodProblem{}).Where("cluster_id = ?", clusterID)
 	if c.Query("status", "open") == "open" {
 		q = q.Where("closed_at IS NULL")
 	}
@@ -713,22 +728,33 @@ func PollPodMetrics() {
 			retentionDays = d
 		}
 	}
+	// Retention is by age alone: it applies to every cluster's rows equally.
 	db.DB.Where("recorded_at < ?", time.Now().AddDate(0, 0, -retentionDays)).Delete(&models.PodSnapshot{})
 
-	clientset, err := buildK8sClient()
+	// One pass per cluster. A cluster that is unreachable is skipped rather
+	// than aborting the sweep: its problems stay open, which is the truthful
+	// state, and the clusters that do answer are still sampled.
+	for _, cl := range allClusters() {
+		pollPodMetricsFor(&cl)
+	}
+}
+
+func pollPodMetricsFor(cl *models.Cluster) {
+	clientset, _, err := collectorClients(cl)
 	if err != nil {
+		fmt.Printf("Pod monitoring: cluster %s: %v\n", cl.Name, err)
 		return
 	}
 
-	pods, metricsAvail, err := collectPods(clientset, "", true)
+	pods, metricsAvail, err := collectPods(clientset, cl.ID, "", true)
 	if err != nil {
-		fmt.Printf("Pod monitoring: %v\n", err)
+		fmt.Printf("Pod monitoring: cluster %s: %v\n", cl.Name, err)
 		return
 	}
 
 	now := time.Now()
 	var openProblems []models.PodProblem
-	db.DB.Where("closed_at IS NULL").Find(&openProblems)
+	db.DB.Where("cluster_id = ? AND closed_at IS NULL", cl.ID).Find(&openProblems)
 	openByKey := map[string]models.PodProblem{}
 	for _, p := range openProblems {
 		openByKey[p.Namespace+"/"+p.PodName+"/"+p.Kind] = p
@@ -742,6 +768,7 @@ func PollPodMetrics() {
 
 		if metricsAvail {
 			db.DB.Create(&models.PodSnapshot{
+				ClusterID:    cl.ID,
 				RecordedAt:   now,
 				Namespace:    pod.Namespace,
 				PodName:      pod.Name,
@@ -780,6 +807,7 @@ func PollPodMetrics() {
 			}
 
 			db.DB.Create(&models.PodProblem{
+				ClusterID:   cl.ID,
 				OpenedAt:    now,
 				LastSeenAt:  now,
 				Namespace:   pod.Namespace,
