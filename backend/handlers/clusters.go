@@ -210,6 +210,8 @@ func ListClusters(c *fiber.Ctx) error {
 		row := fiber.Map{
 			"id": cl.ID, "name": cl.Name, "local": cl.Local,
 			"api_server": cl.APIServer, "is_default": cl.IsDefault,
+			"impersonate_writes": cl.ImpersonateWrites,
+			"can_manage_rbac":    cl.CanManageRBAC,
 		}
 		if typed, _, err := clientsFor(cl); err != nil {
 			row["reachable"], row["error"] = false, err.Error()
@@ -300,4 +302,106 @@ func DeleteCluster(c *fiber.Ctx) error {
 
 	db.LogAudit(currentUserID(c), "delete_cluster", "cluster", cl.Name, "", c.IP())
 	return c.JSON(fiber.Map{"message": "cluster removed"})
+}
+
+// ---- impersonation --------------------------------------------------------
+
+// Reads run as the collector, which is the Dynatrace-shaped half of this
+// design: one identity gathers everything and CommitKube decides who sees
+// what. Writes cannot work that way. A delete that runs as the collector is
+// attributed to the collector in the cluster's audit log, and its blast radius
+// is the collector's, not the person's. Impersonation fixes both without a
+// credential per user: the API server evaluates RBAC against the impersonated
+// identity, and records who did the impersonating.
+
+// ImpersonationName is the cluster identity for one CommitKube user. The email
+// is used verbatim so a cluster audit entry names a person rather than a row
+// id that only this database can resolve.
+func ImpersonationName(email string) string { return "ck:" + email }
+
+// ImpersonationGroup is the cluster identity for a CommitKube group, and the
+// thing RoleBindings actually name -- binding per group keeps the number of
+// cluster objects fixed as people come and go.
+func ImpersonationGroup(name string) string { return "ck:group:" + name }
+
+// impersonationFor builds the identity a request should act as.
+func impersonationFor(c *fiber.Ctx) (rest.ImpersonationConfig, error) {
+	var user models.User
+	if err := db.DB.First(&user, currentUserID(c)).Error; err != nil {
+		return rest.ImpersonationConfig{}, fmt.Errorf("cannot resolve the calling user")
+	}
+
+	var groupNames []string
+	db.DB.Model(&models.UserGroup{}).
+		Where("id IN (?)", db.DB.Model(&models.UserGroupMember{}).
+			Select("group_id").Where("user_id = ?", user.ID)).
+		Pluck("name", &groupNames)
+
+	groups := make([]string, 0, len(groupNames))
+	for _, g := range groupNames {
+		groups = append(groups, ImpersonationGroup(g))
+	}
+	return rest.ImpersonationConfig{UserName: ImpersonationName(user.Email), Groups: groups}, nil
+}
+
+// writeClients returns the client a mutating handler should use. When the
+// cluster has impersonation on, the call carries the caller's identity and the
+// cluster decides; when it does not, this is the collector, exactly as before.
+func writeClients(c *fiber.Ctx) (*kubernetes.Clientset, error) {
+	cl, err := clusterFromRequest(c)
+	if err != nil {
+		return nil, err
+	}
+	if !cl.ImpersonateWrites {
+		typed, _, err := clientsFor(cl)
+		return typed, err
+	}
+
+	cfg, err := clusterRestConfig(cl)
+	if err != nil {
+		return nil, err
+	}
+	imp, err := impersonationFor(c)
+	if err != nil {
+		return nil, err
+	}
+	// A fresh config per request on purpose: the identity is part of it, and a
+	// cached client would carry the previous caller's.
+	cfg = rest.CopyConfig(cfg)
+	cfg.Impersonate = imp
+	return kubernetes.NewForConfig(cfg)
+}
+
+// UpdateClusterFlags toggles the two switches that change how much this
+// product is trusted with. Behind iam.manage, so only root reaches them.
+func UpdateClusterFlags(c *fiber.Ctx) error {
+	var cl models.Cluster
+	if err := db.DB.First(&cl, c.Params("id")).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "cluster not found"})
+	}
+	var req struct {
+		ImpersonateWrites *bool `json:"impersonate_writes"`
+		CanManageRBAC     *bool `json:"can_manage_rbac"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+
+	updates := map[string]interface{}{}
+	if req.ImpersonateWrites != nil {
+		updates["impersonate_writes"] = *req.ImpersonateWrites
+	}
+	if req.CanManageRBAC != nil {
+		updates["can_manage_rbac"] = *req.CanManageRBAC
+	}
+	if len(updates) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "nothing to change"})
+	}
+	db.DB.Model(&cl).Updates(updates)
+
+	// Both switches widen what the product may do, so they are worth an audit
+	// entry naming who flipped them.
+	db.LogAudit(currentUserID(c), "update_cluster_flags", "cluster", cl.Name,
+		fmt.Sprintf("%v", updates), c.IP())
+	return c.JSON(fiber.Map{"message": "cluster updated"})
 }

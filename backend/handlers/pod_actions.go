@@ -192,7 +192,7 @@ func DeletePod(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
 	}
 
-	typed, _, err := requestClients(c)
+	typed, err := writeClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -237,7 +237,7 @@ func RestartPod(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace and pod are required"})
 	}
 
-	typed, _, err := requestClients(c)
+	typed, err := writeClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -315,7 +315,7 @@ func ScalePodWorkload(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "replicas must be between 0 and 100"})
 	}
 
-	typed, _, err := requestClients(c)
+	typed, err := writeClients(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
