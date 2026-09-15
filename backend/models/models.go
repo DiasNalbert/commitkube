@@ -219,6 +219,18 @@ type Cluster struct {
 	CreatedBy   uint `json:"created_by"`
 }
 
+// PermissionGrant attaches one permission to a user or a group, on top of
+// whatever their role already carries. Roles stay coarse; a grant is how
+// someone gets one more capability without being promoted to admin to get it.
+type PermissionGrant struct {
+	ID          uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	SubjectType string    `gorm:"uniqueIndex:idx_pg_ident;not null" json:"subject_type"` // user | group
+	SubjectID   uint      `gorm:"uniqueIndex:idx_pg_ident;not null" json:"subject_id"`
+	Permission  string    `gorm:"uniqueIndex:idx_pg_ident;not null" json:"permission"`
+	GrantedBy   uint      `json:"granted_by"`
+}
+
 type ArgoCDInstance struct {
 	ID               uint           `gorm:"primarykey;autoIncrement" json:"id"`
 	CreatedAt        time.Time      `json:"-"`

@@ -71,6 +71,7 @@ func ConnectDB() {
 		&models.BitbucketProject{},
 		&models.ArgoCDInstance{},
 		&models.Cluster{},
+		&models.PermissionGrant{},
 		&models.SMTPConfig{},
 		&models.ScanResult{},
 		&models.ScanHistory{},

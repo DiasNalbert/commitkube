@@ -14,6 +14,32 @@ import (
 	"github.com/kubecommit/backend/middleware"
 )
 
+// Routing and policy on the same line, on purpose: a new endpoint cannot be
+// added without stating who may call it, and AuditRoutePermissions refuses to
+// start the server if one slips through anyway. Four role checks spread across
+// a hundred routes is how the previous arrangement left everything added since
+// open to any account.
+func guarded(r fiber.Router, method, path, perm string, h fiber.Handler) {
+	handlers.Declare(method, path, perm)
+	switch method {
+	case "GET":
+		r.Get(path, handlers.Requires(perm), h)
+	case "POST":
+		r.Post(path, handlers.Requires(perm), h)
+	case "PUT":
+		r.Put(path, handlers.Requires(perm), h)
+	case "DELETE":
+		r.Delete(path, handlers.Requires(perm), h)
+	case "PATCH":
+		r.Patch(path, handlers.Requires(perm), h)
+	}
+}
+
+func get(r fiber.Router, path, perm string, h fiber.Handler)  { guarded(r, "GET", path, perm, h) }
+func post(r fiber.Router, path, perm string, h fiber.Handler) { guarded(r, "POST", path, perm, h) }
+func put(r fiber.Router, path, perm string, h fiber.Handler)  { guarded(r, "PUT", path, perm, h) }
+func del(r fiber.Router, path, perm string, h fiber.Handler)  { guarded(r, "DELETE", path, perm, h) }
+
 func main() {
 	db.ConnectDB()
 	_ = crypto.MasterKey() // validate ENCRYPTION_KEY at startup
@@ -179,141 +205,160 @@ func main() {
 
 	api := app.Group("/api", middleware.AuthRequired())
 
-	api.Post("/repositories", handlers.CreateRepository)
-	api.Post("/repositories/preflight", handlers.PreflightRepository)
-	api.Post("/repositories/import", handlers.ImportRepository)
-	api.Post("/repositories/import-project", handlers.ImportProject)
-	api.Get("/repositories", handlers.ListRepositories)
-	api.Delete("/repositories/:name", handlers.DeleteRepository)
-	api.Get("/repositories/:name/src", handlers.GetRepositorySrc)
-	api.Put("/repositories/:name/src", handlers.CommitFileEdit)
-	api.Get("/repositories/:name/branches", handlers.GetRepositoryBranches)
-	api.Get("/repositories/:name/commits", handlers.GetRepositoryCommits)
-	api.Get("/repositories/:name/pipelines", handlers.GetRepositoryPipelines)
-	api.Post("/repositories/:name/pipelines/trigger", handlers.TriggerPipeline)
-	api.Post("/repositories/:name/pipelines/:pipeline_uuid/stop", handlers.StopPipeline)
-	api.Get("/repositories/:name/pipelines/:pipeline_uuid/steps", handlers.GetPipelineSteps)
-	api.Get("/repositories/:name/pipelines/:pipeline_uuid/steps/:step_uuid/log", handlers.GetStepLog)
-	api.Post("/repositories/:name/scan", handlers.RunTrivyScan)
-	api.Get("/repositories/:name/scan-history", handlers.GetScanHistory)
-	api.Post("/repositories/:name/review", handlers.ReviewFile)
-	api.Post("/repositories/:name/analyze", handlers.AnalyzeRepo)
-	api.Get("/scan-dashboard", handlers.GetScanDashboard)
-	api.Get("/scan-dashboard/:name", handlers.GetRepoScanDetail)
+	post(api, "/repositories", handlers.PermSCMWrite, handlers.CreateRepository)
+	post(api, "/repositories/preflight", handlers.PermSCMWrite, handlers.PreflightRepository)
+	post(api, "/repositories/import", handlers.PermSCMWrite, handlers.ImportRepository)
+	post(api, "/repositories/import-project", handlers.PermSCMWrite, handlers.ImportProject)
+	get(api, "/repositories", handlers.PermSCMRead, handlers.ListRepositories)
+	del(api, "/repositories/:name", handlers.PermSCMWrite, handlers.DeleteRepository)
+	get(api, "/repositories/:name/src", handlers.PermSCMRead, handlers.GetRepositorySrc)
+	put(api, "/repositories/:name/src", handlers.PermSCMWrite, handlers.CommitFileEdit)
+	get(api, "/repositories/:name/branches", handlers.PermSCMRead, handlers.GetRepositoryBranches)
+	get(api, "/repositories/:name/commits", handlers.PermSCMRead, handlers.GetRepositoryCommits)
+	get(api, "/repositories/:name/pipelines", handlers.PermSCMRead, handlers.GetRepositoryPipelines)
+	post(api, "/repositories/:name/pipelines/trigger", handlers.PermSCMWrite, handlers.TriggerPipeline)
+	post(api, "/repositories/:name/pipelines/:pipeline_uuid/stop", handlers.PermSCMWrite, handlers.StopPipeline)
+	get(api, "/repositories/:name/pipelines/:pipeline_uuid/steps", handlers.PermSCMRead, handlers.GetPipelineSteps)
+	get(api, "/repositories/:name/pipelines/:pipeline_uuid/steps/:step_uuid/log", handlers.PermSCMRead, handlers.GetStepLog)
+	post(api, "/repositories/:name/scan", handlers.PermSecurityScan, handlers.RunTrivyScan)
+	get(api, "/repositories/:name/scan-history", handlers.PermSecurityRead, handlers.GetScanHistory)
+	post(api, "/repositories/:name/review", handlers.PermSCMWrite, handlers.ReviewFile)
+	post(api, "/repositories/:name/analyze", handlers.PermSecurityScan, handlers.AnalyzeRepo)
+	get(api, "/scan-dashboard", handlers.PermSecurityRead, handlers.GetScanDashboard)
+	get(api, "/scan-dashboard/:name", handlers.PermSecurityRead, handlers.GetRepoScanDetail)
 
-	api.Get("/settings", handlers.GetSettings)
-	api.Put("/settings", handlers.UpdateSettings)
+	get(api, "/settings", handlers.PermSettingsRead, handlers.GetSettings)
+	put(api, "/settings", handlers.PermSettingsWrite, handlers.UpdateSettings)
 
-	api.Get("/smtp", handlers.GetSMTPConfig)
-	api.Put("/smtp", handlers.UpdateSMTPConfig)
+	get(api, "/smtp", handlers.PermSettingsRead, handlers.GetSMTPConfig)
+	put(api, "/smtp", handlers.PermSettingsWrite, handlers.UpdateSMTPConfig)
 
-	api.Get("/templates", handlers.ListTemplates)
-	api.Post("/templates", handlers.CreateTemplate)
-	api.Put("/templates/:id", handlers.UpdateTemplate)
-	api.Delete("/templates/:id", handlers.DeleteTemplate)
+	get(api, "/templates", handlers.PermTemplateRead, handlers.ListTemplates)
+	post(api, "/templates", handlers.PermTemplateWrite, handlers.CreateTemplate)
+	put(api, "/templates/:id", handlers.PermTemplateWrite, handlers.UpdateTemplate)
+	del(api, "/templates/:id", handlers.PermTemplateWrite, handlers.DeleteTemplate)
 
-	api.Get("/global-vars", handlers.ListGlobalVars)
-	api.Post("/global-vars", handlers.CreateGlobalVar)
-	api.Put("/global-vars/:id", handlers.UpdateGlobalVar)
-	api.Delete("/global-vars/:id", handlers.DeleteGlobalVar)
+	get(api, "/global-vars", handlers.PermSettingsRead, handlers.ListGlobalVars)
+	post(api, "/global-vars", handlers.PermSettingsWrite, handlers.CreateGlobalVar)
+	put(api, "/global-vars/:id", handlers.PermSettingsWrite, handlers.UpdateGlobalVar)
+	del(api, "/global-vars/:id", handlers.PermSettingsWrite, handlers.DeleteGlobalVar)
 
-	api.Get("/workspaces", handlers.ListWorkspaces)
-	api.Post("/workspaces", handlers.CreateWorkspace)
-	api.Put("/workspaces/:id", handlers.UpdateWorkspace)
-	api.Delete("/workspaces/:id", handlers.DeleteWorkspace)
+	get(api, "/workspaces", handlers.PermSCMRead, handlers.ListWorkspaces)
+	post(api, "/workspaces", handlers.PermSCMWrite, handlers.CreateWorkspace)
+	put(api, "/workspaces/:id", handlers.PermSCMWrite, handlers.UpdateWorkspace)
+	del(api, "/workspaces/:id", handlers.PermSCMWrite, handlers.DeleteWorkspace)
 
-	api.Get("/workspaces/:workspace_id/projects", handlers.ListProjects)
-	api.Post("/workspaces/:workspace_id/projects", handlers.CreateProject)
-	api.Delete("/workspaces/:workspace_id/projects/:id", handlers.DeleteProject)
+	get(api, "/workspaces/:workspace_id/projects", handlers.PermSCMRead, handlers.ListProjects)
+	post(api, "/workspaces/:workspace_id/projects", handlers.PermSCMWrite, handlers.CreateProject)
+	del(api, "/workspaces/:workspace_id/projects/:id", handlers.PermSCMWrite, handlers.DeleteProject)
 
-	api.Get("/argocd-instances", handlers.ListArgoCDInstances)
-	api.Post("/argocd-instances", handlers.CreateArgoCDInstance)
-	api.Put("/argocd-instances/:id", handlers.UpdateArgoCDInstance)
-	api.Delete("/argocd-instances/:id", handlers.DeleteArgoCDInstance)
+	get(api, "/argocd-instances", handlers.PermSettingsRead, handlers.ListArgoCDInstances)
+	post(api, "/argocd-instances", handlers.PermSettingsWrite, handlers.CreateArgoCDInstance)
+	put(api, "/argocd-instances/:id", handlers.PermSettingsWrite, handlers.UpdateArgoCDInstance)
+	del(api, "/argocd-instances/:id", handlers.PermSettingsWrite, handlers.DeleteArgoCDInstance)
 
-	api.Get("/registry-credentials", handlers.ListRegistryCredentials)
-	api.Post("/registry-credentials", handlers.CreateRegistryCredential)
-	api.Put("/registry-credentials/:id", handlers.UpdateRegistryCredential)
-	api.Delete("/registry-credentials/:id", handlers.DeleteRegistryCredential)
+	get(api, "/registry-credentials", handlers.PermSettingsRead, handlers.ListRegistryCredentials)
+	post(api, "/registry-credentials", handlers.PermSettingsWrite, handlers.CreateRegistryCredential)
+	put(api, "/registry-credentials/:id", handlers.PermSettingsWrite, handlers.UpdateRegistryCredential)
+	del(api, "/registry-credentials/:id", handlers.PermSettingsWrite, handlers.DeleteRegistryCredential)
 
-	api.Get("/dashboard/summary", handlers.GetDashboardSummary)
+	get(api, "/dashboard/summary", handlers.PermSCMRead, handlers.GetDashboardSummary)
 
-	api.Get("/monitoring/nodes", handlers.GetNodeStatus)
-	api.Get("/monitoring/nodes/pods", handlers.GetNodePods)
-	api.Get("/monitoring/pods", handlers.GetPodStatus)
-	api.Get("/monitoring/pods/history", handlers.GetPodHistory)
-	api.Get("/monitoring/pods/problems", handlers.GetPodProblems)
-	api.Get("/monitoring/services/problems", handlers.GetServiceProblems)
-	api.Get("/monitoring/services/errors", handlers.GetServiceErrorSeries)
-	api.Get("/monitoring/services/log-errors", handlers.GetLogErrors)
+	get(api, "/monitoring/nodes", handlers.PermK8sRead, handlers.GetNodeStatus)
+	get(api, "/monitoring/nodes/pods", handlers.PermK8sRead, handlers.GetNodePods)
+	get(api, "/monitoring/pods", handlers.PermK8sRead, handlers.GetPodStatus)
+	get(api, "/monitoring/pods/history", handlers.PermK8sRead, handlers.GetPodHistory)
+	get(api, "/monitoring/pods/problems", handlers.PermK8sRead, handlers.GetPodProblems)
+	get(api, "/monitoring/services/problems", handlers.PermK8sRead, handlers.GetServiceProblems)
+	get(api, "/monitoring/services/errors", handlers.PermK8sRead, handlers.GetServiceErrorSeries)
+	get(api, "/monitoring/services/log-errors", handlers.PermK8sRead, handlers.GetLogErrors)
 
-	api.Get("/kubernetes/topology", handlers.GetTopology)
-	api.Post("/kubernetes/topology/refresh", handlers.RefreshTopology)
+	get(api, "/kubernetes/topology", handlers.PermK8sRead, handlers.GetTopology)
+	post(api, "/kubernetes/topology/refresh", handlers.PermK8sRead, handlers.RefreshTopology)
 
-	api.Get("/kubernetes/workloads", handlers.GetWorkloads)
-	api.Get("/kubernetes/workloads/history", handlers.GetWorkloadHistory)
-	api.Get("/kubernetes/namespaces", handlers.ListK8sNamespaceNames)
-	api.Get("/kubernetes/resources/:kind", handlers.ListK8sResources)
-	api.Get("/kubernetes/manifest/:kind/:name", handlers.GetK8sManifest)
-	api.Get("/kubernetes/detail/:kind/:name", handlers.GetK8sResourceDetail)
-	api.Get("/kubernetes/cluster-overview", handlers.GetClusterOverview)
+	get(api, "/kubernetes/workloads", handlers.PermK8sRead, handlers.GetWorkloads)
+	get(api, "/kubernetes/workloads/history", handlers.PermK8sRead, handlers.GetWorkloadHistory)
+	get(api, "/kubernetes/namespaces", handlers.PermK8sRead, handlers.ListK8sNamespaceNames)
+	get(api, "/kubernetes/resources/:kind", handlers.PermK8sRead, handlers.ListK8sResources)
+	get(api, "/kubernetes/manifest/:kind/:name", handlers.PermK8sRead, handlers.GetK8sManifest)
+	get(api, "/kubernetes/detail/:kind/:name", handlers.PermK8sRead, handlers.GetK8sResourceDetail)
+	get(api, "/kubernetes/cluster-overview", handlers.PermK8sRead, handlers.GetClusterOverview)
 
-	api.Get("/clusters", handlers.ListClusters)
-	api.Post("/clusters", handlers.CreateCluster)
-	api.Delete("/clusters/:id", handlers.DeleteCluster)
+	get(api, "/clusters", handlers.PermK8sRead, handlers.ListClusters)
+	post(api, "/clusters", handlers.PermClusterWrite, handlers.CreateCluster)
+	del(api, "/clusters/:id", handlers.PermClusterWrite, handlers.DeleteCluster)
 
-	api.Get("/kubernetes/pods/logs", handlers.GetPodLogs)
-	api.Get("/kubernetes/pods/logs/stream", handlers.StreamPodLogs)
-	api.Get("/kubernetes/pods/scale-target", handlers.GetPodScaleTarget)
-	api.Post("/kubernetes/pods/restart", handlers.RestartPod)
-	api.Post("/kubernetes/pods/scale", handlers.ScalePodWorkload)
-	api.Delete("/kubernetes/pods", handlers.DeletePod)
+	get(api, "/kubernetes/pods/logs", handlers.PermK8sLogsRead, handlers.GetPodLogs)
+	get(api, "/kubernetes/pods/logs/stream", handlers.PermK8sLogsRead, handlers.StreamPodLogs)
+	get(api, "/kubernetes/pods/scale-target", handlers.PermK8sScale, handlers.GetPodScaleTarget)
+	post(api, "/kubernetes/pods/restart", handlers.PermK8sPodDelete, handlers.RestartPod)
+	post(api, "/kubernetes/pods/scale", handlers.PermK8sScale, handlers.ScalePodWorkload)
+	del(api, "/kubernetes/pods", handlers.PermK8sPodDelete, handlers.DeletePod)
 
-	api.Get("/users/me", handlers.GetMe)
-	api.Get("/users/me/keys", handlers.GetMyKeys)
-	api.Put("/users/me/keys", handlers.SaveMyKeys)
-	api.Get("/users", handlers.ListUsers)
-	api.Post("/users", handlers.CreateUser)
-	api.Delete("/users/:id", handlers.DeleteUser)
-	api.Put("/users/:id/role", handlers.UpdateUserRole)
-	api.Put("/users/:id/password", handlers.ChangePassword)
-	api.Delete("/users/:id/mfa", handlers.ResetUserMFA)
+	get(api, "/users/me", handlers.PermSelf, handlers.GetMe)
+	get(api, "/users/me/keys", handlers.PermSelf, handlers.GetMyKeys)
+	put(api, "/users/me/keys", handlers.PermSelf, handlers.SaveMyKeys)
+	get(api, "/users", handlers.PermUserManage, handlers.ListUsers)
+	post(api, "/users", handlers.PermUserManage, handlers.CreateUser)
+	del(api, "/users/:id", handlers.PermUserManage, handlers.DeleteUser)
+	put(api, "/users/:id/role", handlers.PermUserManage, handlers.UpdateUserRole)
+	put(api, "/users/:id/password", handlers.PermSelf, handlers.ChangePassword)
+	del(api, "/users/:id/mfa", handlers.PermUserManage, handlers.ResetUserMFA)
 
-	api.Get("/webhooks", handlers.ListWebhookConfigs)
-	api.Post("/webhooks", handlers.CreateWebhookConfig)
-	api.Put("/webhooks/:id", handlers.UpdateWebhookConfig)
-	api.Delete("/webhooks/:id", handlers.DeleteWebhookConfig)
-	api.Post("/webhooks/:id/test", handlers.TestWebhookConfig)
-	api.Get("/webhooks/events", func(c *fiber.Ctx) error {
+	get(api, "/webhooks", handlers.PermSettingsRead, handlers.ListWebhookConfigs)
+	post(api, "/webhooks", handlers.PermNotifyWrite, handlers.CreateWebhookConfig)
+	put(api, "/webhooks/:id", handlers.PermNotifyWrite, handlers.UpdateWebhookConfig)
+	del(api, "/webhooks/:id", handlers.PermNotifyWrite, handlers.DeleteWebhookConfig)
+	post(api, "/webhooks/:id/test", handlers.PermNotifyWrite, handlers.TestWebhookConfig)
+	get(api, "/webhooks/events", handlers.PermSettingsRead, func(c *fiber.Ctx) error {
 		return c.SendString(handlers.WebhookEventsJSON())
 	})
 
-	api.Get("/golden-paths", handlers.ListGoldenPaths)
-	api.Post("/golden-paths", handlers.CreateGoldenPath)
-	api.Get("/golden-paths/:id", handlers.GetGoldenPath)
-	api.Put("/golden-paths/:id", handlers.UpdateGoldenPath)
-	api.Delete("/golden-paths/:id", handlers.DeleteGoldenPath)
-	api.Post("/repositories/:name/approve", handlers.ApproveRepository)
+	get(api, "/golden-paths", handlers.PermTemplateRead, handlers.ListGoldenPaths)
+	post(api, "/golden-paths", handlers.PermTemplateWrite, handlers.CreateGoldenPath)
+	get(api, "/golden-paths/:id", handlers.PermTemplateRead, handlers.GetGoldenPath)
+	put(api, "/golden-paths/:id", handlers.PermTemplateWrite, handlers.UpdateGoldenPath)
+	del(api, "/golden-paths/:id", handlers.PermTemplateWrite, handlers.DeleteGoldenPath)
+	post(api, "/repositories/:name/approve", handlers.PermSCMApprove, handlers.ApproveRepository)
 
-	api.Post("/secrets/list", handlers.ListSecrets)
-	api.Post("/secrets/reveal", handlers.RevealSecretValue)
+	post(api, "/secrets/list", handlers.PermK8sSecretsRead, handlers.ListSecrets)
+	post(api, "/secrets/reveal", handlers.PermK8sSecretsShow, handlers.RevealSecretValue)
 
-	api.Get("/audit-logs", handlers.GetAuditLogs)
+	get(api, "/audit-logs", handlers.PermAuditRead, handlers.GetAuditLogs)
 
-	api.Get("/groups", handlers.ListGroups)
-	api.Post("/groups", handlers.CreateGroup)
-	api.Put("/groups/:id", handlers.UpdateGroup)
-	api.Delete("/groups/:id", handlers.DeleteGroup)
-	api.Post("/groups/:id/members", handlers.AddGroupMember)
-	api.Delete("/groups/:id/members/:user_id", handlers.RemoveGroupMember)
-	api.Post("/groups/:id/workspaces", handlers.AddGroupWorkspace)
-	api.Delete("/groups/:id/workspaces/:workspace_id", handlers.RemoveGroupWorkspace)
+	get(api, "/me/permissions", handlers.PermSelf, handlers.GetMyPermissions)
+	get(api, "/permissions/catalog", handlers.PermUserManage, handlers.ListPermissionCatalog)
+	get(api, "/permissions/grants", handlers.PermUserManage, handlers.ListGrants)
+	post(api, "/permissions/grants", handlers.PermUserManage, handlers.GrantPermission)
+	del(api, "/permissions/grants", handlers.PermUserManage, handlers.RevokePermission)
 
-	api.Get("/notifications", handlers.ListNotifications)
-	api.Post("/notifications", handlers.CreateNotification)
-	api.Put("/notifications/:id", handlers.UpdateNotification)
-	api.Delete("/notifications/:id", handlers.DeleteNotification)
-	api.Post("/notifications/:id/test", handlers.TestNotification)
+	get(api, "/groups", handlers.PermUserManage, handlers.ListGroups)
+	post(api, "/groups", handlers.PermUserManage, handlers.CreateGroup)
+	put(api, "/groups/:id", handlers.PermUserManage, handlers.UpdateGroup)
+	del(api, "/groups/:id", handlers.PermUserManage, handlers.DeleteGroup)
+	post(api, "/groups/:id/members", handlers.PermUserManage, handlers.AddGroupMember)
+	del(api, "/groups/:id/members/:user_id", handlers.PermUserManage, handlers.RemoveGroupMember)
+	post(api, "/groups/:id/workspaces", handlers.PermUserManage, handlers.AddGroupWorkspace)
+	del(api, "/groups/:id/workspaces/:workspace_id", handlers.PermUserManage, handlers.RemoveGroupWorkspace)
+
+	get(api, "/notifications", handlers.PermSettingsRead, handlers.ListNotifications)
+	post(api, "/notifications", handlers.PermNotifyWrite, handlers.CreateNotification)
+	put(api, "/notifications/:id", handlers.PermNotifyWrite, handlers.UpdateNotification)
+	del(api, "/notifications/:id", handlers.PermNotifyWrite, handlers.DeleteNotification)
+	post(api, "/notifications/:id/test", handlers.PermNotifyWrite, handlers.TestNotification)
+
+	// An API route that declares no permission would be reachable by any
+	// account, which is the exact failure this design exists to prevent.
+	// Refusing to start is the only moment that mistake is cheap to fix.
+	if err := handlers.AuditRoutePermissions(app.GetRoutes(), map[string]bool{
+		"/api/auth/login":         true,
+		"/api/auth/verify-mfa":    true,
+		"/api/auth/refresh":       true,
+		"/api/auth/setup-init":    true,
+		"/api/auth/setup-confirm": true,
+	}); err != nil {
+		log.Fatalf("route permission audit failed: %v", err)
+	}
 
 	log.Fatal(app.Listen(":8080"))
 }

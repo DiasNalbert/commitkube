@@ -1,0 +1,276 @@
+package handlers
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/kubecommit/backend/db"
+	"github.com/kubecommit/backend/models"
+)
+
+// Authorization used to be four role checks spread across a hundred and twelve
+// routes, which meant every route added since was open to anyone with an
+// account. The fix is not more checks in more handlers -- that drifts the same
+// way -- but one place where every route states what it needs, and a boot-time
+// audit that refuses to start if a route forgot to.
+
+// Permissions are coarse enough to explain to a person and fine enough to
+// answer the questions actually asked of them: can this person see pods, touch
+// secrets, restart something, or only work in the SCM.
+const (
+	// Kubernetes, read
+	PermK8sRead        = "k8s.read"         // pods, workloads, namespaces, nodes, manifests
+	PermK8sLogsRead    = "k8s.logs.read"    // pod logs, separate: logs leak credentials
+	PermK8sSecretsRead = "k8s.secrets.read" // secret names and keys
+	PermK8sSecretsShow = "k8s.secrets.show" // the values themselves
+	// Kubernetes, write
+	PermK8sPodDelete = "k8s.pod.delete" // delete and restart
+	PermK8sScale     = "k8s.scale"
+	PermClusterWrite = "cluster.manage" // import and remove clusters
+
+	// Source control
+	PermSCMRead       = "scm.read"
+	PermSCMWrite      = "scm.write" // create, import, delete repositories
+	PermSCMApprove    = "scm.approve"
+	PermTemplateRead  = "template.read"
+	PermTemplateWrite = "template.write"
+
+	// Security findings
+	PermSecurityRead = "security.read"
+	PermSecurityScan = "security.scan" // trigger a scan by hand
+
+	// Platform administration
+	PermSettingsRead  = "settings.read"
+	PermSettingsWrite = "settings.write"
+	PermNotifyWrite   = "notify.write"
+	PermUserManage    = "user.manage"
+	PermAuditRead     = "audit.read"
+
+	// Anything any signed-in user may do: their own profile, their own keys.
+	PermSelf = "self"
+)
+
+// AllPermissions is the vocabulary, in the order the UI should list it.
+var AllPermissions = []string{
+	PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow,
+	PermK8sPodDelete, PermK8sScale, PermClusterWrite,
+	PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
+	PermSecurityRead, PermSecurityScan,
+	PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
+}
+
+// rolePermissions keeps the existing roles working while the grants below take
+// over. A role is now just a bundle: root holds everything, so an upgrade
+// changes nobody's access on the day it lands.
+var rolePermissions = map[string][]string{
+	"root": AllPermissions,
+	"admin": {
+		PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow,
+		PermK8sPodDelete, PermK8sScale, PermClusterWrite,
+		PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
+		PermSecurityRead, PermSecurityScan,
+		PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
+	},
+	// What a plain account could reach before this existed, minus the things
+	// it could reach only because nothing was checking: secret values, pod
+	// deletion and scaling were already gated, logs and secret listing were
+	// not, and they are the two worth taking back.
+	"user": {
+		PermK8sRead,
+		PermSCMRead, PermTemplateRead,
+		PermSecurityRead,
+		PermSettingsRead,
+	},
+}
+
+// permissionsFor resolves everything a user holds: the bundle their role
+// carries, plus the grants attached to them directly or through a group.
+func permissionsFor(userID uint, role string) map[string]bool {
+	held := map[string]bool{PermSelf: true}
+	for _, p := range rolePermissions[role] {
+		held[p] = true
+	}
+
+	var grants []models.PermissionGrant
+	db.DB.Where("subject_type = ? AND subject_id = ?", "user", userID).Find(&grants)
+	for _, g := range grants {
+		held[g.Permission] = true
+	}
+
+	var groupIDs []uint
+	db.DB.Model(&models.UserGroupMember{}).Where("user_id = ?", userID).Pluck("group_id", &groupIDs)
+	if len(groupIDs) > 0 {
+		var groupGrants []models.PermissionGrant
+		db.DB.Where("subject_type = ? AND subject_id IN ?", "group", groupIDs).Find(&groupGrants)
+		for _, g := range groupGrants {
+			held[g.Permission] = true
+		}
+	}
+	return held
+}
+
+// ---- the route registry ---------------------------------------------------
+
+type routeKey struct{ method, path string }
+
+var (
+	routePermsMu sync.Mutex
+	routePerms   = map[routeKey]string{}
+)
+
+// Requires records what a route needs and returns the middleware that enforces
+// it. Declaring it at the route is what makes the whole policy readable in one
+// screen of main.go instead of scattered through the handlers.
+func Requires(permission string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		routePermsMu.Lock()
+		routePerms[routeKey{c.Method(), c.Route().Path}] = permission
+		routePermsMu.Unlock()
+
+		if permission == PermSelf {
+			return c.Next()
+		}
+		userID := currentUserID(c)
+		role, _ := c.Locals("role").(string)
+		if !permissionsFor(userID, role)[permission] {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error":               "you do not have permission to do this",
+				"required_permission": permission,
+			})
+		}
+		return c.Next()
+	}
+}
+
+// declaredPermissions is filled as routes are registered, so the audit below
+// can tell a route that declared nothing from one that declared something.
+var declared = map[routeKey]string{}
+
+// Declare is called at route registration time by the helpers in main, which
+// is what lets AuditRoutePermissions run before the first request arrives.
+func Declare(method, path, permission string) {
+	declared[routeKey{method, path}] = permission
+}
+
+// AuditRoutePermissions refuses to start a server with an unguarded API route.
+// A route added without a permission is the exact failure this whole change
+// exists to prevent, and catching it at boot is the only moment it is cheap.
+func AuditRoutePermissions(routes []fiber.Route, skip map[string]bool) error {
+	missing := []string{}
+	for _, r := range routes {
+		if !strings.HasPrefix(r.Path, "/api/") || r.Method == "HEAD" {
+			continue
+		}
+		if skip[r.Path] {
+			continue
+		}
+		if _, ok := declared[routeKey{r.Method, strings.TrimPrefix(r.Path, "/api")}]; !ok {
+			missing = append(missing, r.Method+" "+r.Path)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("these API routes declare no permission, so they would be open to any account:\n  %s",
+			strings.Join(missing, "\n  "))
+	}
+	return nil
+}
+
+// ---- HTTP -----------------------------------------------------------------
+
+// GetMyPermissions lets the frontend hide what the person cannot do, instead
+// of showing a button that answers 403.
+func GetMyPermissions(c *fiber.Ctx) error {
+	userID := currentUserID(c)
+	role, _ := c.Locals("role").(string)
+	held := permissionsFor(userID, role)
+
+	list := make([]string, 0, len(held))
+	for p := range held {
+		list = append(list, p)
+	}
+	sort.Strings(list)
+	return c.JSON(fiber.Map{"role": role, "permissions": list})
+}
+
+// ListPermissionCatalog powers the grant editor.
+func ListPermissionCatalog(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{"permissions": AllPermissions, "roles": rolePermissions})
+}
+
+// GrantPermission and RevokePermission attach a permission to a user or a
+// group. Roles stay as the coarse default; grants are how a person gets one
+// more thing without being promoted to admin for it.
+func GrantPermission(c *fiber.Ctx) error {
+	var req struct {
+		SubjectType string `json:"subject_type"` // user | group
+		SubjectID   uint   `json:"subject_id"`
+		Permission  string `json:"permission"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.SubjectID == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "subject_type, subject_id and permission are required"})
+	}
+	if req.SubjectType != "user" && req.SubjectType != "group" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "subject_type must be user or group"})
+	}
+	if !validPermission(req.Permission) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "unknown permission " + req.Permission})
+	}
+
+	grant := models.PermissionGrant{
+		SubjectType: req.SubjectType, SubjectID: req.SubjectID,
+		Permission: req.Permission, GrantedBy: currentUserID(c),
+	}
+	if err := db.DB.Where("subject_type = ? AND subject_id = ? AND permission = ?",
+		req.SubjectType, req.SubjectID, req.Permission).FirstOrCreate(&grant).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	db.LogAudit(currentUserID(c), "grant_permission", req.SubjectType,
+		fmt.Sprintf("%d", req.SubjectID), `{"permission":"`+req.Permission+`"}`, c.IP())
+	return c.Status(fiber.StatusCreated).JSON(grant)
+}
+
+func RevokePermission(c *fiber.Ctx) error {
+	var req struct {
+		SubjectType string `json:"subject_type"`
+		SubjectID   uint   `json:"subject_id"`
+		Permission  string `json:"permission"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	db.DB.Where("subject_type = ? AND subject_id = ? AND permission = ?",
+		req.SubjectType, req.SubjectID, req.Permission).Delete(&models.PermissionGrant{})
+	db.LogAudit(currentUserID(c), "revoke_permission", req.SubjectType,
+		fmt.Sprintf("%d", req.SubjectID), `{"permission":"`+req.Permission+`"}`, c.IP())
+	return c.JSON(fiber.Map{"message": "permission revoked"})
+}
+
+// ListGrants shows what one subject holds beyond its role.
+func ListGrants(c *fiber.Ctx) error {
+	var grants []models.PermissionGrant
+	q := db.DB.Model(&models.PermissionGrant{})
+	if t := c.Query("subject_type"); t != "" {
+		q = q.Where("subject_type = ?", t)
+	}
+	if id := c.QueryInt("subject_id", 0); id > 0 {
+		q = q.Where("subject_id = ?", id)
+	}
+	q.Find(&grants)
+	if grants == nil {
+		grants = []models.PermissionGrant{}
+	}
+	return c.JSON(fiber.Map{"grants": grants})
+}
+
+func validPermission(p string) bool {
+	for _, known := range AllPermissions {
+		if known == p {
+			return true
+		}
+	}
+	return false
+}

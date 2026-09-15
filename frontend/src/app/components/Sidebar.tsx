@@ -6,6 +6,8 @@ import KubeLogo from "./KubeLogo";
 import ThemeToggle from "./ThemeToggle";
 import LogoutButton from "./LogoutButton";
 import ClusterSelector from "./k8s/ClusterSelector";
+import { usePermissions } from "./usePermissions";
+import { PERMISSIONS as P } from "@/lib/permissions";
 
 const HIDDEN_ROUTES = ["/login", "/register", "/setup"];
 
@@ -207,45 +209,45 @@ const IconChevronDown = () => (
 // page; everything after it is alphabetical, because a list this long is
 // scanned by name and any other order is a rule the reader has to learn.
 const kubernetesItems = [
-  { href: "/kubernetes/overview", label: "Cluster Overview", icon: <IconGauge /> },
-  { href: "/security/containers", label: "Container Security", icon: <IconContainer /> },
-  { href: "/kubernetes/daemonsets", label: "DaemonSets", icon: <IconDaemonSet /> },
-  { href: "/kubernetes/deployments", label: "Deployments", icon: <IconDeployment /> },
-  { href: "/kubernetes/ingresses", label: "Ingresses", icon: <IconIngress /> },
-  { href: "/kubernetes/namespaces", label: "Namespaces", icon: <IconNamespace /> },
-  { href: "/kubernetes/nodes", label: "Nodes", icon: <IconServer /> },
-  { href: "/kubernetes/pods", label: "Pods", icon: <IconPods /> },
-  { href: "/kubernetes/replicasets", label: "ReplicaSets", icon: <IconReplicaSet /> },
-  { href: "/kubernetes/secrets", label: "Secrets", icon: <IconKey /> },
-  { href: "/kubernetes/topology", label: "Service Map", icon: <IconTopology /> },
-  { href: "/kubernetes/services", label: "Services", icon: <IconService /> },
-  { href: "/kubernetes/statefulsets", label: "StatefulSets", icon: <IconStatefulSet /> },
-  { href: "/kubernetes/triage", label: "Triage", icon: <IconTriage /> },
-  { href: "/kubernetes/pvcs", label: "Volume Claims", icon: <IconVolume /> },
-  { href: "/kubernetes/workloads", label: "Workloads", icon: <IconActivity /> },
+  { href: "/kubernetes/overview", label: "Cluster Overview", icon: <IconGauge />, perm: P.k8sRead },
+  { href: "/security/containers", label: "Container Security", icon: <IconContainer />, perm: P.securityRead },
+  { href: "/kubernetes/daemonsets", label: "DaemonSets", icon: <IconDaemonSet />, perm: P.k8sRead },
+  { href: "/kubernetes/deployments", label: "Deployments", icon: <IconDeployment />, perm: P.k8sRead },
+  { href: "/kubernetes/ingresses", label: "Ingresses", icon: <IconIngress />, perm: P.k8sRead },
+  { href: "/kubernetes/namespaces", label: "Namespaces", icon: <IconNamespace />, perm: P.k8sRead },
+  { href: "/kubernetes/nodes", label: "Nodes", icon: <IconServer />, perm: P.k8sRead },
+  { href: "/kubernetes/pods", label: "Pods", icon: <IconPods />, perm: P.k8sRead },
+  { href: "/kubernetes/replicasets", label: "ReplicaSets", icon: <IconReplicaSet />, perm: P.k8sRead },
+  { href: "/kubernetes/secrets", label: "Secrets", icon: <IconKey />, perm: P.secretsRead },
+  { href: "/kubernetes/topology", label: "Service Map", icon: <IconTopology />, perm: P.k8sRead },
+  { href: "/kubernetes/services", label: "Services", icon: <IconService />, perm: P.k8sRead },
+  { href: "/kubernetes/statefulsets", label: "StatefulSets", icon: <IconStatefulSet />, perm: P.k8sRead },
+  { href: "/kubernetes/triage", label: "Triage", icon: <IconTriage />, perm: P.k8sRead },
+  { href: "/kubernetes/pvcs", label: "Volume Claims", icon: <IconVolume />, perm: P.k8sRead },
+  { href: "/kubernetes/workloads", label: "Workloads", icon: <IconActivity />, perm: P.k8sRead },
 ];
 
 // Source control: everything that acts on a repository, whichever provider it
 // lives in -- Bitbucket, GitHub or GitLab. The repository dashboard leads and
 // the rest is alphabetical, matching the Kubernetes group.
 const scmItems = [
-  { href: "/", label: "Repositories", icon: <IconDashboard />, admin: false },
-  { href: "/audit-logs", label: "Audit Log", icon: <IconAudit />, admin: true },
-  { href: "/security/code", label: "Code Security", icon: <IconShield />, admin: false },
-  { href: "/repositories/import", label: "Import Repository", icon: <IconDownload />, admin: true },
-  { href: "/repositories/new", label: "New Repository", icon: <IconPlus />, admin: false },
-  { href: "/templates", label: "Templates", icon: <IconFile />, admin: false },
+  { href: "/", label: "Repositories", icon: <IconDashboard />, admin: false, perm: P.scmRead },
+  { href: "/audit-logs", label: "Audit Log", icon: <IconAudit />, admin: true, perm: P.auditRead },
+  { href: "/security/code", label: "Code Security", icon: <IconShield />, admin: false, perm: P.securityRead },
+  { href: "/repositories/import", label: "Import Repository", icon: <IconDownload />, admin: true, perm: P.scmWrite },
+  { href: "/repositories/new", label: "New Repository", icon: <IconPlus />, admin: false, perm: P.scmWrite },
+  { href: "/templates", label: "Templates", icon: <IconFile />, admin: false, perm: P.templateRead },
 ];
 
 const mainItems = [
   { href: "/tools/base64", label: "Base64", icon: <IconHash /> },
-  { href: "/notifications", label: "Notifications", icon: <IconBell /> },
-  { href: "/settings", label: "Settings", icon: <IconGear /> },
+  { href: "/notifications", label: "Notifications", icon: <IconBell />, perm: P.settingsRead },
+  { href: "/settings", label: "Settings", icon: <IconGear />, perm: P.settingsRead },
 ];
 
 const adminItems = [
-  { href: "/groups", label: "Groups", icon: <IconGroups /> },
-  { href: "/users", label: "Users", icon: <IconUsers /> },
+  { href: "/groups", label: "Groups", icon: <IconGroups />, perm: P.userManage },
+  { href: "/users", label: "Users", icon: <IconUsers />, perm: P.userManage },
 ];
 
 // Sub-routes that belong to a group but are not themselves nav entries, so the
@@ -293,12 +295,20 @@ export default function Sidebar() {
 
   if (HIDDEN_ROUTES.includes(pathname)) return null;
 
+  const { can } = usePermissions();
+
   const isAdminOrRoot = role === "root" || role === "admin";
+  // A nav entry appears when the person can actually use it. This hides, it
+  // does not enforce: the backend refuses the call either way, and a hidden
+  // link only spares someone a 403 they could do nothing about.
   const allItems = [
     ...mainItems,
     ...(isAdminOrRoot ? adminItems : []),
-  ];
-  const visibleScmItems = scmItems.filter(item => !item.admin || isAdminOrRoot);
+  ].filter(item => can(item.perm));
+  const visibleScmItems = scmItems
+    .filter(item => !item.admin || isAdminOrRoot)
+    .filter(item => can(item.perm));
+  const visibleK8sItems = kubernetesItems.filter(item => can(item.perm));
 
   const w = collapsed ? "w-16" : "w-60";
 
@@ -389,19 +399,19 @@ export default function Sidebar() {
         {/* Collapsed rail has no room for a group header, so every group's
             items render as one flat icon list instead. */}
         {collapsed ? (
-          [...kubernetesItems, ...visibleScmItems].map(item => (
+          [...visibleK8sItems, ...visibleScmItems].map(item => (
             <NavItem key={item.href} href={item.href} label={item.label} icon={item.icon} />
           ))
         ) : (
           <>
-            <NavGroup
+            {visibleK8sItems.length > 0 && <NavGroup
               groupKey="k8s"
               label="Kubernetes"
               icon={<IconKubernetes />}
-              items={kubernetesItems}
+              items={visibleK8sItems}
               active={pathname.startsWith("/kubernetes") || pathname === "/security/containers"}
-            />
-            <NavGroup
+            />}
+            {visibleScmItems.length > 0 && <NavGroup
               groupKey="scm"
               label="SCM"
               icon={<IconBranch />}
@@ -410,7 +420,7 @@ export default function Sidebar() {
                 visibleScmItems.some(i => i.href === pathname) ||
                 SCM_SUBROUTES.some(p => pathname.startsWith(p))
               }
-            />
+            />}
           </>
         )}
 
