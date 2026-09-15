@@ -222,6 +222,22 @@ func GetWorkloads(c *fiber.Ctx) error {
 		return k8sError(c, err)
 	}
 
+	if allowed, restricted, scopeErr := requestNamespaces(c); scopeErr != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": scopeErr.Error()})
+	} else if restricted {
+		permitted := map[string]bool{}
+		for _, ns := range allowed {
+			permitted[ns] = true
+		}
+		kept := states[:0]
+		for _, w := range states {
+			if permitted[w.Namespace] {
+				kept = append(kept, w)
+			}
+		}
+		states = kept
+	}
+
 	// Uptime excludes samples where the workload was scaled to zero: being
 	// switched off on purpose is not downtime.
 	type uptimeRow struct {
@@ -304,6 +320,9 @@ func GetWorkloadHistory(c *fiber.Ctx) error {
 	clusterID, err := requestClusterID(c)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !namespaceAllowed(c, namespace) {
+		return forbidNamespace(c)
 	}
 	sq := db.DB.Where("cluster_id = ? AND namespace = ? AND name = ?", clusterID, namespace, name)
 	eq := db.DB.Where("cluster_id = ? AND namespace = ? AND name = ?", clusterID, namespace, name)

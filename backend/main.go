@@ -331,6 +331,9 @@ func main() {
 	get(api, "/permissions/grants", handlers.PermUserManage, handlers.ListGrants)
 	post(api, "/permissions/grants", handlers.PermUserManage, handlers.GrantPermission)
 	del(api, "/permissions/grants", handlers.PermUserManage, handlers.RevokePermission)
+	get(api, "/permissions/scopes", handlers.PermUserManage, handlers.ListNamespaceScopes)
+	post(api, "/permissions/scopes", handlers.PermUserManage, handlers.AddNamespaceScope)
+	del(api, "/permissions/scopes/:id", handlers.PermUserManage, handlers.RemoveNamespaceScope)
 
 	get(api, "/groups", handlers.PermUserManage, handlers.ListGroups)
 	post(api, "/groups", handlers.PermUserManage, handlers.CreateGroup)

@@ -325,6 +325,7 @@ func GetNodePods(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
+	pods = keepScopedPods(c, pods)
 
 	usage := []NodePodUsage{}
 	var sumCPU float64

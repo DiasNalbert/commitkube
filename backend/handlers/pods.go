@@ -620,6 +620,7 @@ func GetPodStatus(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
+	pods = keepScopedPods(c, pods)
 
 	totals := map[string]int{"total": len(pods), "critical": 0, "warning": 0, "healthy": 0}
 	for _, p := range pods {
@@ -665,6 +666,10 @@ func GetPodHistory(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	if namespace != "" && !namespaceAllowed(c, namespace) {
+		return forbidNamespace(c)
+	}
+
 	q := db.DB.Model(&models.PodSnapshot{}).Where("cluster_id = ?", clusterID)
 	if namespace != "" {
 		q = q.Where("namespace = ?", namespace)
@@ -700,6 +705,11 @@ func GetPodProblems(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	q := db.DB.Model(&models.PodProblem{}).Where("cluster_id = ?", clusterID)
+	if allowed, restricted, err := requestNamespaces(c); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	} else if restricted {
+		q = q.Where("namespace IN ?", allowed)
+	}
 	if c.Query("status", "open") == "open" {
 		q = q.Where("closed_at IS NULL")
 	}
@@ -847,4 +857,25 @@ func pollPodMetricsFor(cl *models.Cluster) {
 		db.DB.Model(&models.PodProblem{}).Where("id = ?", p.ID).
 			Update("closed_at", &closedAt)
 	}
+}
+
+// keepScopedPods drops the pods of namespaces this account is not scoped to.
+// The collection above used the collector's credential, which sees the whole
+// cluster, so filtering here is not belt-and-braces -- it is the only fence.
+func keepScopedPods(c *fiber.Ctx, pods []PodInfo) []PodInfo {
+	allowed, restricted, err := requestNamespaces(c)
+	if err != nil || !restricted {
+		return pods
+	}
+	permitted := map[string]bool{}
+	for _, ns := range allowed {
+		permitted[ns] = true
+	}
+	kept := pods[:0]
+	for _, p := range pods {
+		if permitted[p.Namespace] {
+			kept = append(kept, p)
+		}
+	}
+	return kept
 }

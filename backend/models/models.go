@@ -231,6 +231,23 @@ type PermissionGrant struct {
 	GrantedBy   uint      `json:"granted_by"`
 }
 
+// NamespaceScope narrows which namespaces of a cluster a subject may see.
+//
+// Absence means unrestricted, deliberately: adding the first scope row is an
+// explicit act of narrowing, while defaulting to deny would lock every
+// existing user out of every page the moment this shipped. The permission
+// already decides whether they reach Kubernetes at all; this decides how much
+// of it they see once they do.
+type NamespaceScope struct {
+	ID          uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	SubjectType string    `gorm:"uniqueIndex:idx_ns_ident;not null" json:"subject_type"` // user | group
+	SubjectID   uint      `gorm:"uniqueIndex:idx_ns_ident;not null" json:"subject_id"`
+	ClusterID   uint      `gorm:"uniqueIndex:idx_ns_ident;not null" json:"cluster_id"`
+	Namespace   string    `gorm:"uniqueIndex:idx_ns_ident;not null" json:"namespace"`
+	GrantedBy   uint      `json:"granted_by"`
+}
+
 type ArgoCDInstance struct {
 	ID               uint           `gorm:"primarykey;autoIncrement" json:"id"`
 	CreatedAt        time.Time      `json:"-"`
