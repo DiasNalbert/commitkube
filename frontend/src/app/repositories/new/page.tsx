@@ -266,7 +266,7 @@ export default function NewRepository() {
   return (
     <div className="max-w-5xl mx-auto space-y-8">
       <header>
-        <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-brand-green to-brand-gold">
+        <h1 className="text-lg font-semibold bg-clip-text text-transparent bg-gradient-to-r from-brand-green to-brand-gold">
           New Repository
         </h1>
         <p className="text-zinc-400 mt-2">Bootstrap a repository with Kubernetes manifests and pre-configured pipeline.</p>

@@ -177,10 +177,10 @@ export default function WorkloadsPage() {
   ];
 
   return (
-    <div className="p-6 max-w-[1600px] mx-auto space-y-5">
+    <div className="p-4 max-w-[1700px] mx-auto space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Workloads</h1>
+          <h1 className="text-lg font-semibold">Workloads</h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
             Availability and change history for every Deployment, StatefulSet and DaemonSet,
             sampled from the Kubernetes API
@@ -212,23 +212,23 @@ export default function WorkloadsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {cards.map(([key, label, value, color]) => {
           const active = statusFilter === key || (key === "total" && statusFilter === null);
           return (
             <button
               key={key}
               onClick={() => setStatusFilter(key === "total" || statusFilter === key ? null : key)}
-              className={`glass-card p-4 text-left transition ${active ? "border-brand-green/50 ring-1 ring-brand-green/30" : ""}`}
+              className={`glass-card px-3 py-2.5 text-left transition ${active ? "border-brand-green/50 ring-1 ring-brand-green/30" : ""}`}
             >
               <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">{label}</p>
-              <p className={`text-3xl font-semibold mt-1 ${color}`}>{value}</p>
+              <p className={`text-xl font-semibold mt-0.5 tabular-nums ${color}`}>{value}</p>
             </button>
           );
         })}
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
@@ -325,7 +325,7 @@ export default function WorkloadsPage() {
                         <p className="text-sm text-zinc-500">Loading history…</p>
                       ) : (
                         <>
-                          <div className="grid grid-cols-3 gap-3">
+                          <div className="grid grid-cols-3 gap-2">
                             <div className="p-3 rounded-lg border border-[var(--card-border)] text-center">
                               <p className="text-2xl font-semibold text-brand-green">
                                 {h.samples === 0 ? "—" : `${h.uptime_pct.toFixed(1)}%`}
@@ -333,11 +333,11 @@ export default function WorkloadsPage() {
                               <p className="text-xs text-zinc-500 dark:text-zinc-400">Uptime</p>
                             </div>
                             <div className="p-3 rounded-lg border border-[var(--card-border)] text-center">
-                              <p className="text-2xl font-semibold">{h.events.length}</p>
+                              <p className="text-lg font-semibold">{h.events.length}</p>
                               <p className="text-xs text-zinc-500 dark:text-zinc-400">Events</p>
                             </div>
                             <div className="p-3 rounded-lg border border-[var(--card-border)] text-center">
-                              <p className="text-2xl font-semibold">{h.samples}</p>
+                              <p className="text-lg font-semibold">{h.samples}</p>
                               <p className="text-xs text-zinc-500 dark:text-zinc-400">Samples</p>
                             </div>
                           </div>

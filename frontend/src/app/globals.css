@@ -22,6 +22,11 @@
      their rows, and a separator you have to look for stops separating. */
   --rule: rgba(15, 23, 42, 0.08);
   --surface-sunken: #f1f5f9;
+  /* Three planes, ordered: the nav sits behind, the page in the middle, a
+     card in front. Depth carried by tone alone means no shadow is needed to
+     say which is which, and shadows are what made the old build feel soft. */
+  --nav-bg: #eef2f6;
+  --nav-rule: rgba(15, 23, 42, 0.10);
   --input-bg: #ffffff;
   --input-border: #d1d5db;
   --input-fg: #0f172a;
@@ -31,7 +36,7 @@
 
 .dark {
   color-scheme: dark;
-  --color-bg: #09090b;
+  --color-bg: #0d0d0f;
   --color-fg: #fafafa;
   --color-surface: #18181b;
   --color-surface-hover: #27272a;
@@ -42,6 +47,8 @@
   --card-border: rgba(255, 255, 255, 0.08);
   --rule: rgba(255, 255, 255, 0.07);
   --surface-sunken: #0f0f11;
+  --nav-bg: #08080a;
+  --nav-rule: rgba(255, 255, 255, 0.07);
   --input-bg: #18181b;
   --input-border: #3f3f46;
   --input-fg: #fafafa;
@@ -75,9 +82,10 @@ body {
 }
 
 @layer utilities {
+  /* The navigation rail. Its own plane, not a card and not the page. */
   .glass-panel {
-    background: var(--glass-bg);
-    border: 1px solid var(--glass-border);
+    background: var(--nav-bg);
+    border-color: var(--nav-rule);
     transition: background 0.2s ease, border-color 0.2s ease;
   }
 

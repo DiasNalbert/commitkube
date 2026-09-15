@@ -110,8 +110,8 @@ const SevBadge = ({ label, count }: { label: string; count: number }) => {
   };
   return (
     <span className={`inline-flex flex-col items-center px-3 py-1.5 rounded text-sm font-semibold min-w-[56px] ${styles[label]}`}>
-      <span className="text-lg font-black">{count}</span>
-      <span className="text-[10px] font-medium opacity-80">{label}</span>
+      <span className="text-sm font-bold tabular-nums">{count}</span>
+      <span className="text-[9px] font-medium opacity-80">{label}</span>
     </span>
   );
 };
@@ -273,10 +273,10 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
   });
 
   return (
-    <div className="space-y-6">
+    <div className="p-4 max-w-[1600px] mx-auto space-y-3">
       <header>
-        <h1 className="text-3xl font-bold">{copy.title}</h1>
-        <p className="text-zinc-400 mt-1">{copy.subtitle}</p>
+        <h1 className="text-lg font-semibold">{copy.title}</h1>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{copy.subtitle}</p>
       </header>
 
       {workspaces.length > 0 && (
@@ -323,7 +323,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {(["CRITICAL","HIGH","MEDIUM","LOW"] as const).map(sev => {
           const active = repoSevFilter === sev;
           return (
@@ -361,13 +361,13 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
             <span className="text-sm text-zinc-500 whitespace-nowrap">{total} repositories · page {page} of {pages}</span>
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-2">
             {Array.from({ length: Math.ceil(filteredResults.length / 2) }, (_, rowIdx) => {
               const pair = filteredResults.slice(rowIdx * 2, rowIdx * 2 + 2);
               const rowHasSelected = pair.some(r => r.repo_name === selected);
               return (
                 <div key={rowIdx}>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     {pair.map(r => (
                       <div
                         key={r.id}

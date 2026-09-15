@@ -176,7 +176,7 @@ export default function ProfilePage() {
   return (
     <div className="space-y-8 max-w-5xl">
       <header>
-        <h1 className="text-3xl font-bold">My Profile</h1>
+        <h1 className="text-lg font-semibold">My Profile</h1>
         <p className="text-zinc-400 mt-2">Your account information and integration credentials.</p>
       </header>
 
