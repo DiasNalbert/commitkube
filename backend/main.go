@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/kubecommit/backend/crypto"
 	"github.com/kubecommit/backend/db"
@@ -197,11 +198,28 @@ func main() {
 		return c.JSON(fiber.Map{"message": "Welcome to CommitKube API"})
 	})
 
-	app.Post("/api/auth/login", handlers.Login)
-	app.Post("/api/auth/verify-mfa", handlers.VerifyMFA)
-	app.Post("/api/auth/refresh", handlers.RefreshTokenHandler)
-	app.Post("/api/auth/setup-init", handlers.SetupInit)
-	app.Post("/api/auth/setup-confirm", handlers.SetupConfirm)
+	// The public endpoints are the ones worth guessing against: a password, a
+	// TOTP code, a stage token. None of them was rate limited, which made
+	// guessing free. Per-IP, because an attacker controls the body but not
+	// where the packets come from.
+	authLimit := limiter.New(limiter.Config{
+		Max:        20,
+		Expiration: time.Minute,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return c.IP()
+		},
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"error": "too many attempts; wait a minute and try again",
+			})
+		},
+	})
+
+	app.Post("/api/auth/login", authLimit, handlers.Login)
+	app.Post("/api/auth/verify-mfa", authLimit, handlers.VerifyMFA)
+	app.Post("/api/auth/refresh", authLimit, handlers.RefreshTokenHandler)
+	app.Post("/api/auth/setup-init", authLimit, handlers.SetupInit)
+	app.Post("/api/auth/setup-confirm", authLimit, handlers.SetupConfirm)
 
 	api := app.Group("/api", middleware.AuthRequired())
 

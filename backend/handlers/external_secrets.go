@@ -266,6 +266,10 @@ func UpdateSecretValue(c *fiber.Ctx) error {
 		// AcknowledgeManaged is the caller saying they know an operator owns
 		// this Secret and will overwrite the change.
 		AcknowledgeManaged bool `json:"acknowledge_managed"`
+		// AllowNewKey separates adding from editing. Without it a mistyped key
+		// silently becomes a new one that looks right in the listing and is
+		// read by nothing.
+		AllowNewKey bool `json:"allow_new_key"`
 	}
 	if err := c.BodyParser(&req); err != nil ||
 		req.Password == "" || req.Namespace == "" || req.Name == "" || req.Key == "" {
@@ -306,8 +310,13 @@ func UpdateSecretValue(c *fiber.Ctx) error {
 			"needs_consent": true,
 		})
 	}
-	if _, ok := secret.Data[req.Key]; !ok {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "key not found in secret"})
+	_, existing := secret.Data[req.Key]
+	if !existing && !req.AllowNewKey {
+		// Refusing by default turns a typo into an error instead of into a
+		// second key that looks right in a list and is read by nothing.
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": fmt.Sprintf("there is no key %q in this Secret", req.Key),
+		})
 	}
 
 	if secret.Data == nil {
@@ -321,11 +330,19 @@ func UpdateSecretValue(c *fiber.Ctx) error {
 
 	// The value is never logged, only that it changed and by whom. A value in
 	// an audit row is the credential in a second place.
-	db.LogAudit(currentUserID(c), "update_secret", "secret", req.Namespace+"/"+req.Name,
+	action := "update_secret"
+	if !existing {
+		action = "add_secret_key"
+	}
+	db.LogAudit(currentUserID(c), action, "secret", req.Namespace+"/"+req.Name,
 		fmt.Sprintf(`{"key":"%s"}`, req.Key), c.IP())
 
+	message := "value updated"
+	if !existing {
+		message = "key added"
+	}
 	return c.JSON(fiber.Map{
-		"message": "value updated",
+		"message": message,
 		// Pods do not reload a Secret they already mounted as env vars, and
 		// saying so here saves the hour spent wondering why nothing changed.
 		"note": "workloads that read this Secret as environment variables keep the old value until their pods restart",

@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -20,8 +21,11 @@ type AuthRequest struct {
 }
 
 type MFARequest struct {
-	UserID uint   `json:"user_id"`
-	Code   string `json:"code"`
+	// MFAToken is issued by Login, which has already checked the password.
+	// Naming the account here instead would make the second factor the only
+	// factor: a stolen code alone would be enough to sign in.
+	MFAToken string `json:"mfa_token"`
+	Code     string `json:"code"`
 }
 
 func issueTokens(user models.User) (string, string, error) {
@@ -68,16 +72,24 @@ func Login(c *fiber.Ctx) error {
 	}
 
 	if user.ForcePasswordChange || !user.MFAEnabled {
+		ticket, err := issueStageToken(user.ID, "setup")
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "could not start setup"})
+		}
 		return c.JSON(fiber.Map{
 			"setup_required": true,
-			"temp_user_id":   user.ID,
+			"setup_token":    ticket,
 			"is_bootstrap":   user.Role == "bootstrap",
 		})
 	}
 
+	ticket, err := issueStageToken(user.ID, "mfa")
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "could not start sign-in"})
+	}
 	return c.JSON(fiber.Map{
-		"require_mfa":  true,
-		"temp_user_id": user.ID,
+		"require_mfa": true,
+		"mfa_token":   ticket,
 	})
 }
 
@@ -87,10 +99,11 @@ func VerifyMFA(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request"})
 	}
 
-	var user models.User
-	if err := db.DB.First(&user, req.UserID).Error; err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "User not found"})
+	found, err := stageUser(req.MFAToken, "mfa")
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}
+	user := *found
 
 	if user.Role == "bootstrap" || user.ForcePasswordChange || !user.MFAEnabled {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Please complete account setup first"})
@@ -154,7 +167,7 @@ func RefreshTokenHandler(c *fiber.Ctx) error {
 
 func SetupInit(c *fiber.Ctx) error {
 	var req struct {
-		TempUserID  uint   `json:"temp_user_id"`
+		SetupToken  string `json:"setup_token"`
 		NewEmail    string `json:"new_email"`
 		NewPassword string `json:"new_password"`
 	}
@@ -162,10 +175,11 @@ func SetupInit(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request"})
 	}
 
-	var user models.User
-	if err := db.DB.First(&user, req.TempUserID).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+	found, err := stageUser(req.SetupToken, "setup")
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}
+	user := *found
 
 	if !user.ForcePasswordChange && user.MFAEnabled {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Setup not required"})
@@ -217,17 +231,18 @@ func SetupInit(c *fiber.Ctx) error {
 
 func SetupConfirm(c *fiber.Ctx) error {
 	var req struct {
-		TempUserID uint   `json:"temp_user_id"`
+		SetupToken string `json:"setup_token"`
 		TOTPCode   string `json:"totp_code"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request"})
 	}
 
-	var user models.User
-	if err := db.DB.First(&user, req.TempUserID).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+	found, err := stageUser(req.SetupToken, "setup")
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
 	}
+	user := *found
 
 	if user.MFASecret == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Setup not initiated"})
@@ -279,4 +294,55 @@ func SetupConfirm(c *fiber.Ctx) error {
 			"role":  finalUser.Role,
 		},
 	})
+}
+
+// The setup and MFA steps used to be addressed by a user id taken from the
+// request body. Anyone who could reach the API could name any account, and
+// setup-init would hand back a freshly minted TOTP secret for it -- an
+// unauthenticated takeover of every account that had not finished enrolling.
+//
+// A stage token fixes the shape rather than the symptom: Login already checks
+// the password, so it is the only place that may say who the next step is for.
+// The token is signed, short-lived and names the stage, so one stage's ticket
+// cannot be replayed at another.
+
+const stageTokenTTL = 10 * time.Minute
+
+func issueStageToken(userID uint, stage string) (string, error) {
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"user_id": float64(userID),
+		"stage":   stage,
+		"exp":     time.Now().Add(stageTokenTTL).Unix(),
+	}).SignedString(middleware.JWTSecret)
+}
+
+// stageUser resolves the account a stage token was issued for, refusing a
+// token minted for a different step.
+func stageUser(tokenString, stage string) (*models.User, error) {
+	if tokenString == "" {
+		return nil, fmt.Errorf("missing setup token")
+	}
+	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return middleware.JWTSecret, nil
+	})
+	if err != nil || !token.Valid {
+		return nil, fmt.Errorf("expired or invalid setup token; sign in again")
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || claims["stage"] != stage {
+		return nil, fmt.Errorf("this token is not for this step")
+	}
+	id, ok := claims["user_id"].(float64)
+	if !ok {
+		return nil, fmt.Errorf("malformed setup token")
+	}
+
+	var user models.User
+	if err := db.DB.First(&user, uint(id)).Error; err != nil {
+		return nil, fmt.Errorf("account not found")
+	}
+	return &user, nil
 }

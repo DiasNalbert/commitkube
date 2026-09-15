@@ -7,7 +7,9 @@ import { API } from "@/lib/api";
 
 export default function SetupPage() {
   const [isBootstrap, setIsBootstrap] = useState(false);
-  const [tempUserId, setTempUserId] = useState<number>(0);
+  // Issued by the login call, which already verified the password. Naming the
+  // account here instead is what let anyone start setup for any account.
+  const [setupToken, setSetupToken] = useState("");
 
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -21,13 +23,13 @@ export default function SetupPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    const uid = localStorage.getItem("setup_user_id");
+    const ticket = localStorage.getItem("setup_token");
     const bootstrap = localStorage.getItem("setup_is_bootstrap");
-    if (!uid) {
+    if (!ticket) {
       window.location.href = "/login";
       return;
     }
-    setTempUserId(Number(uid));
+    setSetupToken(ticket);
     setIsBootstrap(bootstrap === "true");
   }, []);
 
@@ -47,7 +49,7 @@ export default function SetupPage() {
     setLoading(true);
     try {
       const body: Record<string, unknown> = {
-        temp_user_id: tempUserId,
+        setup_token: setupToken,
         new_password: newPassword,
       };
       if (isBootstrap) body.new_email = newEmail;
@@ -80,12 +82,12 @@ export default function SetupPage() {
       const res = await fetch(`${API}/auth/setup-confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ temp_user_id: tempUserId, totp_code: totpCode }),
+        body: JSON.stringify({ setup_token: setupToken, totp_code: totpCode }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Invalid code");
 
-      localStorage.removeItem("setup_user_id");
+      localStorage.removeItem("setup_token");
       localStorage.removeItem("setup_is_bootstrap");
       localStorage.setItem("token", data.token);
       if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
