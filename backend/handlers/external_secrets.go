@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
 	"golang.org/x/crypto/bcrypt"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -220,4 +222,112 @@ func RevealSecretValue(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"value": string(data)})
+}
+
+// systemSecretTypes are the Secrets Kubernetes maintains for itself. Editing a
+// ServiceAccount token by hand does not rotate anything -- it breaks the thing
+// that was using it, in a way that surfaces much later as a confusing auth
+// error somewhere else entirely.
+var systemSecretTypes = map[corev1.SecretType]bool{
+	corev1.SecretTypeServiceAccountToken: true,
+	"bootstrap.kubernetes.io/token":      true,
+	"helm.sh/release.v1":                 true,
+}
+
+// externalSecretOwner reports whether something else is the source of truth for
+// this Secret. External Secrets Operator rewrites the Secret on every refresh,
+// so an edit made here is reverted on a schedule nobody remembers -- the change
+// looks like it worked and undoes itself hours later.
+func externalSecretOwner(secret *corev1.Secret) string {
+	for _, ref := range secret.OwnerReferences {
+		if ref.Kind == "ExternalSecret" {
+			return ref.Name
+		}
+	}
+	if v, ok := secret.Annotations["reconcile.external-secrets.io/managed"]; ok && v == "true" {
+		return secret.Name
+	}
+	return ""
+}
+
+// UpdateSecretValue changes one key of one Secret.
+//
+// Gated like the reveal and then some: the permission, the caller's password
+// again, and the namespace scope. Writing a credential into a running cluster
+// is the most consequential thing this product can do -- every other write
+// changes what runs, this changes what it can reach.
+func UpdateSecretValue(c *fiber.Ctx) error {
+	var req struct {
+		Password  string `json:"password"`
+		Namespace string `json:"namespace"`
+		Name      string `json:"name"`
+		Key       string `json:"key"`
+		Value     string `json:"value"`
+		// AcknowledgeManaged is the caller saying they know an operator owns
+		// this Secret and will overwrite the change.
+		AcknowledgeManaged bool `json:"acknowledge_managed"`
+	}
+	if err := c.BodyParser(&req); err != nil ||
+		req.Password == "" || req.Namespace == "" || req.Name == "" || req.Key == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "password, namespace, name and key are required",
+		})
+	}
+
+	if _, err := verifyCurrentUserPassword(c, req.Password); err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid password"})
+	}
+	if !namespaceAllowed(c, req.Namespace) {
+		return forbidNamespace(c)
+	}
+
+	// Writes go as the caller when the cluster is deciding, so this is refused
+	// twice on a cluster with impersonation on: here, and by Kubernetes.
+	typed, err := writeClients(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "cannot connect to cluster: " + err.Error()})
+	}
+
+	ctx := context.Background()
+	secret, err := typed.CoreV1().Secrets(req.Namespace).Get(ctx, req.Name, metav1.GetOptions{})
+	if err != nil {
+		return k8sError(c, err)
+	}
+
+	if systemSecretTypes[secret.Type] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": fmt.Sprintf("this Secret is of type %s, which Kubernetes maintains itself; editing it breaks the thing using it rather than rotating anything", secret.Type),
+		})
+	}
+	if owner := externalSecretOwner(secret); owner != "" && !req.AcknowledgeManaged {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error":         fmt.Sprintf("this Secret is managed by the ExternalSecret %q, which rewrites it on every refresh; the change would be reverted", owner),
+			"managed_by":    owner,
+			"needs_consent": true,
+		})
+	}
+	if _, ok := secret.Data[req.Key]; !ok {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "key not found in secret"})
+	}
+
+	if secret.Data == nil {
+		secret.Data = map[string][]byte{}
+	}
+	secret.Data[req.Key] = []byte(req.Value)
+
+	if _, err := typed.CoreV1().Secrets(req.Namespace).Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
+		return k8sError(c, err)
+	}
+
+	// The value is never logged, only that it changed and by whom. A value in
+	// an audit row is the credential in a second place.
+	db.LogAudit(currentUserID(c), "update_secret", "secret", req.Namespace+"/"+req.Name,
+		fmt.Sprintf(`{"key":"%s"}`, req.Key), c.IP())
+
+	return c.JSON(fiber.Map{
+		"message": "value updated",
+		// Pods do not reload a Secret they already mounted as env vars, and
+		// saying so here saves the hour spent wondering why nothing changed.
+		"note": "workloads that read this Secret as environment variables keep the old value until their pods restart",
+	})
 }
