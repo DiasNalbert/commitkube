@@ -21,6 +21,7 @@ const DESCRIPTIONS: Record<string, string> = {
   "k8s.logs.read": "Read pod logs — logs routinely contain credentials",
   "k8s.secrets.read": "List Secret names and keys (values masked)",
   "k8s.secrets.show": "Reveal a Secret value",
+  "k8s.secrets.write": "Change a Secret value — the credential a workload uses",
   "k8s.pod.delete": "Delete and restart pods",
   "k8s.scale": "Scale workloads",
   "cluster.manage": "Import and remove clusters — sees every namespace",
@@ -39,7 +40,7 @@ const DESCRIPTIONS: Record<string, string> = {
 };
 
 const GROUPS: [string, string[]][] = [
-  ["Kubernetes", ["k8s.read", "k8s.logs.read", "k8s.secrets.read", "k8s.secrets.show", "k8s.pod.delete", "k8s.scale", "cluster.manage"]],
+  ["Kubernetes", ["k8s.read", "k8s.logs.read", "k8s.secrets.read", "k8s.secrets.show", "k8s.secrets.write", "k8s.pod.delete", "k8s.scale", "cluster.manage"]],
   ["Source control", ["scm.read", "scm.write", "scm.approve", "template.read", "template.write"]],
   ["Security", ["security.read", "security.scan"]],
   ["Platform", ["settings.read", "settings.write", "notify.write", "user.manage", "audit.read"]],

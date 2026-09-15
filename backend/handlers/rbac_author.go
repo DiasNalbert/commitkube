@@ -68,6 +68,9 @@ func rulesForPermissions(held map[string]bool) []rbacv1.PolicyRule {
 	if held[PermK8sSecretsRead] || held[PermK8sSecretsShow] {
 		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list"}})
 	}
+	if held[PermK8sSecretsWrite] {
+		rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "update", "patch"}})
+	}
 	return rules
 }
 
@@ -285,7 +288,7 @@ func PreviewClusterRBAC(c *fiber.Ctx) error {
 	// What the rules came from, so the reader can see the derivation rather
 	// than take the YAML on faith.
 	from := []string{}
-	for _, p := range []string{PermK8sRead, PermK8sLogsRead, PermK8sPodDelete, PermK8sScale, PermK8sSecretsRead, PermK8sSecretsShow} {
+	for _, p := range []string{PermK8sRead, PermK8sLogsRead, PermK8sPodDelete, PermK8sScale, PermK8sSecretsRead, PermK8sSecretsShow, PermK8sSecretsWrite} {
 		if held[p] {
 			from = append(from, p)
 		}

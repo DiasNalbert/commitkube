@@ -324,6 +324,7 @@ func main() {
 
 	post(api, "/secrets/list", handlers.PermK8sSecretsRead, handlers.ListSecrets)
 	post(api, "/secrets/reveal", handlers.PermK8sSecretsShow, handlers.RevealSecretValue)
+	put(api, "/secrets/value", handlers.PermK8sSecretsWrite, handlers.UpdateSecretValue)
 
 	get(api, "/audit-logs", handlers.PermAuditRead, handlers.GetAuditLogs)
 

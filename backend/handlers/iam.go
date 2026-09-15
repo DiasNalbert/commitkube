@@ -22,10 +22,11 @@ import (
 // secrets, restart something, or only work in the SCM.
 const (
 	// Kubernetes, read
-	PermK8sRead        = "k8s.read"         // pods, workloads, namespaces, nodes, manifests
-	PermK8sLogsRead    = "k8s.logs.read"    // pod logs, separate: logs leak credentials
-	PermK8sSecretsRead = "k8s.secrets.read" // secret names and keys
-	PermK8sSecretsShow = "k8s.secrets.show" // the values themselves
+	PermK8sRead         = "k8s.read"          // pods, workloads, namespaces, nodes, manifests
+	PermK8sLogsRead     = "k8s.logs.read"     // pod logs, separate: logs leak credentials
+	PermK8sSecretsRead  = "k8s.secrets.read"  // secret names and keys
+	PermK8sSecretsShow  = "k8s.secrets.show"  // the values themselves
+	PermK8sSecretsWrite = "k8s.secrets.write" // changing them
 	// Kubernetes, write
 	PermK8sPodDelete = "k8s.pod.delete" // delete and restart
 	PermK8sScale     = "k8s.scale"
@@ -67,7 +68,7 @@ const MaxRootUsers = 2
 
 // AllPermissions is the vocabulary, in the order the UI should list it.
 var AllPermissions = []string{
-	PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow,
+	PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow, PermK8sSecretsWrite,
 	PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 	PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 	PermSecurityRead, PermSecurityScan,
@@ -80,7 +81,7 @@ var AllPermissions = []string{
 var rolePermissions = map[string][]string{
 	"root": append(append([]string{}, AllPermissions...), PermIAMManage),
 	"admin": {
-		PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow,
+		PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow, PermK8sSecretsWrite,
 		PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 		PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 		PermSecurityRead, PermSecurityScan,

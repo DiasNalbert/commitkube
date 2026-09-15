@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { apiFetch } from "@/lib/api";
+import { loadPermissions, PERMISSIONS } from "@/lib/permissions";
 import { useSidebarWidth } from "@/app/components/Sidebar";
 
 interface ExternalSecretItem {
@@ -77,6 +78,16 @@ export default function SecretsPage() {
 
   const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({});
   const [revealLoading, setRevealLoading] = useState<Record<string, boolean>>({});
+  const [editing, setEditing] = useState<Record<string, boolean>>({});
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
+  const [saveError, setSaveError] = useState<Record<string, string>>({});
+  const [note, setNote] = useState("");
+  const [canWrite, setCanWrite] = useState(false);
+
+  useEffect(() => {
+    loadPermissions().then(p => setCanWrite(p.size === 0 || p.has(PERMISSIONS.secretsWrite)));
+  }, []);
 
   const [role, setRole] = useState("");
   useEffect(() => { setRole(localStorage.getItem("role") || ""); }, []);
@@ -131,6 +142,38 @@ export default function SecretsPage() {
     if (!res.ok) return;
     const j = await res.json();
     setRevealedKeys(prev => ({ ...prev, [mapKey]: j.value }));
+  }
+
+  async function saveKey(secretName: string, secretNamespace: string, key: string, acknowledge = false) {
+    const mapKey = `${secretNamespace}/${secretName}/${key}`;
+    setSaveError(prev => ({ ...prev, [mapKey]: "" }));
+    setSaving(prev => ({ ...prev, [mapKey]: true }));
+
+    const res = await apiFetch("/secrets/value", {
+      method: "PUT",
+      body: JSON.stringify({
+        password, namespace: secretNamespace, name: secretName, key,
+        value: draft[mapKey] ?? "", acknowledge_managed: acknowledge,
+      }),
+    });
+    setSaving(prev => ({ ...prev, [mapKey]: false }));
+    const body = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      // An operator owns this Secret: the edit would be reverted on its next
+      // refresh, so it asks rather than letting the change quietly undo itself.
+      if (body.needs_consent) {
+        if (confirm(`${body.error}\n\nApply anyway?`)) return saveKey(secretName, secretNamespace, key, true);
+        return;
+      }
+      setSaveError(prev => ({ ...prev, [mapKey]: body.error ?? "could not save" }));
+      return;
+    }
+
+    setRevealedKeys(prev => ({ ...prev, [mapKey]: draft[mapKey] ?? "" }));
+    setEditing(prev => { const n = { ...prev }; delete n[mapKey]; return n; });
+    setNote(body.note ?? "");
+    setTimeout(() => setNote(""), 6000);
   }
 
   function hideKey(secretName: string, secretNamespace: string, key: string) {
@@ -363,10 +406,21 @@ export default function SecretsPage() {
                     return (
                       <div key={key} className="flex items-center gap-2 bg-zinc-100 dark:bg-zinc-900/60 rounded-lg px-3 py-2">
                         <span className="text-xs font-mono text-zinc-600 dark:text-zinc-400 w-40 shrink-0 truncate">{key}</span>
-                        <span className="flex-1 text-xs font-mono text-zinc-700 dark:text-zinc-300 truncate">
-                          {revealed ?? "••••••••"}
-                        </span>
-                        {isAdmin && (
+                        {editing[mapKey] ? (
+                          <input
+                            value={draft[mapKey] ?? ""}
+                            onChange={e => setDraft(prev => ({ ...prev, [mapKey]: e.target.value }))}
+                            onKeyDown={e => { if (e.key === "Enter") saveKey(s.name, s.namespace, key); }}
+                            autoFocus
+                            className="flex-1 text-xs font-mono px-2 py-1 rounded bg-[var(--input-bg)] border border-brand-green/40 text-[var(--input-fg)] focus:outline-none"
+                          />
+                        ) : (
+                          <span className="flex-1 text-xs font-mono text-zinc-700 dark:text-zinc-300 truncate">
+                            {revealed ?? "••••••••"}
+                          </span>
+                        )}
+
+                        {isAdmin && !editing[mapKey] && (
                           <button
                             onClick={() => revealed ? hideKey(s.name, s.namespace, key) : revealKey(s.name, s.namespace, key)}
                             disabled={rLoading}
@@ -375,6 +429,34 @@ export default function SecretsPage() {
                           >
                             {rLoading ? <span className="text-xs">...</span> : revealed ? <IconEyeOff /> : <IconEye />}
                           </button>
+                        )}
+
+                        {/* Editing starts from the current value, so a change
+                            is a change rather than a blind overwrite. */}
+                        {canWrite && !editing[mapKey] && (
+                          <button
+                            onClick={async () => {
+                              if (revealed === undefined) await revealKey(s.name, s.namespace, key);
+                              setDraft(prev => ({ ...prev, [mapKey]: revealedKeys[mapKey] ?? "" }));
+                              setEditing(prev => ({ ...prev, [mapKey]: true }));
+                            }}
+                            title="Edit value"
+                            className="text-xs text-zinc-500 hover:text-brand-green transition shrink-0"
+                          >
+                            Edit
+                          </button>
+                        )}
+                        {editing[mapKey] && (
+                          <>
+                            <button onClick={() => saveKey(s.name, s.namespace, key)} disabled={saving[mapKey]}
+                              className="text-xs text-brand-green hover:opacity-80 shrink-0 disabled:opacity-40">
+                              {saving[mapKey] ? "…" : "Save"}
+                            </button>
+                            <button onClick={() => setEditing(prev => { const n = { ...prev }; delete n[mapKey]; return n; })}
+                              className="text-xs text-zinc-500 hover:text-zinc-300 shrink-0">
+                              Cancel
+                            </button>
+                          </>
                         )}
                       </div>
                     );
@@ -385,6 +467,12 @@ export default function SecretsPage() {
           </div>
         )}
       </div>
+
+      {note && (
+        <p className="fixed bottom-4 right-4 max-w-sm text-xs px-3 py-2 rounded-lg glass-card border-amber-500/30 text-amber-600 dark:text-amber-400">
+          {note}
+        </p>
+      )}
     </main>
   );
 }
