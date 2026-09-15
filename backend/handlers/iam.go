@@ -51,7 +51,19 @@ const (
 
 	// Anything any signed-in user may do: their own profile, their own keys.
 	PermSelf = "self"
+
+	// Editing the policy itself. Deliberately absent from AllPermissions:
+	// a permission that can be granted is not root-only, it is root-only
+	// until the first admin is handed it. Keeping it ungrantable is what
+	// makes "only root decides who may do what" a rule instead of a default.
+	PermIAMManage = "iam.manage"
 )
+
+// MaxRootUsers caps how many accounts hold the role that edits the policy and
+// authors cluster RBAC. Two, so the person holding it can go on holiday
+// without the platform becoming unadministrable, and no more, because every
+// additional holder is another account whose compromise is total.
+const MaxRootUsers = 2
 
 // AllPermissions is the vocabulary, in the order the UI should list it.
 var AllPermissions = []string{
@@ -66,7 +78,7 @@ var AllPermissions = []string{
 // over. A role is now just a bundle: root holds everything, so an upgrade
 // changes nobody's access on the day it lands.
 var rolePermissions = map[string][]string{
-	"root": AllPermissions,
+	"root": append(append([]string{}, AllPermissions...), PermIAMManage),
 	"admin": {
 		PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow,
 		PermK8sPodDelete, PermK8sScale, PermClusterWrite,

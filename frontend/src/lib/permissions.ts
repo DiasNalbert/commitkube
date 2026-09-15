@@ -29,6 +29,9 @@ export const PERMISSIONS = {
   notifyWrite: "notify.write",
   userManage: "user.manage",
   auditRead: "audit.read",
+  /** Editing the policy itself. Root only, and deliberately not grantable --
+   *  it will never appear in the catalog the Access page offers. */
+  iamManage: "iam.manage",
 } as const;
 
 let cache: Set<string> | null = null;

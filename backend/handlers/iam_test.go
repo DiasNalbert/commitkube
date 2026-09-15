@@ -108,3 +108,35 @@ func TestNamespaceScopeDecision(t *testing.T) {
 		})
 	}
 }
+
+// The policy editor must not be grantable: a permission an admin can be handed
+// is not root-only, it is root-only until someone hands it over.
+func TestIAMManageIsNotGrantable(t *testing.T) {
+	if validPermission(PermIAMManage) {
+		t.Fatal("iam.manage is in the grantable catalog, so root-only is only a default")
+	}
+
+	held := false
+	for _, p := range rolePermissions["root"] {
+		if p == PermIAMManage {
+			held = true
+		}
+	}
+	if !held {
+		t.Error("root does not hold iam.manage, so nobody can edit the policy")
+	}
+
+	for _, role := range []string{"admin", "user"} {
+		for _, p := range rolePermissions[role] {
+			if p == PermIAMManage {
+				t.Errorf("the %s role carries iam.manage", role)
+			}
+		}
+	}
+}
+
+func TestRootCapIsTwo(t *testing.T) {
+	if MaxRootUsers != 2 {
+		t.Fatalf("MaxRootUsers is %d; the agreed cap is 2", MaxRootUsers)
+	}
+}
