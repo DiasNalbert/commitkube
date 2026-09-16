@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
+	"gorm.io/gorm"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -161,12 +162,21 @@ func pollWorkloadsFor(cl *models.Cluster) {
 		prevByKey[p.Namespace+"/"+p.Kind+"/"+p.Name] = p
 	}
 
+	// The pass collects its writes and commits them together, for the same
+	// reason as the pod poller: a write per workload is a lock acquisition per
+	// workload, and every page that resolves its cluster row queues behind
+	// them.
+	events := []models.WorkloadEvent{}
+	snapshots := make([]models.WorkloadSnapshot, 0, len(states))
+	type pendingNotice struct{ body, workload string }
+	notices := []pendingNotice{}
+
 	for _, w := range states {
 		key := w.Namespace + "/" + w.Kind + "/" + w.Name
 
 		if prev, ok := prevByKey[key]; ok {
 			addEvent := func(eventType, oldV, newV string) {
-				db.DB.Create(&models.WorkloadEvent{
+				events = append(events, models.WorkloadEvent{
 					ClusterID:  cl.ID,
 					RecordedAt: now, Namespace: w.Namespace, Kind: w.Kind, Name: w.Name,
 					EventType: eventType, OldValue: oldV, NewValue: newV,
@@ -175,10 +185,11 @@ func pollWorkloadsFor(cl *models.Cluster) {
 			if prev.Status != w.Status {
 				addEvent("status_change", prev.Status, w.Status)
 				if w.Status == "degraded" {
-					go SendNotifications("workload.degraded", "Workload Degraded",
-						fmt.Sprintf("%s %s in namespace %s has 0/%d replicas ready",
+					notices = append(notices, pendingNotice{
+						body: fmt.Sprintf("%s %s in namespace %s has 0/%d replicas ready",
 							w.Kind, w.Name, w.Namespace, w.Desired),
-						w.Name, "system")
+						workload: w.Name,
+					})
 				}
 			}
 			if prev.Desired != w.Desired {
@@ -190,12 +201,36 @@ func pollWorkloadsFor(cl *models.Cluster) {
 			}
 		}
 
-		db.DB.Create(&models.WorkloadSnapshot{
+		snapshots = append(snapshots, models.WorkloadSnapshot{
 			ClusterID:  cl.ID,
 			RecordedAt: now, Namespace: w.Namespace, Kind: w.Kind, Name: w.Name,
 			Desired: w.Desired, Ready: w.Ready, Updated: w.Updated,
 			Available: w.Available, Image: w.Image, Status: w.Status,
 		})
+	}
+
+	if err := db.DB.Transaction(func(tx *gorm.DB) error {
+		if len(events) > 0 {
+			if err := tx.CreateInBatches(&events, 200).Error; err != nil {
+				return err
+			}
+		}
+		if len(snapshots) > 0 {
+			if err := tx.CreateInBatches(&snapshots, 200).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		fmt.Printf("Workload monitoring: cluster %s: persisting the pass failed: %v\n", cl.Name, err)
+		return
+	}
+
+	// Announced only once the events are committed, so a notification never
+	// describes a transition the database does not record.
+	for _, n := range notices {
+		go SendNotifications("workload.degraded", "Workload Degraded",
+			n.body, n.workload, "system")
 	}
 }
 

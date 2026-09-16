@@ -17,6 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"gorm.io/gorm"
 )
 
 // Thresholds for pod problem detection. Warning fires first, critical escalates.
@@ -142,11 +144,19 @@ func lastThrottlingByPod(clusterID uint) map[string]float64 {
 
 // fetchPodMetrics reads live per-container usage from the metrics.k8s.io API
 // served by metrics-server -- the same source `kubectl top pod` uses.
-func fetchPodMetrics(clientset *kubernetes.Clientset) map[string]map[string]containerUsage {
+// A namespace narrows the request to that namespace's pods. It used to ask for
+// the whole cluster even when the caller had filtered, which on a large cluster
+// is the most expensive part of rendering a single namespace.
+func fetchPodMetrics(clientset *kubernetes.Clientset, namespace string) map[string]map[string]containerUsage {
 	result := map[string]map[string]containerUsage{}
 
+	path := "/apis/metrics.k8s.io/v1beta1/pods"
+	if namespace != "" {
+		path = "/apis/metrics.k8s.io/v1beta1/namespaces/" + namespace + "/pods"
+	}
+
 	raw, err := clientset.RESTClient().Get().
-		AbsPath("/apis/metrics.k8s.io/v1beta1/pods").
+		AbsPath(path).
 		DoRaw(context.Background())
 	if err != nil {
 		return result
@@ -196,16 +206,42 @@ func fetchPodMetrics(clientset *kubernetes.Clientset) map[string]map[string]cont
 func fetchThrottling(clientset *kubernetes.Clientset, nodeNames []string) map[string]float64 {
 	cur := map[string]cfsSample{}
 
+	// One node at a time made the pass as long as the sum of every kubelet's
+	// response, each a cadvisor payload measured in megabytes -- and a single
+	// unresponsive kubelet stalled the whole poll, along with the database
+	// write that follows it. Bounded concurrency with a per-node deadline
+	// keeps the pass proportional to the slowest few nodes, not to all of them.
+	const maxParallelScrapes = 8
+	var (
+		scrapeMu sync.Mutex
+		wg       sync.WaitGroup
+	)
+	sem := make(chan struct{}, maxParallelScrapes)
+
 	for _, node := range nodeNames {
-		raw, err := clientset.CoreV1().RESTClient().Get().
-			Resource("nodes").Name(node).SubResource("proxy").
-			Suffix("metrics", "cadvisor").
-			DoRaw(context.Background())
-		if err != nil {
-			continue
-		}
-		parseCFSMetrics(string(raw), cur)
+		wg.Add(1)
+		go func(node string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			raw, err := clientset.CoreV1().RESTClient().Get().
+				Resource("nodes").Name(node).SubResource("proxy").
+				Suffix("metrics", "cadvisor").
+				DoRaw(ctx)
+			if err != nil {
+				return
+			}
+
+			scrapeMu.Lock()
+			defer scrapeMu.Unlock()
+			parseCFSMetrics(string(raw), cur)
+		}(node)
 	}
+	wg.Wait()
 
 	out := map[string]float64{}
 	if len(cur) == 0 {
@@ -578,7 +614,7 @@ func collectPods(clientset *kubernetes.Clientset, clusterID uint, namespace stri
 		return nil, false, fmt.Errorf("failed to list pods: %v", err)
 	}
 
-	metricsMap := fetchPodMetrics(clientset)
+	metricsMap := fetchPodMetrics(clientset, namespace)
 	metricsAvail := len(metricsMap) > 0
 
 	// Scraping cadvisor means one request per node with a sizeable payload, and
@@ -611,6 +647,71 @@ func collectPods(clientset *kubernetes.Clientset, clusterID uint, namespace stri
 	return pods, metricsAvail, nil
 }
 
+// podCacheTTL is how long a collected listing is reused. Collecting costs a
+// full pod list plus a metrics call against the apiserver, and the pods page
+// refreshes every 30 seconds in every open tab -- without this, ten people
+// watching the same cluster meant ten times the load for the same answer.
+const podCacheTTL = 15 * time.Second
+
+type podCacheEntry struct {
+	pods         []PodInfo
+	metricsAvail bool
+	at           time.Time
+	ready        chan struct{} // closed once the collection behind it finishes
+	err          error
+}
+
+var (
+	podCacheMu sync.Mutex
+	podCache   = map[string]*podCacheEntry{}
+)
+
+// cachedPods collects pods for one cluster and namespace, reusing a recent
+// result and collapsing concurrent requests onto a single collection so a
+// burst of tabs cannot multiply into a burst of apiserver calls.
+//
+// What it caches is deliberately unfiltered: namespace scoping is applied per
+// request by keepScopedPods, so two accounts with different scopes never share
+// a view even though they share this entry.
+func cachedPods(clientset *kubernetes.Clientset, clusterID uint, namespace string) ([]PodInfo, bool, error) {
+	key := fmt.Sprintf("%d/%s", clusterID, namespace)
+
+	podCacheMu.Lock()
+	if e, ok := podCache[key]; ok {
+		// The channel has to be captured under the lock: the collection that
+		// owns it sets the field back to nil on completion, and a receive on a
+		// nil channel blocks forever.
+		if ch := e.ready; ch != nil {
+			podCacheMu.Unlock()
+			<-ch
+			return e.pods, e.metricsAvail, e.err
+		}
+		if time.Since(e.at) < podCacheTTL {
+			podCacheMu.Unlock()
+			return e.pods, e.metricsAvail, e.err
+		}
+	}
+	entry := &podCacheEntry{at: time.Now(), ready: make(chan struct{})}
+	podCache[key] = entry
+	podCacheMu.Unlock()
+
+	entry.pods, entry.metricsAvail, entry.err = collectPods(clientset, clusterID, namespace, false)
+
+	podCacheMu.Lock()
+	entry.at = time.Now()
+	ready := entry.ready
+	entry.ready = nil
+	// A failed collection is not worth serving for the next fifteen seconds:
+	// drop it so the next request retries instead of inheriting the error.
+	if entry.err != nil {
+		delete(podCache, key)
+	}
+	podCacheMu.Unlock()
+	close(ready)
+
+	return entry.pods, entry.metricsAvail, entry.err
+}
+
 // GetPodStatus returns live pod resource usage and detected problems, read
 // straight from metrics.k8s.io rather than through ArgoCD.
 func GetPodStatus(c *fiber.Ctx) error {
@@ -624,7 +725,7 @@ func GetPodStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	pods, metricsAvail, err := collectPods(clientset, clusterID, c.Query("namespace"), false)
+	pods, metricsAvail, err := cachedPods(clientset, clusterID, c.Query("namespace"))
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -781,11 +882,27 @@ func pollPodMetricsFor(cl *models.Cluster) {
 	seen := map[string]bool{}
 	livePods := map[string]bool{}
 
+	// The pass builds up everything it intends to write and commits it in one
+	// transaction at the end. Writing row by row meant a cluster of a few
+	// hundred pods took the write lock a few hundred times every two minutes,
+	// and for that whole stretch no page could read the database -- which is
+	// what a five-second `database is locked` on `SELECT * FROM clusters` was
+	// really reporting.
+	snapshots := make([]models.PodSnapshot, 0, len(pods))
+	newProblems := []models.PodProblem{}
+	type problemTouch struct {
+		id     uint
+		fields map[string]interface{}
+	}
+	touched := []problemTouch{}
+	type pendingNotice struct{ kind, title, body, workload string }
+	notices := []pendingNotice{}
+
 	for _, pod := range pods {
 		livePods[pod.Namespace+"/"+pod.Name] = true
 
 		if metricsAvail {
-			db.DB.Create(&models.PodSnapshot{
+			snapshots = append(snapshots, models.PodSnapshot{
 				ClusterID:    cl.ID,
 				RecordedAt:   now,
 				Namespace:    pod.Namespace,
@@ -814,17 +931,17 @@ func pollPodMetricsFor(cl *models.Cluster) {
 			seen[key] = true
 
 			if existing, ok := openByKey[key]; ok {
-				db.DB.Model(&models.PodProblem{}).Where("id = ?", existing.ID).Updates(map[string]interface{}{
+				touched = append(touched, problemTouch{existing.ID, map[string]interface{}{
 					"last_seen_at": now,
 					"occurrences":  existing.Occurrences + 1,
 					"severity":     det.Severity,
 					"detail":       det.Detail,
 					"value":        det.Value,
-				})
+				}})
 				continue
 			}
 
-			db.DB.Create(&models.PodProblem{
+			newProblems = append(newProblems, models.PodProblem{
 				ClusterID:   cl.ID,
 				OpenedAt:    now,
 				LastSeenAt:  now,
@@ -844,15 +961,20 @@ func pollPodMetricsFor(cl *models.Cluster) {
 			if det.Severity == "info" {
 				continue
 			}
-			go SendNotifications("pod."+det.Kind, det.Title,
-				fmt.Sprintf("Pod %s in namespace %s: %s", pod.Name, pod.Namespace, det.Detail),
-				pod.Workload, "system")
+			notices = append(notices, pendingNotice{
+				kind:  "pod." + det.Kind,
+				title: det.Title,
+				body: fmt.Sprintf("Pod %s in namespace %s: %s",
+					pod.Name, pod.Namespace, det.Detail),
+				workload: pod.Workload,
+			})
 		}
 	}
 
 	// Close problems that no longer reproduce. A problem whose pod is gone always
 	// closes; otherwise a metrics-derived problem is left open when metrics were
 	// unavailable this pass, since its absence proves nothing.
+	closing := []uint{}
 	for key, p := range openByKey {
 		if seen[key] {
 			continue
@@ -861,9 +983,44 @@ func pollPodMetricsFor(cl *models.Cluster) {
 		if podAlive && !metricsAvail && metricsDerived[p.Kind] {
 			continue
 		}
-		closedAt := now
-		db.DB.Model(&models.PodProblem{}).Where("id = ?", p.ID).
-			Update("closed_at", &closedAt)
+		closing = append(closing, p.ID)
+	}
+
+	err = db.DB.Transaction(func(tx *gorm.DB) error {
+		if len(snapshots) > 0 {
+			if err := tx.CreateInBatches(&snapshots, 200).Error; err != nil {
+				return err
+			}
+		}
+		if len(newProblems) > 0 {
+			if err := tx.CreateInBatches(&newProblems, 100).Error; err != nil {
+				return err
+			}
+		}
+		for _, t := range touched {
+			if err := tx.Model(&models.PodProblem{}).Where("id = ?", t.id).
+				Updates(t.fields).Error; err != nil {
+				return err
+			}
+		}
+		if len(closing) > 0 {
+			if err := tx.Model(&models.PodProblem{}).Where("id IN ?", closing).
+				Update("closed_at", &now).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fmt.Printf("Pod monitoring: cluster %s: persisting the pass failed: %v\n", cl.Name, err)
+		return
+	}
+
+	// Notifications go out only once the pass is committed: a problem that was
+	// rolled back was never opened, and announcing it would page someone about
+	// a row nobody can look up.
+	for _, n := range notices {
+		go SendNotifications(n.kind, n.title, n.body, n.workload, "system")
 	}
 }
 

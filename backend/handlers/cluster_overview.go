@@ -293,7 +293,7 @@ func GetClusterOverview(c *fiber.Ctx) error {
 	if err != nil {
 		return k8sError(c, err)
 	}
-	podMetrics := fetchPodMetrics(cs)
+	podMetrics := fetchPodMetrics(cs, "")
 	if len(podMetrics) > 0 {
 		o.MetricsAvailable = true
 	}

@@ -502,7 +502,7 @@ func buildNamespaceDetail(ctx context.Context, cs *kubernetes.Clientset, name st
 	// three different numbers that the Utilization view puts side by side,
 	// because "using 300m" only means something against what was asked for.
 	usageByPod := map[string]containerUsage{}
-	if metrics := fetchPodMetrics(cs); len(metrics) > 0 {
+	if metrics := fetchPodMetrics(cs, ""); len(metrics) > 0 {
 		d.MetricsAvailable = true
 		for key, containers := range metrics {
 			podNS, podName, found := strings.Cut(key, "/")

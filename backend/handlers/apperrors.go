@@ -16,6 +16,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1108,13 +1109,24 @@ func reconcileServiceProblems(clusterID uint, found []detected, now time.Time) {
 		openByKey[p.Namespace+"/"+p.Workload+"/"+p.Kind] = p
 	}
 
+	// Gathered first, written in one transaction: row-at-a-time reconciliation
+	// holds the write lock once per problem, and every page waits on it.
+	newProblems := []models.ServiceProblem{}
+	type problemTouch struct {
+		id     uint
+		fields map[string]interface{}
+	}
+	touched := []problemTouch{}
+	type pendingNotice struct{ kind, title, body, workload string }
+	notices := []pendingNotice{}
+
 	seen := map[string]bool{}
 	for _, d := range found {
 		key := d.Ref.Namespace + "/" + d.Ref.Name + "/" + d.Kind
 		seen[key] = true
 
 		if existing, ok := openByKey[key]; ok {
-			db.DB.Model(&models.ServiceProblem{}).Where("id = ?", existing.ID).Updates(map[string]interface{}{
+			touched = append(touched, problemTouch{existing.ID, map[string]interface{}{
 				"last_seen_at":    now,
 				"occurrences":     existing.Occurrences + 1,
 				"severity":        d.Severity,
@@ -1129,11 +1141,11 @@ func reconcileServiceProblems(clusterID uint, found []detected, now time.Time) {
 				"cause_name":      d.Cause.Name,
 				"cause_host":      d.Cause.Host,
 				"cause_detail":    d.Cause.Detail,
-			})
+			}})
 			continue
 		}
 
-		db.DB.Create(&models.ServiceProblem{
+		newProblems = append(newProblems, models.ServiceProblem{
 			ClusterID:    clusterID,
 			OpenedAt:     now,
 			LastSeenAt:   now,
@@ -1162,18 +1174,50 @@ func reconcileServiceProblems(clusterID uint, found []detected, now time.Time) {
 		if d.Cause.Kind == "dependency" {
 			message += "\nLikely cause: " + d.Cause.Detail
 		}
-		go SendNotifications("service."+d.Kind, d.Title,
-			fmt.Sprintf("Workload %s in namespace %s: %s", d.Ref.Name, d.Ref.Namespace, message),
-			d.Ref.Name, "system")
+		notices = append(notices, pendingNotice{
+			kind:  "service." + d.Kind,
+			title: d.Title,
+			body: fmt.Sprintf("Workload %s in namespace %s: %s",
+				d.Ref.Name, d.Ref.Namespace, message),
+			workload: d.Ref.Name,
+		})
 	}
 
+	closing := []uint{}
 	for key, p := range openByKey {
 		if seen[key] {
 			continue
 		}
-		closedAt := now
-		db.DB.Model(&models.ServiceProblem{}).Where("id = ?", p.ID).
-			Update("closed_at", &closedAt)
+		closing = append(closing, p.ID)
+	}
+
+	if err := db.DB.Transaction(func(tx *gorm.DB) error {
+		if len(newProblems) > 0 {
+			if err := tx.CreateInBatches(&newProblems, 100).Error; err != nil {
+				return err
+			}
+		}
+		for _, t := range touched {
+			if err := tx.Model(&models.ServiceProblem{}).Where("id = ?", t.id).
+				Updates(t.fields).Error; err != nil {
+				return err
+			}
+		}
+		if len(closing) > 0 {
+			if err := tx.Model(&models.ServiceProblem{}).Where("id IN ?", closing).
+				Update("closed_at", &now).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		fmt.Printf("Service problems: persisting the pass failed: %v\n", err)
+		return
+	}
+
+	// Sent after the commit: a problem that was rolled back was never opened.
+	for _, n := range notices {
+		go SendNotifications(n.kind, n.title, n.body, n.workload, "system")
 	}
 }
 

@@ -41,10 +41,40 @@ func ConnectDB() {
 		dbPath = "kubecommit.db"
 	}
 
+	// SQLite's default journal mode has a single lock for the whole file: one
+	// writer excludes every reader. The pollers write continuously, and every
+	// Kubernetes page resolves its cluster row before it can do anything else,
+	// so that lock is what made a bare `SELECT * FROM clusters` time out after
+	// five seconds and take every cluster screen down with it.
+	//
+	// WAL lets readers run against the last committed snapshot while a write
+	// is in flight. busy_timeout makes a writer that still collides wait its
+	// turn instead of failing. synchronous=NORMAL drops the fsync on every
+	// commit -- under WAL that risks losing the last few transactions on a
+	// power cut, never a corrupt file, which is the right trade for sampled
+	// metrics. txlock=immediate takes the write lock when a transaction opens
+	// rather than when it first writes, so two transactions cannot deadlock
+	// upgrading from read to write.
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=10000&_synchronous=NORMAL&_foreign_keys=on&_txlock=immediate"
+
 	var err error
-	DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	// GORM wraps every single Create and Update in a transaction of its own.
+	// For the row-at-a-time writes the pollers do that doubles the lock
+	// traffic for nothing; the batched writes open their own transaction
+	// where atomicity actually matters.
+	DB, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{SkipDefaultTransaction: true})
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
+	}
+
+	// WAL allows one writer and many concurrent readers. An unbounded pool
+	// lets a burst of requests open dozens of connections that then queue on
+	// the same write lock; capping it turns that into a short wait for a
+	// connection instead of a five-second busy timeout.
+	if sqlDB, dbErr := DB.DB(); dbErr == nil {
+		sqlDB.SetMaxOpenConns(8)
+		sqlDB.SetMaxIdleConns(8)
+		sqlDB.SetConnMaxLifetime(0) // local connections; recycling buys nothing
 	}
 
 	// These unique indexes gained cluster_id. AutoMigrate creates a missing
