@@ -22,7 +22,7 @@ func TestScanTimelineCarriesLastScanForward(t *testing.T) {
 		{RepoName: "a", CreatedAt: at(2, 23), Critical: 3, High: 5, ImageCritical: 7},
 	}
 
-	points, movers, split := buildScanTimeline(before, within, "code", start, 4, loc)
+	points, movers, split, changes := buildScanTimeline(before, within, "code", start, 4, 24, loc)
 	want := []int{10, 12, 5, 5}
 	for i, p := range points {
 		if p.Critical != want[i] {
@@ -47,7 +47,12 @@ func TestScanTimelineCarriesLastScanForward(t *testing.T) {
 		t.Fatalf("added = %+v", split)
 	}
 
-	img, _, _ := buildScanTimeline(before, within, "container", start, 4, loc)
+	// b's first scan is onboarding; a's two rescans are the changes, newest first.
+	if len(changes) != 2 || changes[0].Repo != "a" || changes[0].Delta.Critical != -1 || changes[1].Delta.Critical != -6 {
+		t.Fatalf("changes = %+v", changes)
+	}
+
+	img, _, _, _ := buildScanTimeline(before, within, "container", start, 4, 24, loc)
 	if img[3].Critical != 7 {
 		t.Fatalf("container day 3 critical = %d, want 7", img[3].Critical)
 	}
@@ -78,5 +83,28 @@ func TestReconcileScanHistoryCatchesUpWithResults(t *testing.T) {
 	db.DB.Where("repo_name = ?", "a").Order("id desc").First(&a)
 	if a.ImageCritical != 5 || !a.CreatedAt.After(old) {
 		t.Fatalf("a not reconciled: %+v", a)
+	}
+}
+
+// Two moves on the same day -- a catch-up that raised the count and a fix
+// that lowered it -- are one point on a daily chart and two on an hourly one.
+func TestScanTimelineHourlyBucketsSeparateSameDayMoves(t *testing.T) {
+	loc := time.UTC
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, loc)
+	before := []models.ScanHistory{{RepoName: "a", CreatedAt: start.Add(-time.Hour), Medium: 100}}
+	within := []models.ScanHistory{
+		{RepoName: "a", CreatedAt: start.Add(5 * time.Hour), Medium: 900},  // catch-up at 05:00
+		{RepoName: "a", CreatedAt: start.Add(13 * time.Hour), Medium: 300}, // fix at 13:00
+	}
+	daily, _, _, _ := buildScanTimeline(before, within, "code", start, 1, 24, loc)
+	if len(daily) != 1 || daily[0].Medium != 300 {
+		t.Fatalf("daily = %+v", daily)
+	}
+	hourly, _, _, _ := buildScanTimeline(before, within, "code", start, 24, 1, loc)
+	if hourly[4].Medium != 100 || hourly[5].Medium != 900 || hourly[13].Medium != 300 {
+		t.Fatalf("hourly = %v / %v / %v", hourly[4].Medium, hourly[5].Medium, hourly[13].Medium)
+	}
+	if hourly[13].Date != "2026-10-01T13:00" {
+		t.Fatalf("label = %s", hourly[13].Date)
 	}
 }

@@ -133,10 +133,26 @@ func countsFor(h models.ScanHistory, domain string) severityCounts {
 }
 
 type timelinePoint struct {
+	// Date is the start of the bucket: "2006-01-02" for daily buckets,
+	// "2006-01-02T15:04" for the hourly ones the short ranges use.
 	Date  string `json:"date"`
-	Repos int    `json:"repos"` // repositories with at least one scan by that day
+	Repos int    `json:"repos"` // repositories with at least one scan by then
 	severityCounts
 }
+
+// timelineChange is one scan that moved a repository's numbers. On a chart of
+// a hundred repositories a single fix is a dent, and a day bucket hides it
+// entirely when something else moved the same day; this list is where a
+// specific piece of work can be seen.
+type timelineChange struct {
+	Repo  string         `json:"repo"`
+	At    time.Time      `json:"at"`
+	From  severityCounts `json:"from"`
+	To    severityCounts `json:"to"`
+	Delta severityCounts `json:"delta"`
+}
+
+const timelineChangeLimit = 20
 
 type timelineMover struct {
 	Repo  string         `json:"repo"`
@@ -168,7 +184,8 @@ type timelineSplit struct {
 //
 // before holds each repository's last scan prior to the window, so a
 // repository scanned only before it starts is not missing from day one.
-func buildScanTimeline(before, within []models.ScanHistory, domain string, start time.Time, days int, loc *time.Location) ([]timelinePoint, []timelineMover, timelineSplit) {
+// bucketHours is 24 for one point a day, or a divisor of 24 for finer ones.
+func buildScanTimeline(before, within []models.ScanHistory, domain string, start time.Time, buckets, bucketHours int, loc *time.Location) ([]timelinePoint, []timelineMover, timelineSplit, []timelineChange) {
 	sort.Slice(within, func(i, j int) bool { return within[i].CreatedAt.Before(within[j].CreatedAt) })
 
 	current := map[string]severityCounts{}
@@ -180,17 +197,36 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 		first[k] = v
 	}
 
-	points := make([]timelinePoint, 0, days)
-	var baseline map[string]severityCounts // as of the first day anything was tracked
+	bucketStart := func(n int) time.Time {
+		if bucketHours >= 24 {
+			return start.AddDate(0, 0, n) // calendar days, so DST shifts do not skew them
+		}
+		return start.Add(time.Duration(n*bucketHours) * time.Hour)
+	}
+	label := "2006-01-02"
+	if bucketHours < 24 {
+		label = "2006-01-02T15:04"
+	}
+
+	points := make([]timelinePoint, 0, buckets)
+	var changes []timelineChange
+	var baseline map[string]severityCounts // as of the first bucket anything was tracked
 	i := 0
-	for d := 0; d < days; d++ {
-		dayStart := start.AddDate(0, 0, d)
-		dayEnd := dayStart.AddDate(0, 0, 1)
+	for d := 0; d < buckets; d++ {
+		dayStart := bucketStart(d)
+		dayEnd := bucketStart(d + 1)
 		for i < len(within) && within[i].CreatedAt.Before(dayEnd) {
 			h := within[i]
 			c := countsFor(h, domain)
 			if _, seen := first[h.RepoName]; !seen {
 				first[h.RepoName] = c
+			}
+			// A repository's first scan is onboarding, not a change.
+			if prev, ok := current[h.RepoName]; ok && prev != c {
+				changes = append(changes, timelineChange{
+					Repo: h.RepoName, At: h.CreatedAt, From: prev, To: c,
+					Delta: severityCounts{c.Critical - prev.Critical, c.High - prev.High, c.Medium - prev.Medium, c.Low - prev.Low},
+				})
 			}
 			current[h.RepoName] = c
 			i++
@@ -205,7 +241,7 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 				baseline[k] = v
 			}
 		}
-		points = append(points, timelinePoint{Date: dayStart.In(loc).Format("2006-01-02"), Repos: len(current), severityCounts: sum})
+		points = append(points, timelinePoint{Date: dayStart.In(loc).Format(label), Repos: len(current), severityCounts: sum})
 	}
 
 	var split timelineSplit
@@ -240,7 +276,17 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 		}
 		return x.Medium+x.Low < y.Medium+y.Low
 	})
-	return points, movers, split
+	// Newest first, and only the most recent ones.
+	for a, b := 0, len(changes)-1; a < b; a, b = a+1, b-1 {
+		changes[a], changes[b] = changes[b], changes[a]
+	}
+	if len(changes) > timelineChangeLimit {
+		changes = changes[:timelineChangeLimit]
+	}
+	if changes == nil {
+		changes = []timelineChange{}
+	}
+	return points, movers, split, changes
 }
 
 // GetScanTimeline answers "how much did the vulnerability count go down",
@@ -261,9 +307,24 @@ func GetScanTimeline(c *fiber.Ctx) error {
 
 	repoNames := scanScopeRepoNames(c.QueryInt("workspace_id", 0), c.Query("project_key", ""), c.Query("search", ""))
 
+	// Short ranges get finer buckets: on a week, one point a day cannot show a
+	// fix made this afternoon apart from anything else that moved today.
+	bucketHours := 24
+	switch {
+	case days <= 7:
+		bucketHours = 1
+	case days <= 30:
+		bucketHours = 6
+	}
 	now := time.Now().In(loc)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	buckets := days
 	start := today.AddDate(0, 0, -(days - 1))
+	if bucketHours < 24 {
+		current := time.Date(now.Year(), now.Month(), now.Day(), now.Hour()-now.Hour()%bucketHours, 0, 0, 0, loc)
+		buckets = days * 24 / bucketHours
+		start = current.Add(-time.Duration((buckets-1)*bucketHours) * time.Hour)
+	}
 
 	var before, within []models.ScanHistory
 	if len(repoNames) > 0 {
@@ -275,7 +336,7 @@ func GetScanTimeline(c *fiber.Ctx) error {
 		db.DB.Where("repo_name IN ? AND created_at >= ?", repoNames, start).Find(&within)
 	}
 
-	points, movers, split := buildScanTimeline(before, within, domain, start, days, loc)
+	points, movers, split, changes := buildScanTimeline(before, within, domain, start, buckets, bucketHours, loc)
 
 	improved := []timelineMover{}
 	regressed := []timelineMover{}
@@ -302,6 +363,9 @@ func GetScanTimeline(c *fiber.Ctx) error {
 		"improved":  improved,
 		"regressed": regressed,
 		"split":     split,
-		"scans":     len(within),
+		"changes":   changes,
+		// So the page knows how many points make a day.
+		"bucket_hours": bucketHours,
+		"scans":        len(within),
 	})
 }

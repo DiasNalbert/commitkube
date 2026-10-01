@@ -10,7 +10,11 @@ interface Counts { critical: number; high: number; medium: number; low: number }
 interface Point extends Counts { date: string; repos: number }
 interface Mover { repo: string; from: Counts; to: Counts; delta: Counts }
 interface Split { baseline_repos: number; baseline_from: Counts; baseline_to: Counts; added_repos: number; added: Counts }
-interface Timeline { points: Point[]; improved: Mover[]; regressed: Mover[]; scans: number; split?: Split }
+interface Change { repo: string; at: string; from: Counts; to: Counts; delta: Counts }
+interface Timeline {
+  points: Point[]; improved: Mover[]; regressed: Mover[]; scans: number; split?: Split;
+  changes?: Change[]; bucket_hours?: number;
+}
 
 const SEVERITIES: { key: Sev; label: string; stroke: string }[] = [
   { key: "critical", label: "Critical", stroke: "#ef4444" },
@@ -21,8 +25,11 @@ const SEVERITIES: { key: Sev; label: string; stroke: string }[] = [
 
 const RANGES = [7, 30, 90, 180, 365];
 
+/** Day buckets come as "2026-10-01", hourly ones as "2026-10-01T13:00". */
 const fmtDate = (d: string) =>
-  new Date(d + "T12:00:00").toLocaleDateString([], { day: "2-digit", month: "short" });
+  d.includes("T")
+    ? new Date(d).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+    : new Date(d + "T12:00:00").toLocaleDateString([], { day: "2-digit", month: "short" });
 
 /** Signed change, written so that down reads as the good direction. Only
  *  the difference: callers that show a starting value also show where it
@@ -95,7 +102,8 @@ export default function SecurityTimeline({ domain, wsId, projectKey, refreshKey 
   const last = series[series.length - 1];
   // Yesterday's closing numbers, so a fix made today is visible on its own
   // instead of disappearing into a three-month line.
-  const yesterday = series.length >= 2 ? series[series.length - 2] : undefined;
+  const perDay = Math.max(1, Math.round(24 / (data?.bucket_hours ?? 24)));
+  const dayAgo = series.length >= 2 ? series[Math.max(0, series.length - 1 - perDay)] : undefined;
   const split = data?.split;
 
   return (
@@ -104,7 +112,8 @@ export default function SecurityTimeline({ domain, wsId, projectKey, refreshKey 
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">Trend</h2>
           <p className="text-xs text-zinc-500">
-            Each day counts every repository at its most recent scan up to that day.
+            Each point counts every repository at its most recent scan up to then
+            {data?.bucket_hours && data.bucket_hours < 24 ? ` (one point every ${data.bucket_hours === 1 ? "hour" : `${data.bucket_hours} hours`})` : ""}.
             {first && split && first.date !== last.date && (
               <> The change below compares the {split.baseline_repos} repositories tracked since {fmtDate(first.date)} with themselves
                 {split.added_repos > 0 && <>; {split.added_repos} more started being scanned in this period and raise the total without anything getting worse</>}.</>
@@ -142,10 +151,10 @@ export default function SecurityTimeline({ domain, wsId, projectKey, refreshKey 
                 </div>
                 {split ? (
                   <div className="text-[11px] text-right tabular-nums space-y-0.5">
-                    {yesterday && (
-                      <div title="Change since the end of yesterday, all repositories">
-                        <span className="text-zinc-500">since yesterday </span>
-                        <Delta from={yesterday[s.key]} to={last[s.key]} />
+                    {dayAgo && (
+                      <div title="Change over the last 24 hours, all repositories">
+                        <span className="text-zinc-500">last 24h </span>
+                        <Delta from={dayAgo[s.key]} to={last[s.key]} />
                       </div>
                     )}
                     <div title={`The ${split.baseline_repos} repositories tracked since the start of the period, compared with themselves`}>
@@ -174,7 +183,7 @@ export default function SecurityTimeline({ domain, wsId, projectKey, refreshKey 
                         labelFormatter={(d) => fmtDate(String(d))}
                         formatter={(v) => [Number(v).toLocaleString(), s.label]}
                       />
-                      <Area type="monotone" dataKey={s.key} stroke={s.stroke} strokeWidth={2} fill={s.stroke} fillOpacity={0.12} dot={false} isAnimationActive={false} />
+                      <Area type="stepAfter" dataKey={s.key} stroke={s.stroke} strokeWidth={2} fill={s.stroke} fillOpacity={0.12} dot={false} isAnimationActive={false} />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -188,6 +197,8 @@ export default function SecurityTimeline({ domain, wsId, projectKey, refreshKey 
               <MoverList title="Got worse" movers={data?.regressed ?? []} />
             </div>
           )}
+
+          {(data?.changes?.length ?? 0) > 0 && <RecentChanges changes={data!.changes!} />}
         </>
       )}
     </section>
@@ -219,6 +230,49 @@ function MoverList({ title, movers }: { title: string; movers: Mover[] }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** Every scan that moved a repository's numbers, newest first. This is where
+ *  one fix shows up as itself rather than as a dent in a hundred repositories. */
+function RecentChanges({ changes }: { changes: Change[] }) {
+  return (
+    <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-2.5 min-w-0">
+      <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300 mb-1.5">Recent changes</p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs tabular-nums">
+          <thead>
+            <tr className="text-left text-zinc-500">
+              <th className="font-normal py-1 pr-3">When</th>
+              <th className="font-normal py-1 pr-3">Repository</th>
+              {SEVERITIES.map(s => <th key={s.key} className="font-normal py-1 pl-3 text-right">{s.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {changes.map((c, i) => (
+              <tr key={`${c.repo}-${c.at}-${i}`} className="border-t border-zinc-200 dark:border-zinc-800">
+                <td className="py-1 pr-3 text-zinc-500 whitespace-nowrap">
+                  {new Date(c.at).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                </td>
+                <td className="py-1 pr-3 font-mono text-zinc-700 dark:text-zinc-300 truncate max-w-[16rem]">{c.repo}</td>
+                {SEVERITIES.map(s => {
+                  const d = c.delta[s.key];
+                  return (
+                    <td key={s.key} className="py-1 pl-3 text-right whitespace-nowrap" title={`${c.from[s.key]} → ${c.to[s.key]}`}>
+                      {d === 0 ? <span className="text-zinc-400">—</span> : (
+                        <span className={d < 0 ? "text-brand-green" : "text-red-500 dark:text-red-400"}>
+                          {d > 0 ? "+" : "−"}{Math.abs(d).toLocaleString()}
+                        </span>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
