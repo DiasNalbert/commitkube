@@ -56,7 +56,14 @@ type TrivyMisconf struct {
 
 // deployedImage is the image the repository actually has running in the
 // cluster, which is the authoritative thing to scan when it exists.
-func deployedImage(repoName string) (string, error) {
+//
+// live asks the clusters directly. The stored workload samples are up to a
+// poll interval old, so a scan started right after a deploy -- the moment
+// someone most wants to see the new numbers -- read the previous image and
+// scanned that. Full and manual scans go live; the periodic image-only pass
+// over every repository keeps reading the samples, which is what keeps it
+// cheap, and falls behind a deploy by one poll at most.
+func deployedImage(repoName string, live bool) (string, error) {
 	var repo models.Repository
 	if err := db.DB.Where("name = ?", repoName).First(&repo).Error; err != nil {
 		return "", fmt.Errorf("repo not found")
@@ -66,6 +73,11 @@ func deployedImage(repoName string) (string, error) {
 	workloadName := repo.ArgoApp
 	if workloadName == "" {
 		workloadName = repo.Name
+	}
+	if live {
+		if image, err := liveWorkloadImage(workloadName); err == nil && image != "" {
+			return image, nil
+		}
 	}
 	return latestWorkloadImage(workloadName)
 }
@@ -151,8 +163,8 @@ const (
 // resolveImageScan scans the deployed image when the repository has one and
 // falls back to the base image its Dockerfile declares. checkoutDir may be
 // empty -- an image-only pass has no checkout, so it simply has no fallback.
-func resolveImageScan(repoName, checkoutDir string, userID uint) (report TrivyReport, counts map[string]int, image, source string, err error) {
-	image, deployErr := deployedImage(repoName)
+func resolveImageScan(repoName, checkoutDir string, userID uint, live bool) (report TrivyReport, counts map[string]int, image, source string, err error) {
+	image, deployErr := deployedImage(repoName, live)
 	if deployErr == nil && image != "" {
 		report, counts, err = scanImage(image, userID)
 		if err == nil {
@@ -200,7 +212,7 @@ func runImageOnlyScan(repoName string) error {
 		return runScanAndSave(repoName, "", false)
 	}
 
-	report, counts, image, source, err := resolveImageScan(repoName, "", repo.UserID)
+	report, counts, image, source, err := resolveImageScan(repoName, "", repo.UserID, false)
 	if err != nil {
 		existing.ImageError = err.Error()
 		db.DB.Save(&existing)
@@ -363,7 +375,7 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 
 	reportJSON, _ := json.Marshal(report)
 
-	imageReport, imageCounts, scannedImage, imageSource, imageErr := resolveImageScan(repoName, scanDir, repo.UserID)
+	imageReport, imageCounts, scannedImage, imageSource, imageErr := resolveImageScan(repoName, scanDir, repo.UserID, true)
 	imageReportJSON, _ := json.Marshal(imageReport)
 	imageErrStr := ""
 	if imageErr != nil {
@@ -845,19 +857,22 @@ func GetRepoScanDetail(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"repo_name":      result.RepoName,
-		"scanned_at":     result.CreatedAt,
-		"critical":       result.Critical,
-		"high":           result.High,
-		"medium":         result.Medium,
-		"low":            result.Low,
-		"findings":       findings,
-		"scanned_image":  result.ScannedImage,
-		"image_critical": result.ImageCritical,
-		"image_high":     result.ImageHigh,
-		"image_medium":   result.ImageMedium,
-		"image_low":      result.ImageLow,
-		"image_error":    result.ImageError,
-		"image_findings": imageFindings,
+		"repo_name": result.RepoName,
+		// UpdatedAt: the row is rewritten by every scan, so CreatedAt is the
+		// first scan ever and was being shown as "Last scan".
+		"scanned_at":       result.UpdatedAt,
+		"first_scanned_at": result.CreatedAt,
+		"critical":         result.Critical,
+		"high":             result.High,
+		"medium":           result.Medium,
+		"low":              result.Low,
+		"findings":         findings,
+		"scanned_image":    result.ScannedImage,
+		"image_critical":   result.ImageCritical,
+		"image_high":       result.ImageHigh,
+		"image_medium":     result.ImageMedium,
+		"image_low":        result.ImageLow,
+		"image_error":      result.ImageError,
+		"image_findings":   imageFindings,
 	})
 }

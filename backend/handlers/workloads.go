@@ -430,6 +430,59 @@ func GetWorkloadHistory(c *fiber.Ctx) error {
 // scanner, which has no request and no cluster in hand. A repository deployed
 // in any cluster has an image worth scanning, so the most recent sample from
 // anywhere wins.
+// liveWorkloadImage reads the image a workload runs right now, from every
+// cluster. When the name matches more than one workload -- the same app in two
+// namespaces or clusters -- one that is actually running wins over one scaled
+// to zero, and a Deployment over other kinds, rather than whichever happened
+// to be listed first.
+func liveWorkloadImage(name string) (string, error) {
+	var matches []workloadState
+	var lastErr error
+	for _, cl := range allClusters() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		states, err := collectWorkloads(ctx, &cl)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		for _, w := range states {
+			if w.Name == name && w.Image != "" {
+				matches = append(matches, w)
+			}
+		}
+	}
+	if len(matches) == 0 {
+		if lastErr != nil {
+			return "", lastErr
+		}
+		return "", fmt.Errorf("no running workload named %s was found in any cluster", name)
+	}
+	return pickWorkloadImage(matches), nil
+}
+
+// pickWorkloadImage chooses among same-named workloads: running over scaled
+// to zero, then a Deployment over other kinds, then the first listed.
+func pickWorkloadImage(matches []workloadState) string {
+	best := matches[0]
+	rank := func(w workloadState) int {
+		r := 0
+		if w.Desired > 0 {
+			r += 2
+		}
+		if w.Kind == "Deployment" {
+			r++
+		}
+		return r
+	}
+	for _, w := range matches[1:] {
+		if rank(w) > rank(best) {
+			best = w
+		}
+	}
+	return best.Image
+}
+
 func latestWorkloadImage(name string) (string, error) {
 	var snap models.WorkloadSnapshot
 	err := db.DB.Where("name = ? AND image != ''", name).

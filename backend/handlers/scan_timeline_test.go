@@ -108,3 +108,14 @@ func TestScanTimelineHourlyBucketsSeparateSameDayMoves(t *testing.T) {
 		t.Fatalf("label = %s", hourly[13].Date)
 	}
 }
+
+func TestPickWorkloadImagePrefersTheRunningDeployment(t *testing.T) {
+	got := pickWorkloadImage([]workloadState{
+		{Namespace: "old", Kind: "Deployment", Name: "api", Desired: 0, Image: "api:old"},
+		{Namespace: "jobs", Kind: "CronJob", Name: "api", Desired: 1, Image: "api:cron"},
+		{Namespace: "prod", Kind: "Deployment", Name: "api", Desired: 3, Image: "api:new"},
+	})
+	if got != "api:new" {
+		t.Fatalf("picked %s, want api:new", got)
+	}
+}
