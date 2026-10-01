@@ -220,6 +220,7 @@ func runImageOnlyScan(repoName string) error {
 	if err := db.DB.Save(&existing).Error; err != nil {
 		return err
 	}
+	recordScanHistory(existing)
 
 	// This pass exists to catch a CVE published against an image nobody
 	// touched, so a worse result is exactly the thing worth an email -- and an
@@ -408,7 +409,7 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 		})
 	}
 
-	db.DB.Create(&models.ScanHistory{
+	recordScanHistory(models.ScanResult{
 		RepoName:      repoName,
 		Critical:      counts["CRITICAL"],
 		High:          counts["HIGH"],
@@ -658,22 +659,10 @@ a{color:#58a6ff}
 	return sb.String()
 }
 
-func GetScanDashboard(c *fiber.Ctx) error {
-	wsID := c.QueryInt("workspace_id", 0)
-	projectKey := c.Query("project_key", "")
-	search := c.Query("search", "")
-	page := c.QueryInt("page", 1)
-	limit := c.QueryInt("limit", 20)
-	if page < 1 {
-		page = 1
-	}
-	if limit < 1 || limit > 100 {
-		limit = 20
-	}
-
-	var existingRepoNames []string
-	db.DB.Model(&models.Repository{}).Pluck("name", &existingRepoNames)
-
+// scanScopeRepoNames is the set of repositories a security dashboard covers
+// for a workspace / project / search filter. Only repositories that still
+// exist count, so a deleted one stops weighing on the totals and the history.
+func scanScopeRepoNames(wsID int, projectKey, search string) []string {
 	var wsIDs []uint
 	if wsID > 0 {
 		var targetWs models.BitbucketWorkspace
@@ -687,20 +676,15 @@ func GetScanDashboard(c *fiber.Ctx) error {
 		}
 	}
 
-	filtered := len(wsIDs) > 0 || projectKey != ""
-	var repoNames []string
-	if filtered {
-		repoQ := db.DB.Model(&models.Repository{})
-		if len(wsIDs) > 0 {
-			repoQ = repoQ.Where("workspace_id IN ?", wsIDs)
-		}
-		if projectKey != "" {
-			repoQ = repoQ.Where("project_key = ?", projectKey)
-		}
-		repoQ.Pluck("name", &repoNames)
-	} else {
-		repoNames = existingRepoNames
+	repoQ := db.DB.Model(&models.Repository{})
+	if len(wsIDs) > 0 {
+		repoQ = repoQ.Where("workspace_id IN ?", wsIDs)
 	}
+	if projectKey != "" {
+		repoQ = repoQ.Where("project_key = ?", projectKey)
+	}
+	var repoNames []string
+	repoQ.Pluck("name", &repoNames)
 
 	if search != "" {
 		filtered := make([]string, 0, len(repoNames))
@@ -712,6 +696,23 @@ func GetScanDashboard(c *fiber.Ctx) error {
 		}
 		repoNames = filtered
 	}
+	return repoNames
+}
+
+func GetScanDashboard(c *fiber.Ctx) error {
+	wsID := c.QueryInt("workspace_id", 0)
+	projectKey := c.Query("project_key", "")
+	search := c.Query("search", "")
+	page := c.QueryInt("page", 1)
+	limit := c.QueryInt("limit", 20)
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+
+	repoNames := scanScopeRepoNames(wsID, projectKey, search)
 
 	baseQ := func() *gorm.DB {
 		q := db.DB.Model(&models.ScanResult{})

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
+import SecurityTimeline from "./SecurityTimeline";
 
 interface ScanHistoryEntry {
   id: number;
@@ -338,6 +339,8 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
           );
         })}
       </div>
+
+      <SecurityTimeline domain={domain} wsId={selectedWsId} projectKey={selectedProjectKey} />
 
       {loading ? (
         <div className="text-center py-10 text-brand-green">Loading...</div>

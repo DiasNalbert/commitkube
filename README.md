@@ -64,7 +64,8 @@ definidas sobre meses.
 
 ### Segurança
 
-- Scan de vulnerabilidades com Trivy, com histórico e dashboard por repositório
+- Scan de vulnerabilidades com Trivy, com histórico e dashboard por repositório,
+  e uma linha do tempo de quanto os achados de código e de imagem caíram
 - Secrets do cluster e ExternalSecrets, com o valor atrás de dupla checagem:
   re-confirmação da senha do próprio usuário e papel admin ou root
 - Credenciais de registry (Docker Hub, ECR, GCR) cifradas em AES-GCM

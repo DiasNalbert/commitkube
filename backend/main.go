@@ -263,6 +263,7 @@ func main() {
 	post(api, "/repositories/:name/review", handlers.PermSCMWrite, handlers.ReviewFile)
 	post(api, "/repositories/:name/analyze", handlers.PermSecurityScan, handlers.AnalyzeRepo)
 	get(api, "/scan-dashboard", handlers.PermSecurityRead, handlers.GetScanDashboard)
+	get(api, "/scan-timeline", handlers.PermSecurityRead, handlers.GetScanTimeline)
 	get(api, "/scan-dashboard/:name", handlers.PermSecurityRead, handlers.GetRepoScanDetail)
 
 	get(api, "/settings", handlers.PermSettingsRead, handlers.GetSettings)
