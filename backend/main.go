@@ -178,6 +178,26 @@ func main() {
 		}
 	}()
 
+	go func() {
+		// Delivery: resolve each new deployment to the commit behind it, and
+		// settle the ones whose failure window has closed. Both are kept out
+		// of the workload poller on purpose -- the first makes network calls,
+		// and the second cannot answer until time has passed.
+		interval := 5 * time.Minute
+		if v := os.Getenv("DELIVERY_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				interval = d
+			}
+		}
+		time.Sleep(70 * time.Second) // after the first workload pass
+		handlers.PollDelivery()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			handlers.PollDelivery()
+		}
+	}()
+
 	app := fiber.New(fiber.Config{
 		BodyLimit: 50 * 1024 * 1024,
 	})
@@ -293,6 +313,12 @@ func main() {
 
 	get(api, "/kubernetes/topology", handlers.PermK8sRead, handlers.GetTopology)
 	post(api, "/kubernetes/topology/refresh", handlers.PermK8sRead, handlers.RefreshTopology)
+
+	// Delivery / DORA. Gated on cluster read rather than repository read: the
+	// rows name namespaces and workloads, which is cluster information, and
+	// the namespace scoping that protects it is the cluster one.
+	get(api, "/delivery/dora", handlers.PermK8sRead, handlers.GetDORASummary)
+	get(api, "/delivery/deployments", handlers.PermK8sRead, handlers.GetDeployments)
 
 	get(api, "/kubernetes/workloads", handlers.PermK8sRead, handlers.GetWorkloads)
 	get(api, "/kubernetes/workloads/history", handlers.PermK8sRead, handlers.GetWorkloadHistory)

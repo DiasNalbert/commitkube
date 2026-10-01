@@ -63,6 +63,10 @@ func (g *GithubClient) GetBranchHash(repoName, branch string) (string, error) {
 	return "", errNotImplemented("github", "GetBranchHash")
 }
 
+func (g *GithubClient) GetRecentCommits(repoName, branch string, limit int) ([]CommitInfo, error) {
+	return nil, errNotImplemented("github", "GetRecentCommits")
+}
+
 func (g *GithubClient) AddRepoVariable(repoName, key, value string, secured bool) error {
 	return errNotImplemented("github", "AddRepoVariable")
 }

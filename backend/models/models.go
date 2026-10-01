@@ -677,6 +677,70 @@ type LogErrorGroup struct {
 	LastPod string `json:"last_pod"`
 }
 
+// Deployment is one image actually starting to run on a workload. It is the
+// unit the DORA metrics are computed over.
+//
+// It is derived from the image_change WorkloadEvent rather than from a
+// pipeline result, which is the same choice the rest of the product makes:
+// what the cluster runs is a fact, what a pipeline reported is a claim. Two
+// consequences follow and both are intended -- a pipeline that succeeds
+// without changing the running image is not a deployment, and an image
+// changed by hand is one, because it happened.
+//
+// It is a table rather than a view over workload_events because those are
+// deleted at WORKLOAD_RETENTION_DAYS, 30 by default, and the DORA bands are
+// defined over months.
+type Deployment struct {
+	ID uint `gorm:"primarykey;autoIncrement" json:"id"`
+	// ClusterID is which cluster this row was collected from.
+	ClusterID uint `gorm:"uniqueIndex:idx_dep_ident;index;not null;default:0" json:"cluster_id"`
+
+	Namespace    string    `gorm:"uniqueIndex:idx_dep_ident;index;not null" json:"namespace"`
+	WorkloadKind string    `gorm:"uniqueIndex:idx_dep_ident" json:"workload_kind"`
+	Workload     string    `gorm:"uniqueIndex:idx_dep_ident;index;not null" json:"workload"`
+	DeployedAt   time.Time `gorm:"uniqueIndex:idx_dep_ident;index;not null" json:"deployed_at"`
+
+	Image     string `json:"image"`
+	PrevImage string `json:"prev_image"`
+
+	// The commit that produced the image, resolved after the fact by
+	// PollDelivery: reading it is a network call and must not run inside the
+	// workload poller's transaction.
+	//
+	// LeadTimeSec stays nil when the commit could not be resolved. A
+	// deployment with no commit is never given a guessed lead time -- it is
+	// left out of the median and counted in the coverage figure instead.
+	// Imputing a value here would be the same mistake as reporting "self"
+	// for a cause nobody measured.
+	RepoName    string     `gorm:"index" json:"repo_name"`
+	CommitSHA   string     `json:"commit_sha"`
+	CommitAt    *time.Time `json:"commit_at"`
+	LeadTimeSec *int64     `json:"lead_time_sec"`
+	LinkStatus  string     `gorm:"index;not null;default:'pending'" json:"link_status"` // pending | linked | unlinked
+	LinkDetail  string     `json:"link_detail"`
+
+	// Rollback marks a deployment that put back the image the workload was
+	// running before the previous one. It is evidence about the deployment it
+	// replaced, not about itself.
+	Rollback bool `gorm:"index" json:"rollback"`
+
+	// Outcome is pending until the failure window has elapsed: a deployment
+	// ten minutes old cannot be called successful yet. The change failure
+	// rate is computed over settled deployments only, or the most recent ones
+	// drag it down for no reason.
+	Outcome      string     `gorm:"index;not null;default:'pending'" json:"outcome"` // pending | ok | failed
+	FailedReason string     `json:"failed_reason"`
+	FailedAt     *time.Time `json:"failed_at"`
+	RecoveredAt  *time.Time `json:"recovered_at"`
+	RecoverySec  *int64     `json:"recovery_sec"`
+
+	// DependencyIncident records that a problem did open in the window but was
+	// attributed to a dependency, so it is not a change failure. Counting a
+	// third party's outage against the team that deployed is the single most
+	// common way this metric lies; keeping the exclusion visible is the point.
+	DependencyIncident bool `json:"dependency_incident"`
+}
+
 // ---- Vault ----------------------------------------------------------------
 //
 // The vault is the one part of this product the server is deliberately unable

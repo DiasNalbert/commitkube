@@ -124,6 +124,7 @@ func ConnectDB() {
 		&models.DependencyFailure{},
 		&models.ServiceProblem{},
 		&models.LogErrorGroup{},
+		&models.Deployment{},
 		&models.VaultKeyring{},
 		&models.Vault{},
 		&models.VaultMember{},

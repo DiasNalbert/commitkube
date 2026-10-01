@@ -205,6 +205,11 @@ const IconKubernetes = () => (
     <path d="M12 2l8.66 5v10L12 22 3.34 17V7L12 2z" /><circle cx="12" cy="12" r="3" />
   </svg>
 );
+const IconDelivery = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
+    <path d="M3 17l5-5 4 3 8-8" /><polyline points="15 7 21 7 21 13" />
+  </svg>
+);
 const IconChevronDown = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3.5 h-3.5">
     <polyline points="6 9 12 15 18 9" />
@@ -241,6 +246,11 @@ const scmItems = [
   { href: "/", label: "Repositories", icon: <IconDashboard />, admin: false, perm: P.scmRead },
   { href: "/audit-logs", label: "Audit Log", icon: <IconAudit />, admin: true, perm: P.auditRead },
   { href: "/security/code", label: "Code Security", icon: <IconShield />, admin: false, perm: P.securityRead },
+  // Delivery acts on what was released, so it belongs with the repositories
+  // rather than with the cluster -- even though the deployments it counts are
+  // read from the cluster. It is gated on cluster read for the same reason the
+  // API is: the rows name namespaces and workloads.
+  { href: "/delivery", label: "Delivery", icon: <IconDelivery />, admin: false, perm: P.k8sRead },
   { href: "/repositories/import", label: "Import Repository", icon: <IconDownload />, admin: true, perm: P.scmWrite },
   { href: "/repositories/new", label: "New Repository", icon: <IconPlus />, admin: false, perm: P.scmWrite },
   { href: "/templates", label: "Templates", icon: <IconFile />, admin: false, perm: P.templateRead },

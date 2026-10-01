@@ -168,6 +168,7 @@ func pollWorkloadsFor(cl *models.Cluster) {
 	// them.
 	events := []models.WorkloadEvent{}
 	snapshots := make([]models.WorkloadSnapshot, 0, len(states))
+	deployments := []models.Deployment{}
 	type pendingNotice struct{ body, workload string }
 	notices := []pendingNotice{}
 
@@ -198,6 +199,17 @@ func pollWorkloadsFor(cl *models.Cluster) {
 			}
 			if w.Image != "" && prev.Image != w.Image {
 				addEvent("image_change", prev.Image, w.Image)
+				// The same transition, kept in a table of its own: the event
+				// is deleted at WORKLOAD_RETENTION_DAYS and the DORA bands
+				// are defined over months. Resolving the commit behind the
+				// image is a network call and happens later, in PollDelivery,
+				// so that it never runs inside this transaction.
+				deployments = append(deployments, models.Deployment{
+					ClusterID: cl.ID, Namespace: w.Namespace,
+					WorkloadKind: w.Kind, Workload: w.Name, DeployedAt: now,
+					Image: w.Image, PrevImage: prev.Image,
+					LinkStatus: "pending", Outcome: "pending",
+				})
 			}
 		}
 
@@ -217,6 +229,11 @@ func pollWorkloadsFor(cl *models.Cluster) {
 		}
 		if len(snapshots) > 0 {
 			if err := tx.CreateInBatches(&snapshots, 200).Error; err != nil {
+				return err
+			}
+		}
+		if len(deployments) > 0 {
+			if err := tx.CreateInBatches(&deployments, 200).Error; err != nil {
 				return err
 			}
 		}

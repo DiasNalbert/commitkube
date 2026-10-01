@@ -71,6 +71,10 @@ func (g *GitlabClient) GetBranchHash(repoName, branch string) (string, error) {
 	return "", errNotImplemented("gitlab", "GetBranchHash")
 }
 
+func (g *GitlabClient) GetRecentCommits(repoName, branch string, limit int) ([]CommitInfo, error) {
+	return nil, errNotImplemented("gitlab", "GetRecentCommits")
+}
+
 func (g *GitlabClient) AddRepoVariable(repoName, key, value string, secured bool) error {
 	return errNotImplemented("gitlab", "AddRepoVariable")
 }

@@ -42,5 +42,6 @@ export function setSelectedCluster(id: number | string) {
  *  users, settings -- is cluster-independent and must not carry the parameter,
  *  or an unknown cluster id would start failing unrelated pages. */
 export function isClusterScoped(path: string): boolean {
-  return path.startsWith("/kubernetes/") || path.startsWith("/monitoring/");
+  return path.startsWith("/kubernetes/") || path.startsWith("/monitoring/")
+    || path.startsWith("/delivery/");
 }

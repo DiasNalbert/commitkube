@@ -38,6 +38,30 @@ dentro das suas aplicações.
 - Logs de container, com streaming ao vivo
 - Restart, scale e delete de pods direto da interface
 
+### Entrega (DORA)
+
+As quatro métricas de DORA, medidas pelo cluster e não pela pipeline. **Um
+deploy é uma imagem que passou a rodar** — então uma pipeline que passou sem
+trocar a imagem não é um deploy, e uma imagem trocada na mão é.
+
+- **Deployment frequency** — contagem dos `image_change` observados nos
+  workloads
+- **Lead time for changes** — do commit até a imagem rodando. O commit é lido
+  da tag da imagem (`api:abc1234`, `api:main-abc1234`, `api:1.4.2-deadbeef`) e
+  conferido contra o histórico do repositório. Um deploy cujo commit não
+  resolve fica **fora da mediana** e aparece na cobertura, com o motivo; nunca
+  recebe um lead time chutado
+- **Change failure rate** — um deploy é falho se, na janela seguinte, o mesmo
+  workload abre problema, degrada ou sofre rollback. Problemas que o Triage
+  atribuiu a uma **dependência não contam**: o outage de um terceiro não é
+  falha de quem entregou, e a exclusão fica visível na tela
+- **Failed deployment recovery** — de quando quebrou até o problema fechar, o
+  workload voltar a healthy, ou a imagem antiga voltar
+
+Sem instrumentação e sem depender do provedor de CI. Os deploys são guardados
+por 180 dias, mais que os snapshots de workload, porque as faixas do DORA são
+definidas sobre meses.
+
 ### Segurança
 
 - Scan de vulnerabilidades com Trivy, com histórico e dashboard por repositório
@@ -76,8 +100,9 @@ Tudo em um único container:
                         → /*     → Next.js     :3000
 ```
 
-Quatro pollers rodam em background no processo Go: workloads (5 min), métricas
-de pod (2 min), alertas de node (5 min) e o service map (10 min).
+Sete pollers rodam em background no processo Go: rescans de vulnerabilidade,
+workloads (5 min), métricas de pod (2 min), alertas de node (5 min), o service
+map (10 min), os erros de aplicação (2 min) e a entrega (5 min).
 
 ## Rodando
 
@@ -151,6 +176,9 @@ Rodando fora do cluster, as permissões vêm do `KUBECONFIG` do usuário.
 | `POD_RETENTION_DAYS` | `3` | Retenção das amostras de pod |
 | `TOPOLOGY_INTERVAL` | `10m` | Intervalo da descoberta do service map |
 | `TOPOLOGY_RETENTION_DAYS` | `7` | Quanto tempo uma dependência que sumiu continua no mapa |
+| `DELIVERY_INTERVAL` | `5m` | Intervalo do poller de entrega (liga deploy a commit e liquida os resultados) |
+| `DORA_FAILURE_WINDOW` | `1h` | Janela depois de um deploy em que um problema conta como falha da mudança |
+| `DORA_RETENTION_DAYS` | `180` | Retenção dos deploys usados nas métricas de DORA |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` | — | Fallback de SMTP, usado só quando não há configuração salva em **Settings** |
 
 > Bitbucket, ArgoCD, registries e SMTP são configurados dentro da própria

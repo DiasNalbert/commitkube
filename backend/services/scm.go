@@ -15,6 +15,7 @@ type SCMProvider interface {
 	ListBranches(repoName string) ([]byte, error)
 	EnablePipelines(repoName string) error
 	GetBranchHash(repoName, branch string) (string, error)
+	GetRecentCommits(repoName, branch string, limit int) ([]CommitInfo, error)
 	AddRepoVariable(repoName, key, value string, secured bool) error
 	CloneURL(workspace, repoName string) string
 }
