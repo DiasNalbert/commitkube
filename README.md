@@ -66,6 +66,9 @@ definidas sobre meses.
 
 - Scan de vulnerabilidades com Trivy, com histórico e dashboard por repositório,
   e uma linha do tempo de quanto os achados de código e de imagem caíram
+- Postura de segurança do cluster: 34 regras (RBAC, workloads, rede, secrets)
+  avaliadas a cada 6 h e guardadas por um ano, com nota, regras que falham por
+  severidade, os recursos que falham e como corrigir
 - Secrets do cluster e ExternalSecrets, com o valor atrás de dupla checagem:
   re-confirmação da senha do próprio usuário e papel admin ou root
 - Credenciais de registry (Docker Hub, ECR, GCR) cifradas em AES-GCM
@@ -101,9 +104,10 @@ Tudo em um único container:
                         → /*     → Next.js     :3000
 ```
 
-Sete pollers rodam em background no processo Go: rescans de vulnerabilidade,
+Oito pollers rodam em background no processo Go: rescans de vulnerabilidade,
 workloads (5 min), métricas de pod (2 min), alertas de node (5 min), o service
-map (10 min), os erros de aplicação (2 min) e a entrega (5 min).
+map (10 min), os erros de aplicação (2 min), a entrega (5 min) e a postura de
+segurança (6 h).
 
 ## Rodando
 
@@ -180,6 +184,8 @@ Rodando fora do cluster, as permissões vêm do `KUBECONFIG` do usuário.
 | `DELIVERY_INTERVAL` | `5m` | Intervalo do poller de entrega (liga deploy a commit e liquida os resultados) |
 | `DORA_FAILURE_WINDOW` | `1h` | Janela depois de um deploy em que um problema conta como falha da mudança |
 | `DORA_RETENTION_DAYS` | `180` | Retenção dos deploys usados nas métricas de DORA |
+| `POSTURE_INTERVAL` | `6h` | Intervalo da avaliação de postura de segurança do cluster |
+| `POSTURE_RETENTION_DAYS` | `365` | Retenção das avaliações de postura |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` | — | Fallback de SMTP, usado só quando não há configuração salva em **Settings** |
 
 > Bitbucket, ArgoCD, registries e SMTP são configurados dentro da própria

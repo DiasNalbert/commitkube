@@ -129,6 +129,8 @@ func ConnectDB() {
 		&models.Vault{},
 		&models.VaultMember{},
 		&models.VaultItem{},
+		&models.PostureAssessment{},
+		&models.PostureRuleResult{},
 	)
 	if err != nil {
 		log.Fatalf("failed to migrate database: %v", err)

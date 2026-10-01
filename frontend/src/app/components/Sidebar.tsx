@@ -230,6 +230,7 @@ const kubernetesItems = [
   { href: "/kubernetes/pods", label: "Pods", icon: <IconPods />, perm: P.k8sRead },
   { href: "/kubernetes/replicasets", label: "ReplicaSets", icon: <IconReplicaSet />, perm: P.k8sRead },
   { href: "/kubernetes/secrets", label: "Secrets", icon: <IconKey />, perm: P.secretsRead },
+  { href: "/security/posture", label: "Security Posture", icon: <IconShield />, perm: P.securityRead },
   { href: "/kubernetes/topology", label: "Service Map", icon: <IconTopology />, perm: P.k8sRead },
   { href: "/kubernetes/services", label: "Services", icon: <IconService />, perm: P.k8sRead },
   { href: "/kubernetes/statefulsets", label: "StatefulSets", icon: <IconStatefulSet />, perm: P.k8sRead },
@@ -430,7 +431,7 @@ export default function Sidebar() {
               label="Kubernetes"
               icon={<IconKubernetes />}
               items={visibleK8sItems}
-              active={pathname.startsWith("/kubernetes") || pathname === "/security/containers"}
+              active={pathname.startsWith("/kubernetes") || pathname === "/security/containers" || pathname === "/security/posture"}
             />}
             {visibleScmItems.length > 0 && <NavGroup
               groupKey="scm"

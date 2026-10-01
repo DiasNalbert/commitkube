@@ -43,5 +43,5 @@ export function setSelectedCluster(id: number | string) {
  *  or an unknown cluster id would start failing unrelated pages. */
 export function isClusterScoped(path: string): boolean {
   return path.startsWith("/kubernetes/") || path.startsWith("/monitoring/")
-    || path.startsWith("/delivery/");
+    || path.startsWith("/delivery/") || path.startsWith("/security/posture");
 }

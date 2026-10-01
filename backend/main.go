@@ -198,6 +198,25 @@ func main() {
 		}
 	}()
 
+	go func() {
+		// Security posture: the rule catalog over every cluster, stored so the
+		// page can show a trend. Specs and RBAC change on deploys, not by the
+		// minute, so a few passes a day is enough resolution for the timeline.
+		interval := 6 * time.Hour
+		if v := os.Getenv("POSTURE_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				interval = d
+			}
+		}
+		time.Sleep(60 * time.Second) // wait for startup
+		handlers.PollPosture()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			handlers.PollPosture()
+		}
+	}()
+
 	app := fiber.New(fiber.Config{
 		BodyLimit: 50 * 1024 * 1024,
 	})
@@ -329,6 +348,9 @@ func main() {
 	get(api, "/kubernetes/detail/:kind/:name", handlers.PermK8sRead, handlers.GetK8sResourceDetail)
 	get(api, "/kubernetes/cluster-overview", handlers.PermK8sRead, handlers.GetClusterOverview)
 	get(api, "/kubernetes/pod-security", handlers.PermSecurityRead, handlers.GetPodSecurity)
+	get(api, "/security/posture", handlers.PermSecurityRead, handlers.GetPosture)
+	get(api, "/security/posture/history", handlers.PermSecurityRead, handlers.GetPostureHistory)
+	post(api, "/security/posture/assess", handlers.PermSecurityScan, handlers.RunPostureAssessment)
 
 	get(api, "/clusters", handlers.PermK8sRead, handlers.ListClusters)
 	post(api, "/clusters", handlers.PermClusterWrite, handlers.CreateCluster)
