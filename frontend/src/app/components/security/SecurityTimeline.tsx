@@ -9,7 +9,8 @@ type Sev = "critical" | "high" | "medium" | "low";
 interface Counts { critical: number; high: number; medium: number; low: number }
 interface Point extends Counts { date: string; repos: number }
 interface Mover { repo: string; from: Counts; to: Counts; delta: Counts }
-interface Timeline { points: Point[]; improved: Mover[]; regressed: Mover[]; scans: number }
+interface Split { baseline_repos: number; baseline_from: Counts; baseline_to: Counts; added_repos: number; added: Counts }
+interface Timeline { points: Point[]; improved: Mover[]; regressed: Mover[]; scans: number; split?: Split }
 
 const SEVERITIES: { key: Sev; label: string; stroke: string }[] = [
   { key: "critical", label: "Critical", stroke: "#ef4444" },
@@ -66,18 +67,22 @@ export default function SecurityTimeline({ domain, wsId, projectKey }: {
   const series = firstIdx >= 0 ? points.slice(firstIdx) : [];
   const first = series[0];
   const last = series[series.length - 1];
+  const split = data?.split;
 
   return (
     <section className="glass-card p-3 space-y-3 min-w-0">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
+      <div className="flex flex-wrap sm:flex-nowrap items-start justify-between gap-2">
+        <div className="min-w-0">
           <h2 className="text-sm font-semibold">Trend</h2>
           <p className="text-xs text-zinc-500">
             Each day counts every repository at its most recent scan up to that day.
-            {first && last && first.date !== last.date && <> Since {fmtDate(first.date)}: {first.repos} → {last.repos} repositories tracked.</>}
+            {first && split && first.date !== last.date && (
+              <> The change below compares the {split.baseline_repos} repositories tracked since {fmtDate(first.date)} with themselves
+                {split.added_repos > 0 && <>; {split.added_repos} more started being scanned in this period and raise the total without anything getting worse</>}.</>
+            )}
           </p>
         </div>
-        <div className="flex gap-1" role="group" aria-label="Time range">
+        <div className="flex gap-1 shrink-0" role="group" aria-label="Time range">
           {RANGES.map(r => (
             <button
               key={r}
@@ -106,10 +111,24 @@ export default function SecurityTimeline({ domain, wsId, projectKey }: {
                   </span>
                   <span className="text-lg font-semibold tabular-nums text-zinc-800 dark:text-zinc-100">{last[s.key].toLocaleString()}</span>
                 </div>
-                <div className="text-[11px] text-right tabular-nums">
-                  <span className="text-zinc-500">{first[s.key].toLocaleString()} → </span>
-                  <Delta from={first[s.key]} to={last[s.key]} />
-                </div>
+                {split ? (
+                  <div className="text-[11px] text-right tabular-nums space-y-0.5">
+                    <div title={`The ${split.baseline_repos} repositories tracked since the start of the period`}>
+                      <span className="text-zinc-500">same repos {split.baseline_from[s.key].toLocaleString()} → </span>
+                      <Delta from={split.baseline_from[s.key]} to={split.baseline_to[s.key]} />
+                    </div>
+                    {split.added_repos > 0 && (
+                      <div className="text-zinc-500" title={`Brought in by the ${split.added_repos} repositories first scanned in this period`}>
+                        +{split.added[s.key].toLocaleString()} from {split.added_repos} new repos
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-right tabular-nums">
+                    <span className="text-zinc-500">{first[s.key].toLocaleString()} → </span>
+                    <Delta from={first[s.key]} to={last[s.key]} />
+                  </div>
+                )}
                 <div className="h-20 mt-1">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={series} margin={{ top: 4, right: 2, bottom: 0, left: 2 }}>

@@ -48,6 +48,10 @@ func main() {
 	// A cluster row has to exist before any poller or handler resolves one,
 	// and before the collected rows can be adopted into it.
 	handlers.EnsureDefaultCluster()
+
+	// Before any scan can add a point, so the trend and the dashboard totals
+	// start from the same numbers.
+	handlers.ReconcileScanHistory()
 	db.BackfillCollectedCluster()
 
 	// The scan pool and the vulnerability database come up before anything can

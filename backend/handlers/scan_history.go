@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"sort"
 	"time"
 	_ "time/tzdata" // the timeline buckets by the viewer's day; the image may ship without zoneinfo
@@ -44,6 +45,56 @@ func recordScanHistory(r models.ScanResult) {
 	})
 }
 
+// ReconcileScanHistory gives every repository a history point matching its
+// current result, wherever the newest point disagrees with it. Until the
+// image-only rescan recorded history, it changed the stored counts without
+// leaving a trace, so the trend's last day and the dashboard's totals drifted
+// apart. Safe to run on every start: a repository already in step is left
+// alone.
+func ReconcileScanHistory() {
+	var results []models.ScanResult
+	db.DB.Select("id", "updated_at", "repo_name", "critical", "high", "medium", "low",
+		"image_critical", "image_high", "image_medium", "image_low").Find(&results)
+	if len(results) == 0 {
+		return
+	}
+	var latest []models.ScanHistory
+	db.DB.Where("id IN (?)", db.DB.Model(&models.ScanHistory{}).Select("MAX(id)").Group("repo_name")).Find(&latest)
+	last := make(map[string]models.ScanHistory, len(latest))
+	for _, h := range latest {
+		last[h.RepoName] = h
+	}
+
+	var missing []models.ScanHistory
+	for _, r := range results {
+		h, ok := last[r.RepoName]
+		if ok && h.Critical == r.Critical && h.High == r.High && h.Medium == r.Medium && h.Low == r.Low &&
+			h.ImageCritical == r.ImageCritical && h.ImageHigh == r.ImageHigh &&
+			h.ImageMedium == r.ImageMedium && h.ImageLow == r.ImageLow {
+			continue
+		}
+		// Dated when the result was last written, which is when those numbers
+		// became true -- never before the point it corrects.
+		at := r.UpdatedAt
+		if ok && !at.After(h.CreatedAt) {
+			at = h.CreatedAt.Add(time.Second)
+		}
+		missing = append(missing, models.ScanHistory{
+			CreatedAt: at, RepoName: r.RepoName,
+			Critical: r.Critical, High: r.High, Medium: r.Medium, Low: r.Low,
+			ImageCritical: r.ImageCritical, ImageHigh: r.ImageHigh,
+			ImageMedium: r.ImageMedium, ImageLow: r.ImageLow,
+		})
+	}
+	if len(missing) > 0 {
+		if err := db.DB.CreateInBatches(&missing, 200).Error; err != nil {
+			log.Printf("Scan history reconcile failed: %v", err)
+			return
+		}
+		log.Printf("Scan history reconciled for %d repositories", len(missing))
+	}
+}
+
 type severityCounts struct {
 	Critical int `json:"critical"`
 	High     int `json:"high"`
@@ -75,6 +126,20 @@ type timelineMover struct {
 	Delta severityCounts `json:"delta"`
 }
 
+// timelineSplit separates the change that is work from the change that is
+// onboarding. A repository scanned for the first time halfway through the
+// period lifts the total by everything it already had, which on the chart
+// looks exactly like a regression. Baseline compares the repositories that
+// were tracked on the first day with themselves; Added is what arrived with
+// the ones that started being scanned later.
+type timelineSplit struct {
+	BaselineRepos int            `json:"baseline_repos"`
+	BaselineFrom  severityCounts `json:"baseline_from"`
+	BaselineTo    severityCounts `json:"baseline_to"`
+	AddedRepos    int            `json:"added_repos"`
+	Added         severityCounts `json:"added"`
+}
+
 // buildScanTimeline turns individual scans into one point per day: the sum,
 // across repositories, of each one's most recent scan as of the end of that
 // day. A repository scanned on Monday still counts on Thursday with Monday's
@@ -84,7 +149,7 @@ type timelineMover struct {
 //
 // before holds each repository's last scan prior to the window, so a
 // repository scanned only before it starts is not missing from day one.
-func buildScanTimeline(before, within []models.ScanHistory, domain string, start time.Time, days int, loc *time.Location) ([]timelinePoint, []timelineMover) {
+func buildScanTimeline(before, within []models.ScanHistory, domain string, start time.Time, days int, loc *time.Location) ([]timelinePoint, []timelineMover, timelineSplit) {
 	sort.Slice(within, func(i, j int) bool { return within[i].CreatedAt.Before(within[j].CreatedAt) })
 
 	current := map[string]severityCounts{}
@@ -97,6 +162,7 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 	}
 
 	points := make([]timelinePoint, 0, days)
+	var baseline map[string]severityCounts // as of the first day anything was tracked
 	i := 0
 	for d := 0; d < days; d++ {
 		dayStart := start.AddDate(0, 0, d)
@@ -114,7 +180,25 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 		for _, c := range current {
 			sum = sum.add(c)
 		}
+		if baseline == nil && len(current) > 0 {
+			baseline = make(map[string]severityCounts, len(current))
+			for k, v := range current {
+				baseline[k] = v
+			}
+		}
 		points = append(points, timelinePoint{Date: dayStart.In(loc).Format("2006-01-02"), Repos: len(current), severityCounts: sum})
+	}
+
+	var split timelineSplit
+	for repo, to := range current {
+		if from, ok := baseline[repo]; ok {
+			split.BaselineRepos++
+			split.BaselineFrom = split.BaselineFrom.add(from)
+			split.BaselineTo = split.BaselineTo.add(to)
+		} else {
+			split.AddedRepos++
+			split.Added = split.Added.add(to)
+		}
 	}
 
 	movers := make([]timelineMover, 0, len(current))
@@ -137,7 +221,7 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 		}
 		return x.Medium+x.Low < y.Medium+y.Low
 	})
-	return points, movers
+	return points, movers, split
 }
 
 // GetScanTimeline answers "how much did the vulnerability count go down",
@@ -172,7 +256,7 @@ func GetScanTimeline(c *fiber.Ctx) error {
 		db.DB.Where("repo_name IN ? AND created_at >= ?", repoNames, start).Find(&within)
 	}
 
-	points, movers := buildScanTimeline(before, within, domain, start, days, loc)
+	points, movers, split := buildScanTimeline(before, within, domain, start, days, loc)
 
 	improved := []timelineMover{}
 	regressed := []timelineMover{}
@@ -198,6 +282,7 @@ func GetScanTimeline(c *fiber.Ctx) error {
 		"points":    points,
 		"improved":  improved,
 		"regressed": regressed,
+		"split":     split,
 		"scans":     len(within),
 	})
 }
