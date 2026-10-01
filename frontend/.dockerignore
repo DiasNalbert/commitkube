@@ -1,0 +1,14 @@
+# Used when docker-compose builds with ./frontend as the context; the root
+# .dockerignore only applies to the root Dockerfile. Same reasons as there:
+# the host's glibc node_modules must not overwrite the image's musl ones, and
+# local build output and state must never reach an image.
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.*
+*.log
+*.tsbuildinfo
+tmp/
+.crypto-test/

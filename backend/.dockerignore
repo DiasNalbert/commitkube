@@ -1,4 +1,12 @@
 *.db
+*.db-journal
+*.db-wal
 *.sqlite
 *.sqlite3
 *.claude
+.env
+.env.*
+*.log
+tmp/
+# The image compiles its own; the host's binary is just dead weight.
+kubecommit-api
