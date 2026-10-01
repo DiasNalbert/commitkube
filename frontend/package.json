@@ -6,11 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:crypto": "tsc src/lib/vault-crypto.ts --outDir .crypto-test --module esnext --target es2022 --moduleResolution bundler --skipLibCheck --lib es2022,dom && node -e \"require('fs').writeFileSync('.crypto-test/package.json','{\\\"type\\\":\\\"module\\\"}')\" && node test/vault-crypto.test.mjs"
   },
   "dependencies": {
     "@types/qrcode": "^1.5.6",
     "autoprefixer": "^10.4.27",
+    "hash-wasm": "^4.12.0",
     "next": "^14.2.15",
     "postcss": "^8.5.8",
     "qrcode": "^1.5.4",

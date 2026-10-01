@@ -39,6 +39,12 @@ const IconShield = () => (
     <path d="M9 12l2 2 4-4" />
   </svg>
 );
+const IconVault = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="w-5 h-5 shrink-0">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <circle cx="12" cy="12" r="4" /><path d="M12 8v1m0 6v1m4-4h-1m-6 0H8" />
+  </svg>
+);
 const IconKey = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="w-5 h-5 shrink-0">
     <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
@@ -244,6 +250,10 @@ const mainItems = [
   { href: "/tools/base64", label: "Base64", icon: <IconHash /> },
   { href: "/notifications", label: "Notifications", icon: <IconBell />, perm: P.settingsRead },
   { href: "/settings", label: "Settings", icon: <IconGear />, perm: P.settingsRead },
+  // Not grouped with Kubernetes Secrets, deliberately: that page reads what a
+  // cluster holds, this one holds what only its owner can read. Putting them
+  // together would suggest the platform can see both.
+  { href: "/vault", label: "Vault", icon: <IconVault />, perm: P.vaultRead },
 ];
 
 const adminItems = [

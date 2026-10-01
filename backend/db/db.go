@@ -124,6 +124,10 @@ func ConnectDB() {
 		&models.DependencyFailure{},
 		&models.ServiceProblem{},
 		&models.LogErrorGroup{},
+		&models.VaultKeyring{},
+		&models.Vault{},
+		&models.VaultMember{},
+		&models.VaultItem{},
 	)
 	if err != nil {
 		log.Fatalf("failed to migrate database: %v", err)

@@ -43,6 +43,14 @@ const (
 	PermSecurityRead = "security.read"
 	PermSecurityScan = "security.scan" // trigger a scan by hand
 
+	// The vault. These gate the API surface, not the data: a vault key is
+	// sealed to a member's public key, so an account holding vault.read
+	// without a sealed copy fetches ciphertext it cannot open. Revoking the
+	// permission closes the door; removing the membership takes away the key.
+	PermVaultRead  = "vault.read"  // list vaults and items, reveal what you hold a key for
+	PermVaultWrite = "vault.write" // create and edit vaults and items
+	PermVaultShare = "vault.share" // add and remove members of a shared vault
+
 	// Platform administration
 	PermSettingsRead  = "settings.read"
 	PermSettingsWrite = "settings.write"
@@ -72,6 +80,7 @@ var AllPermissions = []string{
 	PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 	PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 	PermSecurityRead, PermSecurityScan,
+	PermVaultRead, PermVaultWrite, PermVaultShare,
 	PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
 }
 
@@ -85,6 +94,7 @@ var rolePermissions = map[string][]string{
 		PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 		PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 		PermSecurityRead, PermSecurityScan,
+		PermVaultRead, PermVaultWrite, PermVaultShare,
 		PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
 	},
 	// What a plain account could reach before this existed, minus the things
@@ -95,6 +105,11 @@ var rolePermissions = map[string][]string{
 		PermK8sRead,
 		PermSCMRead, PermTemplateRead,
 		PermSecurityRead,
+		// A personal vault is the reason most people would open this page at
+		// all, and it is readable by nobody else by construction. Withholding
+		// it by default would leave the feature switched off for everyone who
+		// is not an admin; it can still be denied per person.
+		PermVaultRead, PermVaultWrite,
 		PermSettingsRead,
 	},
 }

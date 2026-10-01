@@ -346,6 +346,31 @@ func main() {
 	post(api, "/secrets/reveal-bundle", handlers.PermK8sSecretsShow, handlers.RevealSecretBundle)
 	put(api, "/secrets/value", handlers.PermK8sSecretsWrite, handlers.UpdateSecretValue)
 
+	// The vault. These routes carry sealed bytes in both directions -- the
+	// permission decides who may reach the API, and the wrapped key decides
+	// who can open what comes back. They are not the same control, and the
+	// second is the one that survives a compromised server.
+	get(api, "/vault/keyring", handlers.PermSelf, handlers.GetVaultKeyring)
+	post(api, "/vault/keyring", handlers.PermSelf, handlers.EnrollVaultKeyring)
+	put(api, "/vault/keyring", handlers.PermSelf, handlers.RekeyVaultKeyring)
+	// Gated on share rather than read: it is a directory of everyone's email
+	// and public key, and it is only needed at the moment somebody is sealing a
+	// key to another person.
+	get(api, "/vault/public-keys", handlers.PermVaultShare, handlers.ListVaultPublicKeys)
+
+	get(api, "/vaults", handlers.PermVaultRead, handlers.ListVaults)
+	post(api, "/vaults", handlers.PermVaultWrite, handlers.CreateVault)
+	del(api, "/vaults/:uuid", handlers.PermVaultWrite, handlers.DeleteVault)
+	get(api, "/vaults/:uuid/members", handlers.PermVaultRead, handlers.ListVaultMembers)
+	post(api, "/vaults/:uuid/members", handlers.PermVaultShare, handlers.AddVaultMember)
+	del(api, "/vaults/:uuid/members/:user_id", handlers.PermVaultShare, handlers.RemoveVaultMember)
+
+	get(api, "/vaults/:uuid/items", handlers.PermVaultRead, handlers.ListVaultItems)
+	post(api, "/vaults/:uuid/items", handlers.PermVaultWrite, handlers.CreateVaultItem)
+	put(api, "/vaults/:uuid/items/:item_uuid", handlers.PermVaultWrite, handlers.UpdateVaultItem)
+	del(api, "/vaults/:uuid/items/:item_uuid", handlers.PermVaultWrite, handlers.DeleteVaultItem)
+	get(api, "/vaults/:uuid/items/:item_uuid/secret", handlers.PermVaultRead, handlers.RevealVaultItem)
+
 	get(api, "/audit-logs", handlers.PermAuditRead, handlers.GetAuditLogs)
 
 	get(api, "/me/permissions", handlers.PermSelf, handlers.GetMyPermissions)
