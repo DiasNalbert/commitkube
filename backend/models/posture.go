@@ -16,8 +16,9 @@ type PostureAssessment struct {
 	CreatedAt time.Time `gorm:"index;index:idx_pa_cluster_time,priority:2" json:"created_at"`
 	ClusterID uint      `gorm:"index:idx_pa_cluster_time,priority:1;not null;default:0" json:"cluster_id"`
 
-	// Score is passed rules / assessed rules * 100. Rules with nothing to
-	// assess (not_relevant) count neither way.
+	// Score is passed rules / assessed rules * 100 over the Security
+	// Essentials rules. Rules with nothing to assess (not_relevant) count
+	// neither way; best-practice rules are reported separately.
 	Score            float64 `json:"score"`
 	RulesPassed      int     `json:"rules_passed"`
 	RulesFailed      int     `json:"rules_failed"`
@@ -42,6 +43,10 @@ type PostureAssessment struct {
 	NamespaceResources string `gorm:"type:text" json:"-"`
 
 	Trigger string `json:"trigger"` // scheduled | manual
+
+	// CatalogVersion is the rule catalog this assessment was made with. Only
+	// assessments of the current version are compared with each other.
+	CatalogVersion int `gorm:"index;not null;default:0" json:"catalog_version"`
 }
 
 // PostureRuleResult is one rule's outcome within an assessment.

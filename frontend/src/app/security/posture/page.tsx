@@ -36,6 +36,7 @@ interface RuleRow {
   description: string;
   remediation: string;
   standard: string;
+  ref?: string; // the equivalent Dynatrace DTSE rule
   severity: Severity;
   category: string;
   result: Result;
@@ -47,9 +48,11 @@ interface RuleRow {
 
 interface Payload {
   assessment: Assessment;
+  best_practices?: Assessment;
   rules: RuleRow[];
   restricted: boolean;
   standard: string;
+  standards?: string[];
   cluster: string;
   excluded_namespaces: string[];
 }
@@ -147,6 +150,10 @@ export default function Page() {
   const [categoryFilter, setCategoryFilter] = useState("");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Which rule set the overview and the table show. The score, the timeline
+  // and the comparison with Dynatrace are Security Essentials; best practices
+  // are kept beside it so they never move that number.
+  const [standardTab, setStandardTab] = useState<string>("");
 
   const dark = useIsDark();
   const series = dark ? SERIES_DARK : SERIES_LIGHT;
@@ -207,13 +214,19 @@ export default function Page() {
     }
   };
 
+  const activeStandard = standardTab || data?.standard || "";
+  const standardRules = useMemo(
+    () => (data?.rules ?? []).filter(r => !activeStandard || r.standard === activeStandard),
+    [data, activeStandard],
+  );
+
   const categories = useMemo(
-    () => Array.from(new Set((data?.rules ?? []).map(r => r.category))).sort(),
-    [data],
+    () => Array.from(new Set(standardRules.map(r => r.category))).sort(),
+    [standardRules],
   );
 
   const rows = useMemo(() => {
-    let list = [...(data?.rules ?? [])];
+    let list = [...standardRules];
     if (resultFilter) list = list.filter(r => r.result === resultFilter);
     if (severityFilter) list = list.filter(r => r.severity === severityFilter);
     if (categoryFilter) list = list.filter(r => r.category === categoryFilter);
@@ -229,7 +242,7 @@ export default function Page() {
       (SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]) ||
       (b.failed - a.failed) || a.rule_id.localeCompare(b.rule_id));
     return list;
-  }, [data, resultFilter, severityFilter, categoryFilter, search]);
+  }, [standardRules, resultFilter, severityFilter, categoryFilter, search]);
 
   const chartData = useMemo(() => history.map(h => ({
     time: shortDate(h.created_at),
@@ -258,7 +271,8 @@ export default function Page() {
   }
   if (!data) return null;
 
-  const a = data.assessment;
+  const isEssentials = activeStandard === data.standard;
+  const a = isEssentials || !data.best_practices ? data.assessment : data.best_practices;
   const failedBySeverity: Record<Severity, number> = {
     critical: a.failed_critical, high: a.failed_high, medium: a.failed_medium, low: a.failed_low,
   };
@@ -269,13 +283,13 @@ export default function Page() {
         <div className="min-w-0">
           <h1 className="text-lg font-semibold">Security Posture</h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1 max-w-3xl">
-            {data.standard} rules assessed against every workload, role and namespace in <span className="font-mono">{data.cluster}</span>.
+            {activeStandard} rules assessed against every workload, role and namespace in <span className="font-mono">{data.cluster}</span>.
             A rule passes only when none of the resources it applies to fail.
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-zinc-500 dark:text-zinc-400" title={new Date(a.created_at).toLocaleString()}>
-            Last assessed {relativeTime(a.created_at)} · {a.trigger}
+          <span className="text-xs text-zinc-500 dark:text-zinc-400" title={new Date(data.assessment.created_at).toLocaleString()}>
+            Last assessed {relativeTime(data.assessment.created_at)} · {data.assessment.trigger}
           </span>
           {canScan && (
             <button onClick={runNow} disabled={running}
@@ -296,8 +310,38 @@ export default function Page() {
         </p>
       )}
 
+      {/* ---- standard tabs ---- */}
+      {(data.standards?.length ?? 0) > 1 && (
+        <div className="flex flex-wrap gap-1" role="tablist" aria-label="Standard">
+          {data.standards!.map(st => {
+            const summary = st === data.standard ? data.assessment : data.best_practices;
+            const active = st === activeStandard;
+            return (
+              <button key={st} role="tab" aria-selected={active}
+                onClick={() => { setStandardTab(st); setCategoryFilter(""); setExpanded(null); }}
+                className={`px-3 py-1.5 text-sm rounded-lg border transition ${
+                  active ? "border-brand-green/50 bg-brand-green/10 text-brand-green" : "border-[var(--card-border)] text-zinc-500 hover:text-brand-green"
+                }`}>
+                {st}
+                {summary && summary.rules_assessed > 0 && (
+                  <span className="ml-2 tabular-nums text-xs opacity-80">{summary.score.toFixed(0)}%</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {!isEssentials && (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-3xl">
+          Hygiene that is not part of {data.standard}: probes, resource requests and limits, image tags, default-deny policies.
+          Assessed in the same pass, scored on its own, and never counted in the {data.standard} score or its timeline.
+        </p>
+      )}
+
       {/* ---- overview ---- */}
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)_minmax(0,1fr)] gap-2">
+      <div className={`grid grid-cols-1 gap-2 ${isEssentials
+        ? "lg:grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)_minmax(0,1fr)]"
+        : "lg:grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)]"}`}>
         <div className="glass-card p-4 flex items-center gap-4">
           <ScoreRing score={a.score} assessed={a.rules_assessed} />
           <div className="min-w-0 flex-1">
@@ -333,19 +377,19 @@ export default function Page() {
           </div>
         </div>
 
-        <div className="glass-card p-4">
+        {isEssentials && <div className="glass-card p-4">
           <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Failed resources</p>
           <p className="text-xl font-semibold mt-0.5 tabular-nums text-red-500 dark:text-red-400">{a.resources_failed}</p>
           <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
             of {a.resources_assessed} assessed resources fail at least one rule
           </p>
-        </div>
+        </div>}
       </div>
 
       {/* ---- timeline ---- */}
-      <section className="glass-card p-4">
+      {isEssentials && <section className="glass-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h2 className="text-sm font-semibold">Timeline</h2>
+          <h2 className="text-sm font-semibold">{data.standard} timeline</h2>
           <div className="flex items-center gap-1">
             {[30, 90, 365].map(d => (
               <button key={d} onClick={() => setDays(d)}
@@ -411,7 +455,7 @@ export default function Page() {
             </div>
           </div>
         )}
-      </section>
+      </section>}
 
       {/* ---- results ---- */}
       <section className="glass-card p-4 min-w-0">
@@ -443,7 +487,7 @@ export default function Page() {
               Clear
             </button>
           )}
-          <span className="text-xs text-zinc-500 dark:text-zinc-400">{rows.length} of {data.rules.length} rules</span>
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">{rows.length} of {standardRules.length} rules</span>
         </div>
 
         <div className="overflow-x-auto -mx-4 px-4">
@@ -496,7 +540,10 @@ export default function Page() {
                                 <p className="text-sm mt-1 whitespace-normal">{r.remediation || "—"}</p>
                               </div>
                             </div>
-                            <p className="text-xs text-zinc-500">{r.standard} · {r.rule_id}</p>
+                            <p className="text-xs text-zinc-500">
+                              {r.standard} · {r.rule_id}
+                              {r.ref && <> · equivalent to Dynatrace <span className="font-mono">{r.ref}</span></>}
+                            </p>
                             {r.failed_resources.length > 0 && (
                               <div>
                                 <p className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-1">
@@ -544,8 +591,9 @@ export default function Page() {
 
       <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-3xl">
         Workloads are assessed at the controller (Deployment, StatefulSet, DaemonSet, Job, CronJob, and Pods with no owner),
-        not per replica. Not assessed: namespaces {data.excluded_namespaces.join(", ")}, RBAC objects named <code>system:*</code>,
-        and the built-in roles the API server recreates on every start. Assessments run every 6 hours and are kept for a year.
+        not per replica. Namespaces {data.excluded_namespaces.join(", ")} are only read by the rules about them (system namespaces,
+        Kubernetes Dashboard); RBAC objects named <code>system:*</code> and the built-in roles the API server recreates on every start
+        are not assessed. Assessments run every 6 hours and are kept for a year.
       </p>
     </div>
   );

@@ -66,9 +66,11 @@ definidas sobre meses.
 
 - Scan de vulnerabilidades com Trivy, com histórico e dashboard por repositório,
   e uma linha do tempo de quanto os achados de código e de imagem caíram
-- Postura de segurança do cluster: 34 regras (RBAC, workloads, rede, secrets)
-  avaliadas a cada 6 h e guardadas por um ano, com nota, regras que falham por
-  severidade, os recursos que falham e como corrigir
+- Postura de segurança do cluster: as 33 regras do padrão Security Essentials
+  para Kubernetes (os mesmos títulos e severidades do Dynatrace, cada uma com o
+  id DTSE correspondente), mais 11 boas práticas com nota separada. Avaliadas a
+  cada 6 h e guardadas por um ano, com nota, regras que falham por severidade,
+  os recursos que falham e como corrigir
 - Uma deploy key SSH própria para cada repositório criado, a mesma registrada
   no ArgoCD; a chave privada é mostrada uma única vez na criação
 - Secrets do cluster e ExternalSecrets, com o valor atrás de dupla checagem:

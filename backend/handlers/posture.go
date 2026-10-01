@@ -45,7 +45,22 @@ import (
 // times would make the resource numbers track scale instead of posture.
 
 const (
+	// postureStandard is the rule set the score, the severity tiles and the
+	// timeline are computed over. Its rules follow the published Dynatrace
+	// Security Essentials for Kubernetes standard one for one -- same titles,
+	// same severities -- so the two products can be read against each other;
+	// each rule names the DTSE id it corresponds to.
 	postureStandard = "Security Essentials"
+	// postureBestPractices holds the rules that are worth knowing about but are
+	// not in that standard (probes, limits, image tags...). They are assessed
+	// in the same pass and shown separately, with a score of their own, so
+	// they never move the Security Essentials number.
+	postureBestPractices = "CommitKube Best Practices"
+	// postureCatalogVersion is stored with every assessment. Assessments made
+	// under an earlier catalog are not comparable -- different rules, a
+	// different denominator -- so the timeline and "latest" only read the
+	// current version, and the first visit after an upgrade runs a fresh one.
+	postureCatalogVersion = 2
 	// postureFailedResourceCap bounds how many failing resources one rule
 	// stores per assessment. The Failed count is always exact.
 	postureFailedResourceCap = 200
@@ -110,7 +125,10 @@ type postureWorkload struct {
 	Kind      string
 	Namespace string
 	Name      string
-	Spec      corev1.PodSpec
+	Labels    map[string]string
+	// Annotations of the pod template, where AppArmor profiles are declared.
+	Annotations map[string]string
+	Spec        corev1.PodSpec
 	// LongRunning is false for Jobs, CronJobs and run-to-completion Pods,
 	// for which liveness and readiness probes mean nothing.
 	LongRunning bool
@@ -132,7 +150,10 @@ type postureBinding struct {
 }
 
 type postureInventory struct {
-	Workloads       []postureWorkload
+	Workloads []postureWorkload
+	// SystemWorkloads are the ones in excluded namespaces. Only the rules that
+	// are about those namespaces themselves read them.
+	SystemWorkloads []postureWorkload
 	Roles           []postureRole
 	Bindings        []postureBinding
 	Namespaces      []string
@@ -161,29 +182,32 @@ type postureSources struct {
 // applying the exclusions above. Pure.
 func buildPostureInventory(src *postureSources) *postureInventory {
 	inv := &postureInventory{ServiceAccounts: map[string]*corev1.ServiceAccount{}}
-	addWorkload := func(kind string, meta *metav1.ObjectMeta, spec corev1.PodSpec, longRunning bool) {
+	addWorkload := func(kind string, meta *metav1.ObjectMeta, tmpl *metav1.ObjectMeta, spec corev1.PodSpec, longRunning bool) {
+		w := postureWorkload{
+			Kind: kind, Namespace: meta.Namespace, Name: meta.Name, Labels: meta.Labels,
+			Annotations: tmpl.Annotations, Spec: spec, LongRunning: longRunning,
+		}
 		if postureNamespaceExcluded(meta.Namespace) {
+			inv.SystemWorkloads = append(inv.SystemWorkloads, w)
 			return
 		}
-		inv.Workloads = append(inv.Workloads, postureWorkload{
-			Kind: kind, Namespace: meta.Namespace, Name: meta.Name, Spec: spec, LongRunning: longRunning,
-		})
+		inv.Workloads = append(inv.Workloads, w)
 	}
 	for i := range src.Deployments {
 		d := &src.Deployments[i]
-		addWorkload("Deployment", &d.ObjectMeta, d.Spec.Template.Spec, true)
+		addWorkload("Deployment", &d.ObjectMeta, &d.Spec.Template.ObjectMeta, d.Spec.Template.Spec, true)
 	}
 	for i := range src.StatefulSets {
 		s := &src.StatefulSets[i]
-		addWorkload("StatefulSet", &s.ObjectMeta, s.Spec.Template.Spec, true)
+		addWorkload("StatefulSet", &s.ObjectMeta, &s.Spec.Template.ObjectMeta, s.Spec.Template.Spec, true)
 	}
 	for i := range src.DaemonSets {
 		d := &src.DaemonSets[i]
-		addWorkload("DaemonSet", &d.ObjectMeta, d.Spec.Template.Spec, true)
+		addWorkload("DaemonSet", &d.ObjectMeta, &d.Spec.Template.ObjectMeta, d.Spec.Template.Spec, true)
 	}
 	for i := range src.CronJobs {
 		cj := &src.CronJobs[i]
-		addWorkload("CronJob", &cj.ObjectMeta, cj.Spec.JobTemplate.Spec.Template.Spec, false)
+		addWorkload("CronJob", &cj.ObjectMeta, &cj.Spec.JobTemplate.Spec.Template.ObjectMeta, cj.Spec.JobTemplate.Spec.Template.Spec, false)
 	}
 	for i := range src.Jobs {
 		j := &src.Jobs[i]
@@ -196,7 +220,7 @@ func buildPostureInventory(src *postureSources) *postureInventory {
 		if ownedByCronJob {
 			continue // assessed once, through its CronJob
 		}
-		addWorkload("Job", &j.ObjectMeta, j.Spec.Template.Spec, false)
+		addWorkload("Job", &j.ObjectMeta, &j.Spec.Template.ObjectMeta, j.Spec.Template.Spec, false)
 	}
 	for i := range src.Pods {
 		p := &src.Pods[i]
@@ -209,7 +233,7 @@ func buildPostureInventory(src *postureSources) *postureInventory {
 			continue
 		}
 		rp := p.Spec.RestartPolicy
-		addWorkload("Pod", &p.ObjectMeta, p.Spec, rp == "" || rp == corev1.RestartPolicyAlways)
+		addWorkload("Pod", &p.ObjectMeta, &p.ObjectMeta, p.Spec, rp == "" || rp == corev1.RestartPolicyAlways)
 	}
 
 	for i := range src.ClusterRoles {
@@ -270,7 +294,11 @@ func buildPostureInventory(src *postureSources) *postureInventory {
 // ---- rule helpers --------------------------------------------------------------
 
 type postureRule struct {
-	ID          string
+	ID string
+	// Standard is postureStandard or postureBestPractices.
+	Standard string
+	// Ref is the equivalent rule id in the Dynatrace standard, when there is one.
+	Ref         string
 	Title       string
 	Severity    string // critical | high | medium | low
 	Category    string
@@ -563,6 +591,59 @@ func isDefaultDenyIngress(np *networkingv1.NetworkPolicy) bool {
 	return ingressType && len(np.Spec.Ingress) == 0
 }
 
+// baselineCapabilities is the runtime's default set, which the Pod Security
+// Standards baseline allows a container to add back explicitly.
+var baselineCapabilities = map[string]bool{
+	"AUDIT_WRITE": true, "CHOWN": true, "DAC_OVERRIDE": true, "FOWNER": true, "FSETID": true,
+	"KILL": true, "MKNOD": true, "NET_BIND_SERVICE": true, "SETFCAP": true, "SETGID": true,
+	"SETPCAP": true, "SETUID": true, "SYS_CHROOT": true,
+}
+
+// discoveryURL is a non-resource URL every authenticated client reads to find
+// its way around the API; granting get on it reveals nothing worth flagging.
+func discoveryURL(u string) bool {
+	switch u {
+	case "/api", "/apis", "/version", "/version/", "/healthz", "/livez", "/readyz",
+		"/openapi", "/.well-known/openid-configuration", "/openid/v1/jwks":
+		return true
+	}
+	return false
+}
+
+func seLinuxViolation(o *corev1.SELinuxOptions) string {
+	if o == nil {
+		return ""
+	}
+	var parts []string
+	switch o.Type {
+	case "", "container_t", "container_init_t", "container_kvm_t", "container_engine_t":
+	default:
+		parts = append(parts, "type "+o.Type)
+	}
+	if o.User != "" {
+		parts = append(parts, "user "+o.User)
+	}
+	if o.Role != "" {
+		parts = append(parts, "role "+o.Role)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// distributionComponent recognises the add-ons a distribution installs into
+// kube-system by the labels they carry, so the system-namespace rule flags
+// what someone put there rather than the cluster's own plumbing.
+func distributionComponent(labels map[string]string) bool {
+	if labels["tier"] == "control-plane" || labels["kubernetes.io/cluster-service"] == "true" {
+		return true
+	}
+	for _, k := range []string{"k8s-app", "component", "addonmanager.kubernetes.io/mode"} {
+		if labels[k] != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // ---- the catalog -----------------------------------------------------------------
 
 var (
@@ -575,7 +656,7 @@ var (
 var postureCatalog = []postureRule{
 	// ---- RBAC, critical ------------------------------------------------------
 	{
-		ID: "KSE-RBAC-001", Severity: "critical", Category: "RBAC",
+		ID: "KSE-RBAC-001", Severity: "critical", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83182",
 		Title:       "Roles and ClusterRoles should limit access to secrets",
 		Description: "Reading Secrets yields every credential stored in them: database passwords, API keys, TLS keys and, through service account token Secrets, the identities of other workloads. list and watch return the full contents of every Secret in scope, not just their names.",
 		Remediation: "Remove get, list and watch on secrets from the role, or narrow the rule with resourceNames to the specific Secrets the workload needs. Prefer mounting Secrets into the pod over reading them through the API.",
@@ -584,8 +665,8 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-RBAC-002", Severity: "critical", Category: "RBAC",
-		Title:       "Roles and ClusterRoles should limit the impersonate, bind and escalate verbs",
+		ID: "KSE-RBAC-002", Severity: "critical", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83185",
+		Title:       "Roles and ClusterRoles should limit impersonate, bind, and escalate permissions",
 		Description: "impersonate lets a subject act as any user, group or service account. bind and escalate let it grant itself, or create, roles with permissions it does not hold. Each one is a direct path to cluster-admin.",
 		Remediation: "Remove impersonate, bind and escalate from the role. If a controller genuinely needs them, restrict the rule with resourceNames to the exact roles or identities involved and bind it to that controller alone.",
 		Check: roleRule(func(r *postureRole) string {
@@ -599,7 +680,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-RBAC-003", Severity: "critical", Category: "RBAC",
+		ID: "KSE-RBAC-003", Severity: "critical", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83187",
 		Title:       "Roles and ClusterRoles should limit node proxy access",
 		Description: "nodes/proxy reaches the kubelet API directly. Through it a subject can run commands in any container on the node, bypassing admission control and most audit logging.",
 		Remediation: "Remove nodes/proxy from the role. Monitoring agents that need kubelet metrics can usually use nodes/metrics or nodes/stats instead.",
@@ -609,8 +690,8 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-RBAC-004", Severity: "critical", Category: "RBAC",
-		Title:       "Roles and ClusterRoles should limit certificate approval",
+		ID: "KSE-RBAC-004", Severity: "critical", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83188",
+		Title:       "Roles and ClusterRoles should limit certificate approval permissions",
 		Description: "A subject that can both update certificatesigningrequests/approval and approve for a signer can issue itself a client certificate for any identity -- including system:masters, which no RBAC rule can restrict.",
 		Remediation: "Remove update/patch on certificatesigningrequests/approval or approve on signers. Where approval is automated, restrict the signers rule with resourceNames to the specific signer.",
 		Check: roleRule(func(r *postureRole) string {
@@ -625,7 +706,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-RBAC-005", Severity: "critical", Category: "RBAC",
+		ID: "KSE-RBAC-005", Severity: "critical", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83189",
 		Title:       "Roles and ClusterRoles should limit webhook configuration permissions",
 		Description: "A mutating webhook sees, and can rewrite, every object it is registered for -- including Secrets and pod specs -- and a validating one can block them. Whoever can edit webhook configurations controls what the cluster admits.",
 		Remediation: "Remove create, update, patch and delete on mutatingwebhookconfigurations and validatingwebhookconfigurations from every role except the controllers that own those webhooks, and restrict those with resourceNames.",
@@ -638,7 +719,7 @@ var postureCatalog = []postureRule{
 
 	// ---- RBAC, high / medium -------------------------------------------------
 	{
-		ID: "KSE-RBAC-006", Severity: "high", Category: "RBAC",
+		ID: "KSE-RBAC-006", Severity: "high", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83183",
 		Title:       "Roles and ClusterRoles should limit pod creation permissions",
 		Description: "Creating a pod -- directly or through a Deployment, Job or any other controller -- means choosing its service account, its volumes and its security context. In practice that is access to every Secret and service account in the namespace, and with a permissive admission policy, to the node.",
 		Remediation: "Grant create on pods and workload controllers only to deployment pipelines and the controllers that need it. Enforce Pod Security Admission (restricted or baseline) on namespaces where people can create pods.",
@@ -651,8 +732,8 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-RBAC-007", Severity: "medium", Category: "RBAC",
-		Title:       "Roles and ClusterRoles should not use wildcards for verbs or resources",
+		ID: "KSE-RBAC-007", Severity: "medium", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83181",
+		Title:       "Roles and ClusterRoles should not use wildcard permissions",
 		Description: "A wildcard grants everything that exists today and everything installed tomorrow: a new CRD, a new subresource or a new verb is covered without anyone deciding it should be.",
 		Remediation: "Replace \"*\" with the explicit verbs and resources the subject needs.",
 		Check: roleRule(func(r *postureRole) string {
@@ -671,8 +752,8 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-RBAC-008", Severity: "high", Category: "RBAC",
-		Title:       "cluster-admin should not be bound to non-system subjects",
+		ID: "KSE-RBAC-008", Severity: "critical", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83180",
+		Title:       "Role cluster-admin should be used only when strictly required",
 		Description: "cluster-admin is unrestricted access to every resource in every namespace. Any user, group or service account bound to it is one leaked credential away from full cluster compromise.",
 		Remediation: "Bind subjects to roles scoped to what they do. Reserve cluster-admin for break-glass access and remove standing bindings.",
 		Check: bindingRule(func(b *postureBinding) string {
@@ -692,7 +773,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-RBAC-009", Severity: "high", Category: "RBAC",
+		ID: "KSE-RBAC-009", Severity: "high", Category: "RBAC", Standard: postureBestPractices,
 		Title:       "Bindings should not grant roles to anonymous or all authenticated users",
 		Description: "system:anonymous and system:unauthenticated cover any request without credentials; system:authenticated covers every user and every service account in the cluster. A role bound to them is a role granted to everyone.",
 		Remediation: "Bind the role to the specific users, groups or service accounts that need it.",
@@ -715,7 +796,7 @@ var postureCatalog = []postureRule{
 
 	// ---- Workloads, high -----------------------------------------------------
 	{
-		ID: "KSE-WL-001", Severity: "high", Category: "Workloads",
+		ID: "KSE-WL-001", Severity: "high", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83172",
 		Title:       "Workloads should not run privileged containers",
 		Description: "A privileged container has every Linux capability and access to every host device. It is root on the node with extra steps.",
 		Remediation: "Set securityContext.privileged: false (or remove it) and add only the specific capabilities the container needs.",
@@ -729,7 +810,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-002", Severity: "high", Category: "Workloads",
+		ID: "KSE-WL-002", Severity: "high", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83175",
 		Title:       "Workloads should not use the host network",
 		Description: "With hostNetwork the pod shares the node's network namespace: it can bind the node's ports, sniff its traffic and reach anything the node can, and NetworkPolicy does not apply to it.",
 		Remediation: "Remove hostNetwork: true. Expose the workload through a Service, or a hostPort if it really must be on the node's address.",
@@ -741,7 +822,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-003", Severity: "high", Category: "Workloads",
+		ID: "KSE-WL-003", Severity: "high", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83176",
 		Title:       "Workloads should not allow privilege escalation",
 		Description: "Unless allowPrivilegeEscalation is explicitly false, a process can gain more privileges than its parent through setuid binaries or file capabilities, which defeats running as a non-root user. The Kubernetes default is to allow it.",
 		Remediation: "Set securityContext.allowPrivilegeEscalation: false on every container.",
@@ -759,7 +840,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-004", Severity: "high", Category: "Workloads",
+		ID: "KSE-WL-004", Severity: "high", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83173",
 		Title:       "Workloads should not share the host PID namespace",
 		Description: "With hostPID the pod sees and can signal every process on the node, read their environment through /proc, and with ptrace, their memory.",
 		Remediation: "Remove hostPID: true.",
@@ -771,7 +852,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-005", Severity: "high", Category: "Workloads",
+		ID: "KSE-WL-005", Severity: "high", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83174",
 		Title:       "Workloads should not share the host IPC namespace",
 		Description: "With hostIPC the pod shares shared-memory segments and semaphores with the node and every other process using them.",
 		Remediation: "Remove hostIPC: true.",
@@ -783,7 +864,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-006", Severity: "high", Category: "Workloads",
+		ID: "KSE-WL-006", Severity: "high", Category: "Workloads", Standard: postureBestPractices,
 		Title:       "Workloads should not mount sensitive host paths",
 		Description: "Mounting the node's root, /etc, /proc, the kubelet directory or the container runtime socket hands the pod the node: its credentials, its processes, or the ability to start any container it likes.",
 		Remediation: "Remove the hostPath volume. Use a PersistentVolume, a ConfigMap or a projected volume for data, and a purpose-built API (CSI, device plugin) for node integration.",
@@ -801,7 +882,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-007", Severity: "high", Category: "Workloads",
+		ID: "KSE-WL-007", Severity: "high", Category: "Workloads", Standard: postureBestPractices,
 		Title:       "Workloads should not add dangerous capabilities",
 		Description: "Capabilities such as SYS_ADMIN, SYS_PTRACE, SYS_MODULE and NET_ADMIN each give a container a way out of its isolation; adding ALL is the same as running privileged.",
 		Remediation: "Remove the capability from securityContext.capabilities.add. If something narrower would do (NET_BIND_SERVICE for a low port), add that instead.",
@@ -825,7 +906,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-SEC-001", Severity: "high", Category: "Secrets",
+		ID: "KSE-SEC-001", Severity: "high", Category: "Secrets", Standard: postureStandard, Ref: "DTSE-83192",
 		Title:       "Workloads should mount secrets as files instead of environment variables",
 		Description: "Environment variables are visible in kubectl describe, inherited by every child process, written into crash dumps and printed by any library that logs its environment. They also cannot be rotated without restarting the pod.",
 		Remediation: "Mount the Secret as a volume and read the value from the file. Replace env[].valueFrom.secretKeyRef and envFrom[].secretRef.",
@@ -849,14 +930,19 @@ var postureCatalog = []postureRule{
 
 	// ---- Workloads, medium ---------------------------------------------------
 	{
-		ID: "KSE-WL-008", Severity: "medium", Category: "Workloads",
-		Title:       "Workloads should not mount host paths",
-		Description: "Anything written to a hostPath outlives the pod, is visible to the node and to every other pod mounting the same path, and ties the workload to one node.",
-		Remediation: "Use emptyDir for scratch space and a PersistentVolume for data that must survive the pod.",
+		ID: "KSE-WL-008", Severity: "high", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83200",
+		Title:       "Workloads should not use hostPath volumes",
+		Description: "A hostPath volume gives the pod a directory of the node itself. Mounting /, /etc, /proc, the kubelet directory or the runtime socket hands over the node outright; any other path still outlives the pod, is shared with every pod mounting it, and ties the workload to one node.",
+		Remediation: "Use emptyDir for scratch space, a PersistentVolume for data that must survive the pod, and a purpose-built API (CSI, device plugin) for node integration.",
 		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
 			var parts []string
 			for _, v := range w.Spec.Volumes {
-				if v.HostPath != nil {
+				if v.HostPath == nil {
+					continue
+				}
+				if why, ok := sensitiveHostPath(v.HostPath.Path); ok {
+					parts = append(parts, fmt.Sprintf("volume %s mounts %s (%s)", v.Name, v.HostPath.Path, why))
+				} else {
 					parts = append(parts, fmt.Sprintf("volume %s mounts %s", v.Name, v.HostPath.Path))
 				}
 			}
@@ -864,7 +950,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-009", Severity: "medium", Category: "Workloads",
+		ID: "KSE-WL-009", Severity: "medium", Category: "Workloads", Standard: postureBestPractices,
 		Title:       "Workloads should drop all capabilities",
 		Description: "Container runtimes grant a default set of capabilities (NET_RAW, CHOWN, SETUID and more) that almost no application needs. Dropping them all and adding back what is required removes a whole class of escalation.",
 		Remediation: "Set securityContext.capabilities.drop: [\"ALL\"] and add back only what the container needs.",
@@ -882,8 +968,8 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-010", Severity: "medium", Category: "Workloads",
-		Title:       "Workloads should not run as root",
+		ID: "KSE-WL-010", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83202",
+		Title:       "Workloads should not run containers as root",
 		Description: "Without runAsNonRoot or a non-zero runAsUser, the container runs as whatever the image says, which is usually uid 0. Root inside the container is root on the node the moment anything else goes wrong.",
 		Remediation: "Set securityContext.runAsNonRoot: true and a non-zero runAsUser at the pod or container level, and build the image to run as an unprivileged user.",
 		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
@@ -903,8 +989,8 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-011", Severity: "medium", Category: "Workloads",
-		Title:       "Workloads should use a read-only root filesystem",
+		ID: "KSE-WL-011", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83205",
+		Title:       "Workloads should use read-only root filesystems",
 		Description: "A writable root filesystem lets anything that gains execution drop tools and binaries into the container and persist them for its lifetime.",
 		Remediation: "Set securityContext.readOnlyRootFilesystem: true and mount an emptyDir for the directories the application writes to (/tmp, caches).",
 		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
@@ -917,7 +1003,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-012", Severity: "medium", Category: "Workloads",
+		ID: "KSE-WL-012", Severity: "medium", Category: "Workloads", Standard: postureBestPractices,
 		Title:       "Workloads should set CPU and memory limits",
 		Description: "A container without limits can consume the whole node, starving its neighbours or getting them evicted. One compromised or runaway pod becomes a node-wide outage.",
 		Remediation: "Set resources.limits.cpu and resources.limits.memory on every container, or a LimitRange on the namespace that applies defaults.",
@@ -938,8 +1024,8 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-013", Severity: "medium", Category: "Workloads",
-		Title:       "Workloads should use a seccomp profile",
+		ID: "KSE-WL-013", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83208",
+		Title:       "Workloads should use only RuntimeDefault or Localhost seccomp profiles",
 		Description: "Without a seccomp profile a container can make every system call the kernel offers, including the rarely used ones behind most container escapes. RuntimeDefault blocks those at no cost to normal applications.",
 		Remediation: "Set securityContext.seccompProfile.type: RuntimeDefault at the pod level (or Localhost with a custom profile).",
 		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
@@ -956,7 +1042,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-014", Severity: "medium", Category: "Workloads",
+		ID: "KSE-WL-014", Severity: "medium", Category: "Workloads", Standard: postureBestPractices,
 		Title:       "Container images should use a fixed tag",
 		Description: "An image with :latest or no tag resolves to whatever the tag points at when the node pulls it, so the image that was reviewed and scanned and the image that is running can differ -- and two replicas can run different code.",
 		Remediation: "Reference images by an immutable version tag, or better, by digest (image@sha256:...).",
@@ -970,7 +1056,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-015", Severity: "medium", Category: "Workloads",
+		ID: "KSE-WL-015", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83201",
 		Title:       "Workloads should not use host ports",
 		Description: "A hostPort binds the container to a port on the node's address, bypassing Services and exposing the workload to anything that can reach the node.",
 		Remediation: "Remove hostPort and expose the workload through a Service.",
@@ -992,8 +1078,8 @@ var postureCatalog = []postureRule{
 
 	// ---- Workloads, low ------------------------------------------------------
 	{
-		ID: "KSE-WL-016", Severity: "low", Category: "Workloads",
-		Title:       "Workloads should not automount service account tokens",
+		ID: "KSE-WL-016", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83191",
+		Title:       "Workloads should mount service account tokens only when needed",
 		Description: "Every pod gets an API token by default, whether or not it ever talks to Kubernetes. A compromised container then holds credentials it never needed.",
 		Remediation: "Set automountServiceAccountToken: false on the pod spec (or on its service account) unless the workload calls the Kubernetes API.",
 		Check: workloadRule(func(w *postureWorkload, inv *postureInventory) string {
@@ -1004,7 +1090,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-017", Severity: "low", Category: "Workloads",
+		ID: "KSE-WL-017", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83177",
 		Title:       "Workloads should not run in the default namespace",
 		Description: "The default namespace is where everything lands when nobody chose a namespace. Policies, quotas and RBAC are rarely configured for it, and workloads there share it with whatever else was applied without one.",
 		Remediation: "Move the workload into a namespace of its own, with its own RBAC, NetworkPolicies and quotas.",
@@ -1016,8 +1102,8 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-018", Severity: "low", Category: "Workloads",
-		Title:       "Workloads should not use the default service account",
+		ID: "KSE-WL-018", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83184",
+		Title:       "Service accounts should be explicitly assigned to workloads",
 		Description: "Every pod in the namespace that does not choose otherwise shares the default service account, so any permission granted to it is granted to all of them.",
 		Remediation: "Create a dedicated service account per workload and set serviceAccountName.",
 		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
@@ -1028,7 +1114,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-019", Severity: "low", Category: "Workloads",
+		ID: "KSE-WL-019", Severity: "low", Category: "Workloads", Standard: postureBestPractices,
 		Title:       "Workloads should set CPU and memory requests",
 		Description: "Without requests the scheduler cannot place the pod sensibly and it is first in line for eviction under pressure.",
 		Remediation: "Set resources.requests.cpu and resources.requests.memory on every container.",
@@ -1049,7 +1135,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-020", Severity: "low", Category: "Workloads",
+		ID: "KSE-WL-020", Severity: "low", Category: "Workloads", Standard: postureBestPractices,
 		Title:       "Long-running workloads should define a liveness probe",
 		Description: "Without a liveness probe a container that has hung but not exited keeps its slot forever, and nothing restarts it.",
 		Remediation: "Add a livenessProbe to every long-running container.",
@@ -1063,7 +1149,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-WL-021", Severity: "low", Category: "Workloads",
+		ID: "KSE-WL-021", Severity: "low", Category: "Workloads", Standard: postureBestPractices,
 		Title:       "Long-running workloads should define a readiness probe",
 		Description: "Without a readiness probe traffic is sent to a container the moment it starts, and keeps being sent to it while it is unable to serve.",
 		Remediation: "Add a readinessProbe to every long-running container that serves traffic.",
@@ -1077,7 +1163,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-SA-001", Severity: "low", Category: "Service accounts",
+		ID: "KSE-SA-001", Severity: "low", Category: "Service accounts", Standard: postureBestPractices,
 		Title:       "Default service accounts should not automount API tokens",
 		Description: "The default service account is used by every pod that does not name another one. Turning off its token automount makes \"no API access\" the default for the namespace.",
 		Remediation: "Set automountServiceAccountToken: false on the default ServiceAccount of each namespace; workloads that need a token opt in explicitly.",
@@ -1107,8 +1193,8 @@ var postureCatalog = []postureRule{
 
 	// ---- Network -------------------------------------------------------------
 	{
-		ID: "KSE-NET-001", Severity: "medium", Category: "Network",
-		Title:       "Namespaces should have a NetworkPolicy",
+		ID: "KSE-NET-001", Severity: "medium", Category: "Network", Standard: postureStandard, Ref: "DTSE-83171",
+		Title:       "Namespaces should have at least one network policy",
 		Description: "Without any NetworkPolicy every pod in the namespace accepts traffic from every pod in the cluster, and can reach any of them. A single compromised pod anywhere can talk to everything here.",
 		Remediation: "Add NetworkPolicies to the namespace, starting with a default-deny policy and allowing the flows the workloads actually need.",
 		Check: namespaceRule(func(ns string, inv *postureInventory) string {
@@ -1121,7 +1207,7 @@ var postureCatalog = []postureRule{
 		}),
 	},
 	{
-		ID: "KSE-NET-002", Severity: "low", Category: "Network",
+		ID: "KSE-NET-002", Severity: "low", Category: "Network", Standard: postureBestPractices,
 		Title:       "Namespaces should have a default-deny ingress policy",
 		Description: "Policies that only allow specific flows still leave every pod they do not select open. A default-deny policy makes new workloads closed until someone opens them deliberately.",
 		Remediation: "Add a NetworkPolicy with an empty podSelector, policyTypes: [Ingress] and no ingress rules.",
@@ -1134,6 +1220,216 @@ var postureCatalog = []postureRule{
 			}
 			return "no default-deny ingress policy"
 		}),
+	},
+
+	// ---- added to match the Security Essentials standard ---------------------
+	{
+		ID: "KSE-WL-022", Severity: "high", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83204",
+		Title:       "Workloads should minimize container capabilities",
+		Description: "The container runtime already grants a default set of capabilities. Adding anything beyond that set -- SYS_ADMIN, NET_ADMIN, SYS_PTRACE, or ALL -- hands the container a way out of its isolation. This follows the Pod Security Standards baseline: only capabilities from the runtime's default set may be added.",
+		Remediation: "Remove the capability from securityContext.capabilities.add. Better still, drop ALL and add back only what the container needs (usually nothing, or NET_BIND_SERVICE for a low port).",
+		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
+			return eachContainer(&w.Spec, true, func(c *corev1.Container) string {
+				if c.SecurityContext == nil || c.SecurityContext.Capabilities == nil {
+					return ""
+				}
+				var extra []string
+				for _, capability := range c.SecurityContext.Capabilities.Add {
+					name := strings.TrimPrefix(strings.ToUpper(string(capability)), "CAP_")
+					if !baselineCapabilities[name] {
+						extra = append(extra, name)
+					}
+				}
+				if len(extra) == 0 {
+					return ""
+				}
+				return "adds " + strings.Join(extra, ", ")
+			})
+		}),
+	},
+	{
+		ID: "KSE-RBAC-010", Severity: "medium", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83639",
+		Title:       "Roles and ClusterRoles should limit access to non-resource URLs",
+		Description: "Non-resource URLs are the API server's own endpoints -- /metrics, /debug/pprof, /logs, /healthz. Debug and log endpoints leak internals, and a wildcard covers every endpoint added later. Reading /api, /version and the health checks is what discovery needs and is not flagged.",
+		Remediation: "Grant only get on the specific non-resource URLs the subject needs, and never \"*\".",
+		Check: roleRule(func(r *postureRole) string {
+			var parts []string
+			for _, rule := range r.Rules {
+				if len(rule.NonResourceURLs) == 0 {
+					continue
+				}
+				var urls []string
+				for _, u := range rule.NonResourceURLs {
+					if strings.Contains(u, "*") || !discoveryURL(u) {
+						urls = append(urls, u)
+					}
+				}
+				writes := false
+				for _, v := range rule.Verbs {
+					if v != "get" && v != "head" {
+						writes = true
+					}
+				}
+				if writes {
+					parts = append(parts, fmt.Sprintf("%s on %s", strings.Join(rule.Verbs, ", "), strings.Join(rule.NonResourceURLs, ", ")))
+				} else if len(urls) > 0 {
+					parts = append(parts, "get on "+strings.Join(urls, ", "))
+				}
+			}
+			return strings.Join(parts, "; ")
+		}),
+	},
+	{
+		ID: "KSE-RBAC-011", Severity: "medium", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83186",
+		Title:       "Roles and ClusterRoles should limit persistent volume creation permissions",
+		Description: "A PersistentVolume can be of type hostPath. Whoever can create one can point it at any directory on a node and mount it into a pod, which bypasses the pod-level hostPath restrictions entirely.",
+		Remediation: "Remove create on persistentvolumes. Let a StorageClass provision volumes dynamically from PersistentVolumeClaims instead.",
+		Check: roleRule(func(r *postureRole) string {
+			return roleGrants(r, coreGroup, []string{"persistentvolumes"}, []string{"create"}, "persistentvolumes")
+		}),
+	},
+	{
+		ID: "KSE-RBAC-012", Severity: "medium", Category: "RBAC", Standard: postureStandard, Ref: "DTSE-83190",
+		Title:       "Roles and ClusterRoles should limit service account token creation permissions",
+		Description: "create on serviceaccounts/token mints a token for any service account in scope -- and with it, every permission that service account holds.",
+		Remediation: "Remove create on serviceaccounts/token, or restrict it with resourceNames to the one service account a controller issues tokens for.",
+		Check: roleRule(func(r *postureRole) string {
+			return roleGrants(r, coreGroup, []string{"serviceaccounts/token"}, []string{"create"}, "serviceaccounts/token")
+		}),
+	},
+	{
+		ID: "KSE-WL-023", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83195",
+		Title:       "Workloads should not run in system namespaces",
+		Description: "kube-system, kube-public and kube-node-lease belong to the cluster itself. A workload there shares a namespace with the control plane's service accounts and Secrets, and is usually exempt from the policies the rest of the cluster has. Components installed by the distribution are recognised by their labels (k8s-app, component, tier=control-plane, addonmanager.kubernetes.io/mode, kubernetes.io/cluster-service) and not flagged.",
+		Remediation: "Move the workload to a namespace of its own. Add-ons that must live in kube-system should carry the labels their distribution uses.",
+		Check: func(inv *postureInventory) []postureOutcome {
+			out := make([]postureOutcome, 0, len(inv.Workloads)+len(inv.SystemWorkloads))
+			for i := range inv.Workloads {
+				out = append(out, postureOutcome{Ref: postureWorkloadRef(&inv.Workloads[i])})
+			}
+			for i := range inv.SystemWorkloads {
+				w := &inv.SystemWorkloads[i]
+				detail := ""
+				if !distributionComponent(w.Labels) {
+					detail = "runs in namespace " + w.Namespace
+				}
+				out = append(out, postureOutcome{Ref: postureWorkloadRef(w), Detail: detail})
+			}
+			return out
+		},
+	},
+	{
+		ID: "KSE-WL-024", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83203",
+		Title:       "Workloads should not use the NET_RAW capability",
+		Description: "NET_RAW is in the runtime's default set, so every container has it unless it is dropped. It allows crafting arbitrary packets: ARP and DNS spoofing against neighbouring pods on the same node.",
+		Remediation: "Add NET_RAW (or ALL) to securityContext.capabilities.drop.",
+		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
+			return eachContainer(&w.Spec, true, func(c *corev1.Container) string {
+				sc := c.SecurityContext
+				if sc != nil && sc.Privileged != nil && *sc.Privileged {
+					return "privileged (holds every capability)"
+				}
+				if sc != nil && sc.Capabilities != nil {
+					for _, a := range sc.Capabilities.Add {
+						n := strings.TrimPrefix(strings.ToUpper(string(a)), "CAP_")
+						if n == "NET_RAW" || n == "ALL" {
+							return "adds " + n
+						}
+					}
+					for _, d := range sc.Capabilities.Drop {
+						n := strings.TrimPrefix(strings.ToUpper(string(d)), "CAP_")
+						if n == "NET_RAW" || n == "ALL" {
+							return ""
+						}
+					}
+				}
+				return "NET_RAW not dropped"
+			})
+		}),
+	},
+	{
+		ID: "KSE-WL-025", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83207",
+		Title:       "Workloads should use only approved SELinux settings",
+		Description: "seLinuxOptions can relabel a container to run under a different SELinux type, user or role. Anything other than the container types defeats the policy that keeps containers off the host's files. Approved, as in the Pod Security Standards baseline: type empty or container_t, container_init_t, container_kvm_t or container_engine_t, and no user or role.",
+		Remediation: "Remove seLinuxOptions, or limit it to level and an approved type.",
+		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
+			var parts []string
+			if sc := w.Spec.SecurityContext; sc != nil {
+				if d := seLinuxViolation(sc.SELinuxOptions); d != "" {
+					parts = append(parts, "pod: "+d)
+				}
+			}
+			if d := eachContainer(&w.Spec, true, func(c *corev1.Container) string {
+				if c.SecurityContext == nil {
+					return ""
+				}
+				return seLinuxViolation(c.SecurityContext.SELinuxOptions)
+			}); d != "" {
+				parts = append(parts, d)
+			}
+			return strings.Join(parts, "; ")
+		}),
+	},
+	{
+		ID: "KSE-WL-026", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83209",
+		Title:       "Workloads should use only RuntimeDefault or Localhost AppArmor profiles",
+		Description: "An unconfined AppArmor profile removes the mandatory access control the runtime applies by default. Read from the container.apparmor.security.beta.kubernetes.io annotations on the pod template; leaving it unset means the runtime default and passes.",
+		Remediation: "Remove the unconfined annotation, or set it to runtime/default or localhost/<profile>.",
+		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
+			var parts []string
+			for k, v := range w.Annotations {
+				if !strings.HasPrefix(k, "container.apparmor.security.beta.kubernetes.io/") {
+					continue
+				}
+				if v != "runtime/default" && !strings.HasPrefix(v, "localhost/") {
+					parts = append(parts, fmt.Sprintf("%s: %s", strings.TrimPrefix(k, "container.apparmor.security.beta.kubernetes.io/"), v))
+				}
+			}
+			sort.Strings(parts)
+			return strings.Join(parts, "; ")
+		}),
+	},
+	{
+		ID: "KSE-WL-027", Severity: "medium", Category: "Workloads", Standard: postureStandard, Ref: "DTSE-83206",
+		Title:       "Workloads should use the default proc mount setting",
+		Description: "procMount: Unmasked exposes the parts of /proc the runtime normally hides -- kernel parameters and other processes' details -- to the container.",
+		Remediation: "Remove securityContext.procMount, or set it to Default.",
+		Check: workloadRule(func(w *postureWorkload, _ *postureInventory) string {
+			return eachContainer(&w.Spec, true, func(c *corev1.Container) string {
+				if c.SecurityContext != nil && c.SecurityContext.ProcMount != nil && *c.SecurityContext.ProcMount != corev1.DefaultProcMount {
+					return "procMount: " + string(*c.SecurityContext.ProcMount)
+				}
+				return ""
+			})
+		}),
+	},
+	{
+		ID: "KSE-CL-001", Severity: "low", Category: "Cluster", Standard: postureStandard, Ref: "DTSE-83178",
+		Title:       "Clusters should not use Kubernetes Dashboard",
+		Description: "The Kubernetes Dashboard is a long-lived web UI with its own service account, and a frequent way into clusters when it is exposed or bound to broad permissions. It is assessed once per cluster, by looking for the dashboard image in every namespace.",
+		Remediation: "Uninstall the dashboard and use kubectl, or a UI that authenticates each user against the cluster instead of acting through a shared service account.",
+		Check: func(inv *postureInventory) []postureOutcome {
+			var found []string
+			for _, list := range [][]postureWorkload{inv.Workloads, inv.SystemWorkloads} {
+				for i := range list {
+					w := &list[i]
+					if eachContainer(&w.Spec, false, func(c *corev1.Container) string {
+						if strings.Contains(c.Image, "kubernetesui/dashboard") || strings.Contains(c.Image, "kubernetes-dashboard") {
+							return c.Image
+						}
+						return ""
+					}) != "" {
+						found = append(found, fmt.Sprintf("%s %s/%s", w.Kind, w.Namespace, w.Name))
+					}
+				}
+			}
+			sort.Strings(found)
+			detail := ""
+			if len(found) > 0 {
+				detail = "Kubernetes Dashboard runs as " + strings.Join(found, ", ")
+			}
+			return []postureOutcome{{Ref: postureRef{Kind: "Cluster", Name: "cluster"}, Detail: detail}}
+		},
 	},
 }
 
@@ -1153,6 +1449,7 @@ var postureSeverityRank = map[string]int{"critical": 0, "high": 1, "medium": 2, 
 // and scope computation works on.
 type postureResult struct {
 	RuleID          string
+	Standard        string
 	Severity        string
 	Category        string
 	Result          string
@@ -1174,14 +1471,18 @@ func evaluatePosture(inv *postureInventory, catalog []postureRule) ([]postureRes
 	for i := range catalog {
 		rule := &catalog[i]
 		r := postureResult{
-			RuleID: rule.ID, Severity: rule.Severity, Category: rule.Category,
+			RuleID: rule.ID, Standard: rule.Standard, Severity: rule.Severity, Category: rule.Category,
 			NamespaceCounts: map[string][2]int{},
 		}
+		// Resource totals describe the Security Essentials headline only.
+		countResources := rule.Standard == postureStandard
 		for _, o := range rule.Check(inv) {
 			st := resources[o.Ref]
 			if st == nil {
 				st = &resState{ns: o.Ref.Namespace}
-				resources[o.Ref] = st
+				if countResources {
+					resources[o.Ref] = st
+				}
 			}
 			counts := r.NamespaceCounts[o.Ref.Namespace]
 			if o.Detail != "" {
@@ -1241,10 +1542,27 @@ func postureResultOf(failed, passed int) string {
 // summarizePosture fills the summary fields of an assessment from its rule
 // results. The same function serves the stored, cluster-wide numbers and the
 // recomputed, scoped ones, so the two can never be calculated differently.
+//
+// Only Security Essentials rules count: the stored score is that standard's,
+// and best-practice rules never move it.
 func summarizePosture(a *models.PostureAssessment, results []postureResult, nsResources map[string][2]int) {
+	summarizeStandard(a, results, postureStandard)
+	a.ResourcesFailed, a.ResourcesAssessed = 0, 0
+	for _, c := range nsResources {
+		a.ResourcesFailed += c[0]
+		a.ResourcesAssessed += c[1]
+	}
+}
+
+// summarizeStandard fills the rule counts and score of a from the results
+// belonging to one standard.
+func summarizeStandard(a *models.PostureAssessment, results []postureResult, standard string) {
 	a.RulesPassed, a.RulesFailed, a.RulesNotRelevant = 0, 0, 0
 	a.FailedCritical, a.FailedHigh, a.FailedMedium, a.FailedLow = 0, 0, 0, 0
 	for _, r := range results {
+		if r.Standard != standard {
+			continue
+		}
 		switch r.Result {
 		case "passed":
 			a.RulesPassed++
@@ -1268,11 +1586,6 @@ func summarizePosture(a *models.PostureAssessment, results []postureResult, nsRe
 	a.Score = 0
 	if a.RulesAssessed > 0 {
 		a.Score = float64(a.RulesPassed) / float64(a.RulesAssessed) * 100
-	}
-	a.ResourcesFailed, a.ResourcesAssessed = 0, 0
-	for _, c := range nsResources {
-		a.ResourcesFailed += c[0]
-		a.ResourcesAssessed += c[1]
 	}
 }
 
@@ -1359,6 +1672,9 @@ func fromPostureRow(row *models.PostureRuleResult) postureResult {
 		RuleID: row.RuleID, Severity: row.Severity, Category: row.Category, Result: row.Result,
 		Failed: row.Failed, Passed: row.Passed, NamespaceCounts: map[string][2]int{},
 	}
+	if meta := postureRuleByID[row.RuleID]; meta != nil {
+		r.Standard = meta.Standard
+	}
 	if row.FailedResources != "" {
 		_ = json.Unmarshal([]byte(row.FailedResources), &r.Failures)
 	}
@@ -1382,7 +1698,7 @@ func decodeNamespaceResources(s string) map[string][2]int {
 // failed write leaves no half-assessment for the timeline to plot.
 func persistPosture(clusterID uint, trigger string, now time.Time, results []postureResult, nsResources map[string][2]int) (*models.PostureAssessment, error) {
 	a := &models.PostureAssessment{
-		CreatedAt: now, ClusterID: clusterID, Trigger: trigger,
+		CreatedAt: now, ClusterID: clusterID, Trigger: trigger, CatalogVersion: postureCatalogVersion,
 		NamespaceResources: encodeJSON(nsResources),
 	}
 	summarizePosture(a, results, nsResources)
@@ -1564,6 +1880,7 @@ type postureRuleView struct {
 	Description     string           `json:"description"`
 	Remediation     string           `json:"remediation"`
 	Standard        string           `json:"standard"`
+	Ref             string           `json:"ref,omitempty"`
 	Severity        string           `json:"severity"`
 	Category        string           `json:"category"`
 	Result          string           `json:"result"`
@@ -1610,7 +1927,7 @@ func renderPosture(c *fiber.Ctx, cl *models.Cluster, a *models.PostureAssessment
 	rules := make([]postureRuleView, 0, len(results))
 	for _, r := range results {
 		v := postureRuleView{
-			ID: r.RuleID, Title: r.RuleID, Standard: postureStandard,
+			ID: r.RuleID, Title: r.RuleID, Standard: r.Standard,
 			Severity: r.Severity, Category: r.Category, Result: r.Result,
 			Failed: r.Failed, Passed: r.Passed, FailedResources: r.Failures, Truncated: r.Truncated,
 		}
@@ -1618,7 +1935,7 @@ func renderPosture(c *fiber.Ctx, cl *models.Cluster, a *models.PostureAssessment
 		// remediation applies to old assessments too. A rule since removed
 		// still shows, under its id.
 		if meta := postureRuleByID[r.RuleID]; meta != nil {
-			v.Title, v.Description, v.Remediation = meta.Title, meta.Description, meta.Remediation
+			v.Title, v.Description, v.Remediation, v.Ref = meta.Title, meta.Description, meta.Remediation, meta.Ref
 		}
 		if v.FailedResources == nil {
 			v.FailedResources = []PostureFailure{}
@@ -1642,11 +1959,16 @@ func renderPosture(c *fiber.Ctx, cl *models.Cluster, a *models.PostureAssessment
 	}
 	sort.Strings(excluded)
 
+	var bp models.PostureAssessment
+	summarizeStandard(&bp, results, postureBestPractices)
+
 	return c.JSON(fiber.Map{
 		"assessment":          view,
+		"best_practices":      bp,
 		"rules":               rules,
 		"restricted":          scope != nil,
 		"standard":            postureStandard,
+		"standards":           []string{postureStandard, postureBestPractices},
 		"cluster":             cl.Name,
 		"excluded_namespaces": excluded,
 	})
@@ -1654,7 +1976,8 @@ func renderPosture(c *fiber.Ctx, cl *models.Cluster, a *models.PostureAssessment
 
 func latestPosture(clusterID uint) (*models.PostureAssessment, bool) {
 	var a models.PostureAssessment
-	err := db.DB.Where("cluster_id = ?", clusterID).Order("created_at desc, id desc").Limit(1).Find(&a).Error
+	err := db.DB.Where("cluster_id = ? AND catalog_version = ?", clusterID, postureCatalogVersion).
+		Order("created_at desc, id desc").Limit(1).Find(&a).Error
 	if err != nil || a.ID == 0 {
 		return nil, false
 	}
@@ -1718,7 +2041,8 @@ func GetPostureHistory(c *fiber.Ctx) error {
 	since := time.Now().AddDate(0, 0, -days)
 
 	var list []models.PostureAssessment
-	db.DB.Where("cluster_id = ? AND created_at >= ?", cl.ID, since).Order("created_at asc, id asc").Find(&list)
+	db.DB.Where("cluster_id = ? AND catalog_version = ? AND created_at >= ?", cl.ID, postureCatalogVersion, since).
+		Order("created_at asc, id asc").Find(&list)
 	if list == nil {
 		list = []models.PostureAssessment{}
 	}

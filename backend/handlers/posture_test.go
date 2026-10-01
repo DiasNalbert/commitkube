@@ -66,6 +66,130 @@ func TestPostureCatalogIsWellFormed(t *testing.T) {
 	}
 }
 
+// Security Essentials mirrors the published Dynatrace standard one for one:
+// 33 rules, each mapped to a distinct DTSE id, with its severity.
+func TestPostureSecurityEssentialsMatchesTheStandard(t *testing.T) {
+	want := map[string]string{
+		"DTSE-83180": "critical", "DTSE-83182": "critical", "DTSE-83188": "critical",
+		"DTSE-83185": "critical", "DTSE-83187": "critical", "DTSE-83189": "critical",
+		"DTSE-83183": "high", "DTSE-83204": "high", "DTSE-83192": "high", "DTSE-83176": "high",
+		"DTSE-83172": "high", "DTSE-83174": "high", "DTSE-83173": "high", "DTSE-83200": "high",
+		"DTSE-83175": "high",
+		"DTSE-83171": "medium", "DTSE-83639": "medium", "DTSE-83186": "medium", "DTSE-83190": "medium",
+		"DTSE-83181": "medium", "DTSE-83184": "medium", "DTSE-83191": "medium", "DTSE-83202": "medium",
+		"DTSE-83195": "medium", "DTSE-83177": "medium", "DTSE-83201": "medium", "DTSE-83203": "medium",
+		"DTSE-83207": "medium", "DTSE-83209": "medium", "DTSE-83208": "medium", "DTSE-83205": "medium",
+		"DTSE-83206": "medium",
+		"DTSE-83178": "low",
+	}
+	got := map[string]string{}
+	for _, r := range postureCatalog {
+		switch r.Standard {
+		case postureStandard:
+			if r.Ref == "" {
+				t.Errorf("%s is in %s without a DTSE ref", r.ID, postureStandard)
+			}
+			if _, dup := got[r.Ref]; dup {
+				t.Errorf("%s maps to %s twice", r.ID, r.Ref)
+			}
+			got[r.Ref] = r.Severity
+		case postureBestPractices:
+		default:
+			t.Errorf("%s has no standard", r.ID)
+		}
+	}
+	for ref, sev := range want {
+		if got[ref] != sev {
+			t.Errorf("%s: severity %q, want %q", ref, got[ref], sev)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("Security Essentials has %d rules, want %d", len(got), len(want))
+	}
+}
+
+// Best-practice rules are assessed but never move the headline score.
+func TestPostureBestPracticesDoNotMoveTheScore(t *testing.T) {
+	spec := hardenedPodSpec()
+	spec.Containers[0].LivenessProbe = nil // a best-practice rule only
+	results, nsRes := evaluatePosture(buildPostureInventory(&postureSources{
+		Deployments: []appsv1.Deployment{deployment("apps", "api", spec)},
+	}), postureCatalog)
+	var a, bp models.PostureAssessment
+	summarizePosture(&a, results, nsRes)
+	summarizeStandard(&bp, results, postureBestPractices)
+	if a.RulesFailed != 0 || a.Score != 100 {
+		t.Errorf("Security Essentials moved: %+v", a)
+	}
+	if bp.RulesFailed != 1 {
+		t.Errorf("best practices should fail the liveness rule: %+v", bp)
+	}
+}
+
+func TestPostureAddedRules(t *testing.T) {
+	unmasked := corev1.UnmaskedProcMount
+	caps := hardenedPodSpec()
+	caps.Containers[0].SecurityContext.Capabilities = &corev1.Capabilities{
+		Drop: []corev1.Capability{"ALL"},
+		Add:  []corev1.Capability{"NET_BIND_SERVICE", "SYS_ADMIN"}, // first allowed, second not
+	}
+	netraw := hardenedPodSpec()
+	netraw.Containers[0].SecurityContext.Capabilities = nil // NET_RAW kept by default
+	selinux := hardenedPodSpec()
+	selinux.SecurityContext.SELinuxOptions = &corev1.SELinuxOptions{Type: "spc_t"}
+	proc := hardenedPodSpec()
+	proc.Containers[0].SecurityContext.ProcMount = &unmasked
+	apparmor := deployment("apps", "apparmor", hardenedPodSpec())
+	apparmor.Spec.Template.Annotations = map[string]string{"container.apparmor.security.beta.kubernetes.io/api": "unconfined"}
+	dash := hardenedPodSpec()
+	dash.Containers[0].Image = "kubernetesui/dashboard:v2.7.0"
+
+	inv := buildPostureInventory(&postureSources{
+		Deployments: []appsv1.Deployment{
+			deployment("apps", "caps", caps), deployment("apps", "netraw", netraw),
+			deployment("apps", "selinux", selinux), deployment("apps", "proc", proc), apparmor,
+			deployment("kubernetes-dashboard", "kubernetes-dashboard", dash),
+			// kube-system: a labelled add-on passes, something dropped there fails.
+			func() appsv1.Deployment {
+				d := deployment("kube-system", "coredns", hardenedPodSpec())
+				d.Labels = map[string]string{"k8s-app": "kube-dns"}
+				return d
+			}(),
+			deployment("kube-system", "my-app", hardenedPodSpec()),
+		},
+		ClusterRoles: []rbacv1.ClusterRole{
+			clusterRole("pv-maker", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"persistentvolumes"}, Verbs: []string{"create"}}),
+			clusterRole("token-minter", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"serviceaccounts/token"}, Verbs: []string{"create"}}),
+			clusterRole("debugger", rbacv1.PolicyRule{NonResourceURLs: []string{"/debug/*"}, Verbs: []string{"get"}}),
+			clusterRole("discovery", rbacv1.PolicyRule{NonResourceURLs: []string{"/api", "/version", "/healthz"}, Verbs: []string{"get"}}),
+		},
+	})
+	cases := map[string][]string{
+		"KSE-WL-022":   {"caps"},
+		"KSE-WL-024":   {"netraw"},
+		"KSE-WL-025":   {"selinux"},
+		"KSE-WL-026":   {"apparmor"},
+		"KSE-WL-027":   {"proc"},
+		"KSE-WL-023":   {"my-app"},
+		"KSE-RBAC-010": {"debugger"},
+		"KSE-RBAC-011": {"pv-maker"},
+		"KSE-RBAC-012": {"token-minter"},
+		"KSE-CL-001":   {"cluster"},
+	}
+	for id, names := range cases {
+		failing := failingNames(t, id, inv)
+		if len(failing) != len(names) {
+			t.Errorf("%s fails %v, want exactly %v", id, failing, names)
+			continue
+		}
+		for _, n := range names {
+			if _, ok := failing[n]; !ok {
+				t.Errorf("%s does not fail %s (fails %v)", id, n, failing)
+			}
+		}
+	}
+}
+
 func TestPostureRBACSecrets(t *testing.T) {
 	inv := rolesInventory(
 		clusterRole("reads-secrets", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list"}}),
@@ -352,9 +476,13 @@ func TestPostureScopeMatchesAnAssessmentOfThoseNamespaces(t *testing.T) {
 		Deployments: []appsv1.Deployment{deployment("team-a", "ok", hardenedPodSpec())},
 	}), postureCatalog)
 
+	// Both sides under the same scope: cluster-scoped resources (the
+	// ClusterRole, the cluster-wide Dashboard check) are hidden from a scoped
+	// user by design, so what has to match is everything namespaced.
+	wantRes, wantResNs := scopePosture(onlyA, onlyARes, map[string]bool{"team-a": true})
 	var got, want models.PostureAssessment
 	summarizePosture(&got, scoped, scopedRes)
-	summarizePosture(&want, onlyA, onlyARes)
+	summarizePosture(&want, wantRes, wantResNs)
 	if got != want {
 		t.Fatalf("scoped summary differs:\n got  %+v\n want %+v", got, want)
 	}
@@ -393,7 +521,8 @@ func TestPosturePersistRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("persist: %v", err)
 	}
-	if a.FailedHigh != 1 || a.ResourcesFailed != 1 || a.ResourcesAssessed != 1 {
+	// One workload and the cluster itself (the Dashboard rule).
+	if a.FailedHigh != 1 || a.ResourcesFailed != 1 || a.ResourcesAssessed != 2 || a.CatalogVersion != postureCatalogVersion {
 		t.Errorf("unexpected summary %+v", a)
 	}
 
