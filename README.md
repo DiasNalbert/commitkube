@@ -146,7 +146,11 @@ O ClusterRole precisa de `get`/`list`/`watch` em: `pods`, `nodes`,
 `resourcequotas`, `limitranges`, `configmaps` e `secrets` (core);
 `deployments`, `replicasets`, `daemonsets`, `statefulsets` (apps);
 `ingresses`, `ingressclasses`, `networkpolicies` (networking.k8s.io);
-`cronjobs` e `jobs` (batch). Além disso: `pods/log` e `nodes/proxy` com `get`,
+`cronjobs` e `jobs` (batch). A postura de segurança precisa ainda de
+`get`/`list` em `serviceaccounts` (core) e em `roles`, `clusterroles`,
+`rolebindings` e `clusterrolebindings` (rbac.authorization.k8s.io) -- sem elas
+a avaliação falha inteira, em vez de reportar as regras de RBAC como aprovadas.
+Além disso: `pods/log` e `nodes/proxy` com `get`,
 `pods` com `delete` e `*/scale` com `get`/`update` (restart e scale pela
 página de Pods), e `metrics.k8s.io` com `get`/`list`.
 
