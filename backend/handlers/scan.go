@@ -294,7 +294,7 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 	scanDir := filepath.Join(os.TempDir(), "trivy-scan-"+scanID)
 	defer os.RemoveAll(scanDir)
 
-	sshKey := crypto.DecryptField(crypto.MasterKey(), ws.SSHPrivKey)
+	sshKey := repoCloneKey(repo, ws)
 	if sshKeyOverride != "" {
 		sshKey = sshKeyOverride
 	}

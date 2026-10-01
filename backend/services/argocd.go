@@ -37,6 +37,12 @@ func (c *ArgoCDClient) request(method, path string, body io.Reader) (*http.Respo
 	return insecureHTTPClient.Do(req)
 }
 
+// AddRepository registers (or re-registers) a repository's credentials.
+//
+// upsert=true is what makes a second registration replace the first: ArgoCD
+// answers a POST for a URL it already knows with 400 InvalidArgument ("existing
+// repository spec is different; use upsert flag to force update"), not 409, so
+// a retry keyed on 409 never ran and a rotated key was never picked up.
 func (c *ArgoCDClient) AddRepository(repoURL, sshKey string) error {
 	payload := map[string]interface{}{
 		"repo":                  repoURL,
@@ -46,34 +52,14 @@ func (c *ArgoCDClient) AddRepository(repoURL, sshKey string) error {
 		"insecureIgnoreHostKey": true,
 	}
 	bodyBytes, _ := json.Marshal(payload)
-	res, err := c.request("POST", "repositories", bytes.NewBuffer(bodyBytes))
+	res, err := c.request("POST", "repositories?upsert=true", bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return err
 	}
 	defer res.Body.Close()
-
-	if res.StatusCode == 409 {
-		encoded := url.QueryEscape(repoURL)
-		delRes, delErr := c.request("DELETE", "repositories/"+encoded, nil)
-		if delErr == nil {
-			delRes.Body.Close()
-		}
-		bodyBytes2, _ := json.Marshal(payload)
-		res2, err2 := c.request("POST", "repositories", bytes.NewBuffer(bodyBytes2))
-		if err2 != nil {
-			return err2
-		}
-		defer res2.Body.Close()
-		if res2.StatusCode >= 400 {
-			resBody, _ := io.ReadAll(res2.Body)
-			return fmt.Errorf("failed to add argocd repo: %s", string(resBody))
-		}
-		return nil
-	}
-
 	if res.StatusCode >= 400 {
 		resBody, _ := io.ReadAll(res.Body)
-		return fmt.Errorf("failed to add argocd repo: %s", string(resBody))
+		return fmt.Errorf("register repository: HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(resBody)))
 	}
 	return nil
 }
@@ -120,6 +106,10 @@ func (c *ArgoCDClient) CreateProject(projectName string) error {
 	}
 	return nil
 }
+
+// AppName is the name ArgoCD gives the Application for a repository. Kept
+// exported so whoever deletes it later asks for the same name that was created.
+func AppName(name string) string { return sanitizeK8sName(name) }
 
 func sanitizeK8sName(name string) string {
 	result := strings.ToLower(name)
@@ -174,7 +164,7 @@ func (c *ArgoCDClient) CreateApplication(appName, repoURL, project, namespace, a
 	defer res.Body.Close()
 	if res.StatusCode >= 400 && res.StatusCode != 409 {
 		resBody, _ := io.ReadAll(res.Body)
-		return fmt.Errorf("failed to create argocd app: %s", string(resBody))
+		return fmt.Errorf("create application: HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(resBody)))
 	}
 	return nil
 }

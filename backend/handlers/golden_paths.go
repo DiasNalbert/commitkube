@@ -142,16 +142,14 @@ func ApproveRepository(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to deserialise deferred payload"})
 	}
 
-	if err := provisionRepository(repo.UserID, &req); err != nil {
+	// provisionRepository replaces the pending row with the created one, so
+	// there is nothing left to flip from pending to created afterwards.
+	res, err := provisionRepository(repo.UserID, &req, c.IP())
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fmt.Sprintf("provisioning failed: %v", err)})
 	}
 
-	db.DB.Model(&repo).Updates(map[string]interface{}{
-		"status":           "created",
-		"deferred_payload": "",
-	})
-
-	return c.JSON(fiber.Map{"message": "Repository approved and provisioned", "repo_name": name})
+	return c.JSON(res.response("Repository approved and provisioned"))
 }
 
 func ValidateGoldenPathInputs(gp models.GoldenPath, inputs map[string]string) string {
@@ -175,10 +173,4 @@ func ValidateGoldenPathInputs(gp models.GoldenPath, inputs map[string]string) st
 		}
 	}
 	return ""
-}
-
-func provisionRepository(userID uint, req *CreateRepoRequest) error {
-	_ = userID
-	_ = req
-	return nil
 }

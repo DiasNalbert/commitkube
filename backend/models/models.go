@@ -61,6 +61,10 @@ type Repository struct {
 	ProjectKey         string         `json:"project_key"`
 	GoldenPathID       *uint          `json:"golden_path_id"`
 	DeferredPayload    string         `gorm:"type:text" json:"-"`
+	// The repository's own deploy key. Empty on repositories created before
+	// keys were per repository; those still clone with the workspace key.
+	SSHPubKey  string `gorm:"type:text" json:"ssh_pub_key,omitempty"`
+	SSHPrivKey string `gorm:"type:text" json:"-"` // encrypted
 }
 
 type YamlTemplate struct {

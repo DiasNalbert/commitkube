@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -51,6 +52,9 @@ type CreateRepoRequest struct {
 	Provider           string            `json:"provider,omitempty"`
 	GoldenPathID       uint              `json:"golden_path_id,omitempty"`
 	GoldenPathInputs   map[string]string `json:"golden_path_inputs,omitempty"`
+	// SkipArgoCD is the creator explicitly choosing "No ArgoCD". Without it a
+	// missing instance id is ambiguous with an instance list that never loaded.
+	SkipArgoCD bool `json:"skip_argocd,omitempty"`
 }
 
 type RepoVariable struct {
@@ -88,14 +92,6 @@ func CreateRepository(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
 	}
-	var (
-		bbUsername   string
-		bbAppPass    string
-		bbWorkspace  string
-		bbProjectKey string
-		bbSSHPubKey  string
-		bbSSHPrivKey string
-	)
 
 	if req.GoldenPathID > 0 {
 		var gp models.GoldenPath
@@ -126,17 +122,70 @@ func CreateRepository(c *fiber.Ctx) error {
 		}
 	}
 
+	res, err := provisionRepository(userID, &req, c.IP())
+	if err != nil {
+		status := fiber.StatusInternalServerError
+		var pe *provisionError
+		if errors.As(err, &pe) {
+			status = pe.status
+		}
+		return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(res.response("Repository created successfully"))
+}
+
+// provisionError carries the HTTP status a provisioning failure should be
+// answered with, so the approval path and the direct path answer alike.
+type provisionError struct {
+	status int
+	msg    string
+}
+
+func (e *provisionError) Error() string { return e.msg }
+
+type provisionResult struct {
+	Repo      models.Repository
+	DeployKey *RepoDeployKey
+	// ArgoCD is "configured", "failed", "skipped" (the creator chose no
+	// instance) or "not_configured" (there was none to use).
+	ArgoCD   string
+	Warnings []string
+}
+
+func (r *provisionResult) response(message string) fiber.Map {
+	resp := fiber.Map{"message": message, "repo": r.Repo, "argocd": r.ArgoCD}
+	if r.DeployKey != nil {
+		resp["deploy_key"] = r.DeployKey
+	}
+	if len(r.Warnings) > 0 {
+		resp["warnings"] = r.Warnings
+	}
+	return resp
+}
+
+// provisionRepository does the actual work of creating a repository: the SCM
+// repository, its deploy key, variables, initial commit, the ArgoCD
+// registration and Application, and the CommitKube row. It is shared by a
+// direct create and by an admin approving a golden-path request.
+func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provisionResult, error) {
+	var (
+		bbUsername   string
+		bbAppPass    string
+		bbWorkspace  string
+		bbProjectKey string
+		bbSSHPrivKey string
+	)
+
 	encKey := crypto.MasterKey()
 	if req.WorkspaceID > 0 {
 		var ws models.BitbucketWorkspace
 		if err := db.DB.Where("id = ?", req.WorkspaceID).First(&ws).Error; err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "workspace not found"})
+			return nil, &provisionError{fiber.StatusBadRequest, "workspace not found"}
 		}
 		bbUsername = ws.Username
 		bbAppPass = crypto.DecryptField(encKey, ws.AppPass)
 		bbWorkspace = ws.WorkspaceID
 		bbProjectKey = ws.ProjectKey
-		bbSSHPubKey = ws.SSHPubKey
 		bbSSHPrivKey = crypto.DecryptField(encKey, ws.SSHPrivKey)
 		if req.ProjectKey != "" {
 			bbProjectKey = req.ProjectKey
@@ -144,13 +193,12 @@ func CreateRepository(c *fiber.Ctx) error {
 	} else {
 		var keys models.UserKeys
 		if err := db.DB.Where("user_id = ?", userID).First(&keys).Error; err != nil {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Please configure Bitbucket & ArgoCD settings first"})
+			return nil, &provisionError{fiber.StatusForbidden, "Please configure Bitbucket & ArgoCD settings first"}
 		}
 		bbUsername = keys.BitbucketUsername
 		bbAppPass = crypto.DecryptField(encKey, keys.BitbucketAppPass)
 		bbWorkspace = keys.BitbucketWorkspace
 		bbProjectKey = keys.BitbucketProjectKey
-		bbSSHPubKey = keys.BitbucketSSHPubKey
 		bbSSHPrivKey = crypto.DecryptField(encKey, keys.BitbucketSSHKey)
 	}
 
@@ -161,20 +209,36 @@ func CreateRepository(c *fiber.Ctx) error {
 		argoProject   string
 	)
 
-	if req.ArgoCDInstanceID > 0 {
+	// No instance id used to mean "fall back to the legacy per-user ArgoCD
+	// settings" and, when those were empty, quietly do nothing -- which is
+	// what happened whenever the instance list failed to load in the browser.
+	// Now only an explicit "No ArgoCD" skips it; otherwise the configured
+	// instance is used when there is one.
+	switch {
+	case req.SkipArgoCD:
+	case req.ArgoCDInstanceID > 0:
 		var inst models.ArgoCDInstance
 		if err := db.DB.Where("id = ?", req.ArgoCDInstanceID).First(&inst).Error; err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "argocd instance not found"})
+			return nil, &provisionError{fiber.StatusBadRequest, "argocd instance not found"}
 		}
 		argoURL = inst.ServerURL
 		argoToken = crypto.DecryptField(encKey, inst.AuthToken)
 		argoNamespace = inst.DefaultNamespace
 		argoProject = inst.DefaultProject
-	} else {
+	default:
 		var keys models.UserKeys
 		if db.DB.Where("user_id = ?", userID).First(&keys).Error == nil {
 			argoURL = keys.ArgoCDServerURL
 			argoToken = crypto.DecryptField(encKey, keys.ArgoCDAuthToken)
+		}
+		if argoURL == "" || argoToken == "" {
+			var inst models.ArgoCDInstance
+			if db.DB.Order("id asc").First(&inst).Error == nil {
+				argoURL = inst.ServerURL
+				argoToken = crypto.DecryptField(encKey, inst.AuthToken)
+				argoNamespace = inst.DefaultNamespace
+				argoProject = inst.DefaultProject
+			}
 		}
 	}
 	if argoNamespace == "" {
@@ -190,9 +254,10 @@ func CreateRepository(c *fiber.Ctx) error {
 	}
 	scmClient := services.NewSCMClient(provider, bbUsername, bbAppPass, bbWorkspace)
 	if err := scmClient.CreateRepository(req.Name, bbProjectKey); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fmt.Sprintf("Bitbucket creation failed: %v", err)})
+		return nil, &provisionError{fiber.StatusInternalServerError, fmt.Sprintf("Bitbucket creation failed: %v", err)}
 	}
 
+	result := &provisionResult{}
 	var setupWarnings []string
 
 	if err := scmClient.EnablePipelines(req.Name); err != nil {
@@ -203,13 +268,23 @@ func CreateRepository(c *fiber.Ctx) error {
 		fmt.Printf("[BITBUCKET OK] pipelines enabled for %s\n", req.Name)
 	}
 
-	if bbSSHPubKey != "" {
-		if err := scmClient.AddDeployKey(req.Name, bbSSHPubKey, "CommitKube ArgoCD"); err != nil {
-			msg := fmt.Sprintf("add deploy key: %v", err)
+	// The key ArgoCD and the scanner clone with. A fresh one per repository;
+	// the workspace key only if generating one somehow failed.
+	cloneKey := bbSSHPrivKey
+	deployKey, keyErr := generateRepoDeployKey(req.Name)
+	if keyErr != nil {
+		msg := fmt.Sprintf("generate deploy key: %v -- using the workspace key instead", keyErr)
+		fmt.Printf("[KEY ERROR] %s | repo=%s\n", msg, req.Name)
+		setupWarnings = append(setupWarnings, msg)
+	} else {
+		result.DeployKey = &deployKey
+		cloneKey = deployKey.PrivateKey
+		if err := scmClient.AddDeployKey(req.Name, deployKey.PublicKey, "CommitKube ArgoCD"); err != nil {
+			msg := fmt.Sprintf("add deploy key: %v -- ArgoCD will not be able to clone until the public key is added to the repository", err)
 			fmt.Printf("[BITBUCKET ERROR] %s | repo=%s\n", msg, req.Name)
 			setupWarnings = append(setupWarnings, msg)
 		} else {
-			fmt.Printf("[BITBUCKET OK] deploy key added for %s\n", req.Name)
+			fmt.Printf("[BITBUCKET OK] deploy key %s added for %s\n", deployKey.Fingerprint, req.Name)
 		}
 	}
 
@@ -338,7 +413,7 @@ func CreateRepository(c *fiber.Ctx) error {
 
 	if len(files) > 0 {
 		if err := scmClient.CommitFiles(req.Name, "Initial commit: CommitKube manifests + source", "main", files); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fmt.Sprintf("Failed to commit: %v", err)})
+			return nil, &provisionError{fiber.StatusInternalServerError, fmt.Sprintf("Failed to commit: %v", err)}
 		}
 	}
 
@@ -349,17 +424,27 @@ func CreateRepository(c *fiber.Ctx) error {
 	}
 
 	repoURL := scmClient.CloneURL(bbWorkspace, req.Name)
-	if strings.Contains(bbSSHPrivKey, `\n`) {
-		bbSSHPrivKey = strings.ReplaceAll(bbSSHPrivKey, `\n`, "\n")
-	}
-	if argoURL != "" && argoToken != "" {
+	cloneKey = strings.ReplaceAll(cloneKey, `\n`, "\n")
+	switch {
+	case req.SkipArgoCD:
+		result.ArgoCD = "skipped"
+	case argoURL == "" || argoToken == "":
+		result.ArgoCD = "not_configured"
+		setupWarnings = append(setupWarnings, "ArgoCD: no ArgoCD instance is configured, so no Application was created")
+	default:
+		result.ArgoCD = "configured"
 		argoClient := services.NewArgoCDClient(argoURL, argoToken)
-		if err := argoClient.AddRepository(repoURL, bbSSHPrivKey); err != nil {
-			fmt.Printf("Warning: ArgoCD repo registration failed: %v\n", err)
+		if err := argoClient.AddRepository(repoURL, cloneKey); err != nil {
+			result.ArgoCD = "failed"
+			msg := fmt.Sprintf("ArgoCD: %v", err)
+			fmt.Printf("[ARGOCD ERROR] %s | repo=%s\n", msg, req.Name)
+			setupWarnings = append(setupWarnings, msg)
 		}
-		argoTargetRevision := req.ExtraBranch
-		if err := argoClient.CreateApplication(req.Name, repoURL, argoProject, argoNamespace, argoAppPath, argoTargetRevision); err != nil {
-			fmt.Printf("Warning: ArgoCD app creation failed: %v\n", err)
+		if err := argoClient.CreateApplication(req.Name, repoURL, argoProject, argoNamespace, argoAppPath, req.ExtraBranch); err != nil {
+			result.ArgoCD = "failed"
+			msg := fmt.Sprintf("ArgoCD: %v", err)
+			fmt.Printf("[ARGOCD ERROR] %s | repo=%s\n", msg, req.Name)
+			setupWarnings = append(setupWarnings, msg)
 		}
 	}
 
@@ -373,14 +458,18 @@ func CreateRepository(c *fiber.Ctx) error {
 		UserID:       userID,
 		WorkspaceID:  req.WorkspaceID,
 		Status:       "created",
-		ArgoApp:      req.Name,
+		ArgoApp:      services.AppName(req.Name),
 		Provider:     provider,
 		ProjectKey:   projectKey,
 		GoldenPathID: goldenPathID,
 	}
+	if result.DeployKey != nil {
+		repo.SSHPubKey = result.DeployKey.PublicKey
+		repo.SSHPrivKey = crypto.EncryptField(encKey, result.DeployKey.PrivateKey)
+	}
 	db.DB.Create(&repo)
 
-	db.LogAudit(userID, "create_repository", "repository", req.Name, fmt.Sprintf(`{"provider":"%s","workspace_id":%d}`, provider, req.WorkspaceID), c.IP())
+	db.LogAudit(userID, "create_repository", "repository", req.Name, fmt.Sprintf(`{"provider":"%s","workspace_id":%d}`, provider, req.WorkspaceID), ip)
 
 	TriggerScanBackground(req.Name)
 
@@ -398,11 +487,9 @@ func CreateRepository(c *fiber.Ctx) error {
 		fmt.Sprintf("Repository %s was created by %s", req.Name, db.GetUserEmail(userID)),
 		req.Name, db.GetUserEmail(userID))
 
-	resp := fiber.Map{"message": "Repository created successfully", "repo": repo}
-	if len(setupWarnings) > 0 {
-		resp["warnings"] = setupWarnings
-	}
-	return c.JSON(resp)
+	result.Repo = repo
+	result.Warnings = setupWarnings
+	return result, nil
 }
 
 type ImportRepoRequest struct {
@@ -561,7 +648,7 @@ func DeleteRepository(c *fiber.Ctx) error {
 			if appName == "" {
 				appName = name
 			}
-			if err := argoClient.DeleteApplication(appName); err != nil {
+			if err := argoClient.DeleteApplication(services.AppName(appName)); err != nil {
 				warnings = append(warnings, fmt.Sprintf("ArgoCD: %v", err))
 			}
 		}

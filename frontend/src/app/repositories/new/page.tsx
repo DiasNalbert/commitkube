@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import DeployKeyPanel, { type DeployKey } from "@/app/components/DeployKeyPanel";
 import { apiFetch } from "@/lib/api";
 
 type Template = { id: number; name: string; path: string; content: string; type: string; is_active: boolean };
@@ -13,7 +14,10 @@ type RegistryCred = { id: number; alias: string; host: string; type: string };
 type RepoEntry = { name: string; projectKey: string; files: UploadedFile[]; editedTmpls: Record<number, string>; skippedTmpls: number[] };
 type PreflightFinding = { file: string; type: string; id: string; severity: string; title: string };
 type PreflightResult = { files_checked: number; critical: number; high: number; medium: number; low: number; findings: PreflightFinding[]; scan_error: string };
-type CreateResult = { name: string; status: "pending" | "creating" | "done" | "error"; message: string };
+type CreateResult = {
+  name: string; status: "pending" | "creating" | "done" | "error"; message: string;
+  deployKey?: DeployKey; warnings?: string[]; argocd?: string;
+};
 
 async function readEntry(entry: FileSystemEntry, basePath = ""): Promise<UploadedFile[]> {
   if (entry.isFile) {
@@ -202,6 +206,7 @@ export default function NewRepository() {
     ],
     workspace_id: selectedWorkspaceId > 0 ? selectedWorkspaceId : undefined,
     argocd_instance_id: selectedArgoCDId > 0 ? selectedArgoCDId : undefined,
+    skip_argocd: selectedArgoCDId === 0 ? true : undefined,
     project_key: entry.projectKey || selectedProjectKey || undefined,
     extra_branch: useExtraBranch && extraBranch ? extraBranch : undefined,
     registry_id: selectedRegistryId > 0 ? selectedRegistryId : undefined,
@@ -243,17 +248,26 @@ export default function NewRepository() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to create repo");
-        results[i] = { ...results[i], status: "done", message: res.status === 202 ? "Pending approval" : "Created" };
+        results[i] = {
+          ...results[i], status: "done", message: res.status === 202 ? "Pending approval" : "Created",
+          deployKey: data.deploy_key, warnings: data.warnings, argocd: data.argocd,
+        };
       } catch (err: unknown) {
         results[i] = { ...results[i], status: "error", message: err instanceof Error ? err.message : "Unknown error" };
       }
       setCreateResults([...results]);
     }
 
+    // The keys are shown once, so a finished run stays on this page until the
+    // person has had the chance to save them -- no automatic redirect.
     const anyError = results.some(r => r.status === "error");
+    const anyWarning = results.some(r => (r.warnings?.length ?? 0) > 0);
     if (!anyError) {
-      setMessage(results.length > 1 ? `✅ ${results.length} repositories created successfully!` : "✅ Repository created and ArgoCD configured successfully!");
-      setTimeout(() => { window.location.href = "/"; }, 2500);
+      const n = results.length;
+      setMessage(anyWarning
+        ? `⚠️ ${n > 1 ? `${n} repositories` : "Repository"} created, but some setup steps failed. Check the details below.`
+        : `✅ ${n > 1 ? `${n} repositories` : "Repository"} created. Save the deploy keys below before leaving this page.`);
+      setCreating(false);
     } else {
       setMessage("⚠️ Some repositories could not be created. Check results below.");
       setCreating(false);
@@ -761,6 +775,29 @@ export default function NewRepository() {
                   {r.status === "error" && <span className="text-red-400">✗ {r.message}</span>}
                 </div>
               ))}
+              {createResults.map((r, i) => (r.warnings?.length || r.deployKey || r.argocd) ? (
+                <div key={`detail-${i}`} className="space-y-2 pt-2">
+                  {r.argocd && (
+                    <p className="text-xs text-zinc-500">
+                      <span className="font-mono">{r.name}</span> · ArgoCD:{" "}
+                      <span className={r.argocd === "configured" ? "text-brand-green" : r.argocd === "skipped" ? "text-zinc-400" : "text-amber-500"}>
+                        {{ configured: "connected", failed: "failed", skipped: "skipped", not_configured: "no instance configured" }[r.argocd] ?? r.argocd}
+                      </span>
+                    </p>
+                  )}
+                  {r.warnings?.map((w, j) => (
+                    <p key={j} className="text-xs text-amber-600 dark:text-amber-400 break-words">⚠ {w}</p>
+                  ))}
+                  {r.deployKey && <DeployKeyPanel repo={r.name} deployKey={r.deployKey} />}
+                </div>
+              ) : null)}
+              {!creating && createResults.every(r => r.status === "done") && (
+                <div className="flex justify-end pt-2">
+                  <button type="button" className="btn-secondary" onClick={() => { window.location.href = "/"; }}>
+                    I&apos;ve saved the keys — continue
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
