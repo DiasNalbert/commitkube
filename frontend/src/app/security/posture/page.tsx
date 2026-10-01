@@ -176,7 +176,12 @@ export default function Page() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { loadHistory(days); }, [loadHistory, days]);
+  // Keyed on the assessment as well as the range: the first visit to a
+  // cluster runs its first assessment inside GET /security/posture, so a
+  // history fetched alongside it comes back empty and must be fetched again
+  // once that assessment exists.
+  const assessmentId = data?.assessment?.id;
+  useEffect(() => { loadHistory(days); }, [loadHistory, days, assessmentId]);
   useEffect(() => {
     loadPermissions().then(p => setCanScan(p.size === 0 || p.has(PERMISSIONS.securityScan)));
   }, []);
@@ -195,7 +200,6 @@ export default function Page() {
       if (!res.ok) { setError(body.error ?? `Request failed (${res.status})`); return; }
       setError("");
       setData(body);
-      loadHistory(days);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not reach the API");
     } finally {
