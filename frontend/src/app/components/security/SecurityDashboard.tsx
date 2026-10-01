@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
 import SecurityTimeline from "./SecurityTimeline";
+import { exportFindingsCSV, exportFindingsPDF, type ExportContext } from "@/lib/findings-export";
 
 interface ScanHistoryEntry {
   id: number;
@@ -562,6 +563,25 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                               onChange={e => setSearch(e.target.value)}
                               className="input-tech text-sm py-1 flex-1 min-w-48"
                             />
+                            {(() => {
+                              const ctx: ExportContext = {
+                                repo: detail.repo_name, kind: scanTab === "image" ? "image" : "code",
+                                scannedAt: detail.scanned_at, image: scanTab === "image" ? detail.scanned_image : undefined,
+                                severityFilter, search, total: activeFindings.length,
+                              };
+                              const disabled = filteredFindings.length === 0;
+                              const cls = "px-3 py-1 rounded text-xs font-medium border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition disabled:opacity-40 disabled:cursor-not-allowed";
+                              return (
+                                <div className="flex gap-1" title="Exports the findings shown, with the current filter and search">
+                                  <button type="button" disabled={disabled} className={cls} onClick={() => exportFindingsCSV(filteredFindings, ctx)}>
+                                    Export CSV
+                                  </button>
+                                  <button type="button" disabled={disabled} className={cls} onClick={() => exportFindingsPDF(filteredFindings, ctx)}>
+                                    Export PDF
+                                  </button>
+                                </div>
+                              );
+                            })()}
                           </div>
 
                           {filteredFindings.length === 0 ? (
