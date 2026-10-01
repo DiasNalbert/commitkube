@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
 	"sort"
 	"time"
@@ -42,6 +43,24 @@ func recordScanHistory(r models.ScanResult) {
 		ImageHigh:     r.ImageHigh,
 		ImageMedium:   r.ImageMedium,
 		ImageLow:      r.ImageLow,
+	})
+}
+
+// GetScanStatus is what the dashboards poll to stay live: a version that
+// changes whenever any scan result is written, and nothing else. It is two
+// index lookups, so polling it every few seconds costs nothing, and the
+// dashboard only refetches the expensive endpoints when it moves.
+func GetScanStatus(c *fiber.Ctx) error {
+	var row struct {
+		LastScan  string
+		Results   int64
+		HistoryID uint
+	}
+	db.DB.Model(&models.ScanResult{}).Select("COALESCE(MAX(updated_at), '') AS last_scan, COUNT(*) AS results").Scan(&row)
+	_ = db.DB.Model(&models.ScanHistory{}).Select("COALESCE(MAX(id), 0)").Row().Scan(&row.HistoryID)
+	return c.JSON(fiber.Map{
+		"version":      fmt.Sprintf("%s|%d|%d", row.LastScan, row.Results, row.HistoryID),
+		"last_scan_at": row.LastScan,
 	})
 }
 

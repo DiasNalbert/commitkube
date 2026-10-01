@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { apiFetch } from "@/lib/api";
 import SecurityTimeline from "./SecurityTimeline";
 import { exportFindingsCSV, exportFindingsPDF, type ExportContext } from "@/lib/findings-export";
@@ -236,6 +236,61 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
     load(selectedWsId, selectedProjectKey, 1, repoSearch, true);
   }, [repoSearch]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ---- live refresh ----------------------------------------------------
+  // The page polls a version stamp that moves whenever a scan result is
+  // written (two index lookups on the server), and only then refetches the
+  // totals, the current page, the trend and an open detail. Paused while the
+  // tab is hidden, and checked again the moment it comes back.
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [lastChange, setLastChange] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const versionRef = useRef<string | null>(null);
+  const liveState = useRef({ selectedWsId, selectedProjectKey, page, repoSearch, selected });
+  liveState.current = { selectedWsId, selectedProjectKey, page, repoSearch, selected };
+
+  useEffect(() => {
+    let stopped = false;
+    const check = async () => {
+      if (document.hidden) return;
+      try {
+        const res = await apiFetch("/scan-status");
+        if (!res.ok) return;
+        const { version, last_scan_at } = await res.json();
+        if (stopped || typeof version !== "string") return;
+        // SQLite hands the timestamp back with a space before the time.
+        const at = Date.parse(String(last_scan_at ?? "").replace(" ", "T"));
+        if (!Number.isNaN(at)) setLastChange(at);
+        if (versionRef.current === null) { versionRef.current = version; return; }
+        if (version === versionRef.current) return;
+        versionRef.current = version;
+        const st = liveState.current;
+        load(st.selectedWsId, st.selectedProjectKey, st.page, st.repoSearch, true);
+        setRefreshKey(k => k + 1);
+        if (st.selected) {
+          const d = await apiFetch(`/scan-dashboard/${st.selected}`).then(r => r.json()).catch(() => null);
+          // Only if the same repository is still open.
+          if (d && liveState.current.selected === st.selected) setDetail(d);
+        }
+      } catch { /* a missed poll is retried on the next tick */ }
+    };
+    check();
+    const poll = setInterval(check, 15000);
+    const clock = setInterval(() => setNow(Date.now()), 5000);
+    const onVisible = () => { if (!document.hidden) check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { stopped = true; clearInterval(poll); clearInterval(clock); document.removeEventListener("visibilitychange", onVisible); };
+  }, [load]);
+
+  const liveLabel = (() => {
+    if (lastChange === null) return "Live";
+    const s = Math.max(0, Math.round((now - lastChange) / 1000));
+    if (s < 60) return "Live · last scan just now";
+    const m = Math.round(s / 60);
+    if (m < 60) return `Live · last scan ${m} min ago`;
+    const h = Math.round(m / 60);
+    return h < 48 ? `Live · last scan ${h} h ago` : `Live · last scan ${Math.round(h / 24)} days ago`;
+  })();
+
   const openDetail = async (repoName: string) => {
     if (selected === repoName) { setSelected(null); setDetail(null); return; }
     setSelected(repoName);
@@ -277,7 +332,16 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
   return (
     <div className="p-4 max-w-[1600px] mx-auto space-y-3">
       <header>
-        <h1 className="text-lg font-semibold">{copy.title}</h1>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h1 className="text-lg font-semibold">{copy.title}</h1>
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-zinc-500" title="Refreshes on its own when a scan finishes">
+            <span className="relative flex h-2 w-2" aria-hidden>
+              <span className="absolute inline-flex h-full w-full rounded-full bg-brand-green opacity-60 animate-ping" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-brand-green" />
+            </span>
+            {liveLabel}
+          </span>
+        </div>
         <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{copy.subtitle}</p>
       </header>
 
@@ -341,7 +405,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
         })}
       </div>
 
-      <SecurityTimeline domain={domain} wsId={selectedWsId} projectKey={selectedProjectKey} />
+      <SecurityTimeline domain={domain} wsId={selectedWsId} projectKey={selectedProjectKey} refreshKey={refreshKey} />
 
       {loading ? (
         <div className="text-center py-10 text-brand-green">Loading...</div>

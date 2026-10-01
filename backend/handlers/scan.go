@@ -720,8 +720,11 @@ func GetScanDashboard(c *fiber.Ctx) error {
 		return q
 	}
 
+	// Only the counts are needed here, and the two report columns are the
+	// whole Trivy JSON of every repository -- megabytes per refresh, which
+	// the live dashboard would otherwise pull every time a scan lands.
 	var allResults []models.ScanResult
-	baseQ().Find(&allResults)
+	baseQ().Omit("report", "image_report").Find(&allResults)
 
 	// Three tallies from the same rows. The code and image totals are what the
 	// two security dashboards each show on their own; the combined one is kept
@@ -748,7 +751,7 @@ func GetScanDashboard(c *fiber.Ctx) error {
 	baseQ().Count(&total)
 
 	var results []models.ScanResult
-	baseQ().Order("created_at desc").Offset((page - 1) * limit).Limit(limit).Find(&results)
+	baseQ().Omit("report", "image_report").Order("created_at desc").Offset((page - 1) * limit).Limit(limit).Find(&results)
 
 	pages := int(total) / limit
 	if int(total)%limit > 0 {

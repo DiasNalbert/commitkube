@@ -19,29 +19,41 @@ const SEVERITIES: { key: Sev; label: string; stroke: string }[] = [
   { key: "low",      label: "Low",      stroke: "#22c55e" },
 ];
 
-const RANGES = [30, 90, 180, 365];
+const RANGES = [7, 30, 90, 180, 365];
 
 const fmtDate = (d: string) =>
   new Date(d + "T12:00:00").toLocaleDateString([], { day: "2-digit", month: "short" });
 
-/** Signed change, written so that down reads as the good direction. */
+/** Signed change, written so that down reads as the good direction. Only
+ *  the difference: callers that show a starting value also show where it
+ *  ended, because "765 → ▲ 660" reads as a fall to 660 when it is a rise of
+ *  660. */
 const Delta = ({ from, to }: { from: number; to: number }) => {
   const d = to - from;
   if (d === 0) return <span className="text-zinc-500">no change</span>;
-  const pct = from > 0 ? ` (${d > 0 ? "+" : ""}${Math.round((d / from) * 100)}%)` : "";
+  const pct = from > 0 ? `, ${d > 0 ? "+" : ""}${Math.round((d / from) * 100)}%` : "";
   return (
     <span className={d < 0 ? "text-brand-green" : "text-red-500 dark:text-red-400"}>
-      {d < 0 ? "▼" : "▲"} {Math.abs(d).toLocaleString()}{pct}
+      {d < 0 ? "▼" : "▲"} {d > 0 ? "+" : "−"}{Math.abs(d).toLocaleString()}{pct}
     </span>
   );
 };
+
+const FromTo = ({ from, to }: { from: number; to: number }) => (
+  <>
+    <span className="text-zinc-500">{from.toLocaleString()} → {to.toLocaleString()} </span>
+    <span className="text-zinc-500">(</span><Delta from={from} to={to} /><span className="text-zinc-500">)</span>
+  </>
+);
 
 /** How the totals moved over time, for the repositories the dashboard is
  *  filtered to. One small chart per severity rather than one shared chart:
  *  medium findings outnumber critical ones by an order of magnitude or more,
  *  and on a shared axis the line that matters most would be flat. */
-export default function SecurityTimeline({ domain, wsId, projectKey }: {
+export default function SecurityTimeline({ domain, wsId, projectKey, refreshKey = 0 }: {
   domain: SecurityDomain; wsId: number | null; projectKey: string | null;
+  /** Bumped by the dashboard when a scan finished; refetches without a spinner. */
+  refreshKey?: number;
 }) {
   const [days, setDays] = useState(90);
   const [data, setData] = useState<Timeline | null>(null);
@@ -60,6 +72,20 @@ export default function SecurityTimeline({ domain, wsId, projectKey }: {
       .finally(() => setLoading(false));
   }, [domain, days, wsId, projectKey]);
 
+  // A live refresh keeps what is on screen until the new numbers arrive,
+  // instead of flashing "Loading history…" every time a scan lands.
+  useEffect(() => {
+    if (!refreshKey) return;
+    const params = new URLSearchParams({ domain, days: String(days) });
+    try { params.set("tz", Intl.DateTimeFormat().resolvedOptions().timeZone); } catch { /* UTC */ }
+    if (wsId) params.set("workspace_id", String(wsId));
+    if (projectKey) params.set("project_key", projectKey);
+    apiFetch(`/scan-timeline?${params}`)
+      .then(r => r.json())
+      .then(d => { if (Array.isArray(d?.points)) setData(d); })
+      .catch(() => { /* keep the last good data */ });
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const points = data?.points ?? [];
   // The line starts on the first day anything had been scanned; days before
   // that are not zero vulnerabilities, they are no data.
@@ -67,6 +93,9 @@ export default function SecurityTimeline({ domain, wsId, projectKey }: {
   const series = firstIdx >= 0 ? points.slice(firstIdx) : [];
   const first = series[0];
   const last = series[series.length - 1];
+  // Yesterday's closing numbers, so a fix made today is visible on its own
+  // instead of disappearing into a three-month line.
+  const yesterday = series.length >= 2 ? series[series.length - 2] : undefined;
   const split = data?.split;
 
   return (
@@ -113,9 +142,15 @@ export default function SecurityTimeline({ domain, wsId, projectKey }: {
                 </div>
                 {split ? (
                   <div className="text-[11px] text-right tabular-nums space-y-0.5">
-                    <div title={`The ${split.baseline_repos} repositories tracked since the start of the period`}>
-                      <span className="text-zinc-500">same repos {split.baseline_from[s.key].toLocaleString()} → </span>
-                      <Delta from={split.baseline_from[s.key]} to={split.baseline_to[s.key]} />
+                    {yesterday && (
+                      <div title="Change since the end of yesterday, all repositories">
+                        <span className="text-zinc-500">since yesterday </span>
+                        <Delta from={yesterday[s.key]} to={last[s.key]} />
+                      </div>
+                    )}
+                    <div title={`The ${split.baseline_repos} repositories tracked since the start of the period, compared with themselves`}>
+                      <span className="text-zinc-500">same {split.baseline_repos} repos </span>
+                      <FromTo from={split.baseline_from[s.key]} to={split.baseline_to[s.key]} />
                     </div>
                     {split.added_repos > 0 && (
                       <div className="text-zinc-500" title={`Brought in by the ${split.added_repos} repositories first scanned in this period`}>
@@ -125,8 +160,7 @@ export default function SecurityTimeline({ domain, wsId, projectKey }: {
                   </div>
                 ) : (
                   <div className="text-[11px] text-right tabular-nums">
-                    <span className="text-zinc-500">{first[s.key].toLocaleString()} → </span>
-                    <Delta from={first[s.key]} to={last[s.key]} />
+                    <FromTo from={first[s.key]} to={last[s.key]} />
                   </div>
                 )}
                 <div className="h-20 mt-1">
