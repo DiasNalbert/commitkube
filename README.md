@@ -153,6 +153,8 @@ O ClusterRole precisa de `get`/`list`/`watch` em: `pods`, `nodes`,
 `rolebindings` e `clusterrolebindings` (rbac.authorization.k8s.io) -- sem elas
 a avaliação falha inteira, em vez de reportar as regras de RBAC como aprovadas.
 Além disso: `pods/log` e `nodes/proxy` com `get`,
+`secrets` com `update` (editar valores pela página de Secrets; sem ela a
+página fica só leitura e o Save mostra o erro do cluster),
 `pods` com `delete` e `*/scale` com `get`/`update` (restart e scale pela
 página de Pods), e `metrics.k8s.io` com `get`/`list`.
 

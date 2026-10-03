@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { searchSecrets } from "@/lib/secret-search";
 import { apiFetch } from "@/lib/api";
 import { loadPermissions, PERMISSIONS } from "@/lib/permissions";
 import { useSidebarWidth } from "@/app/components/Sidebar";
@@ -87,6 +88,8 @@ export default function SecretsPage() {
   const [addingTo, setAddingTo] = useState("");
   const [copied, setCopied] = useState("");
   const [newKey, setNewKey] = useState("");
+  // Secrets whose non-matching keys the user asked to see during a search.
+  const [showAllKeys, setShowAllKeys] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     loadPermissions().then(p => setCanWrite(p.size === 0 || p.has(PERMISSIONS.secretsWrite)));
@@ -134,7 +137,9 @@ export default function SecretsPage() {
     setRevealedKeys({});
   }
 
-  async function revealKey(secretName: string, secretNamespace: string, key: string) {
+  /** Returns the value, so a caller can use it right away -- state set here
+   *  is not visible to the caller until the next render. */
+  async function revealKey(secretName: string, secretNamespace: string, key: string): Promise<string | undefined> {
     const mapKey = `${secretNamespace}/${secretName}/${key}`;
     setRevealLoading(prev => ({ ...prev, [mapKey]: true }));
     const res = await apiFetch("/secrets/reveal", {
@@ -142,13 +147,18 @@ export default function SecretsPage() {
       body: JSON.stringify({ password, namespace: secretNamespace, name: secretName, key }),
     });
     setRevealLoading(prev => ({ ...prev, [mapKey]: false }));
-    if (!res.ok) return;
+    if (!res.ok) return undefined;
     const j = await res.json();
     setRevealedKeys(prev => ({ ...prev, [mapKey]: j.value }));
+    return j.value;
   }
 
   async function saveKey(secretName: string, secretNamespace: string, key: string, acknowledge = false, allowNew = false) {
     const mapKey = `${secretNamespace}/${secretName}/${key}`;
+    if (!acknowledge && (draft[mapKey] ?? "") === "" &&
+        !confirm(`Save an empty value for ${key}? Whatever reads it will get an empty string.`)) {
+      return;
+    }
     setSaveError(prev => ({ ...prev, [mapKey]: "" }));
     setSaving(prev => ({ ...prev, [mapKey]: true }));
 
@@ -214,26 +224,13 @@ export default function SecretsPage() {
 
   const q = search.toLowerCase();
 
-  const filteredExternal = useMemo(() => {
-    if (!data) return [];
-    if (!q) return data.external_secrets;
-    return data.external_secrets.filter(es =>
-      es.name.toLowerCase().includes(q) ||
-      es.namespace.toLowerCase().includes(q) ||
-      es.store.toLowerCase().includes(q) ||
-      es.keys.some(k => k.toLowerCase().includes(q))
-    );
-  }, [data, q]);
-
-  const filteredK8s = useMemo(() => {
-    if (!data) return [];
-    if (!q) return data.kubernetes_secrets;
-    return data.kubernetes_secrets.filter(s =>
-      s.name.toLowerCase().includes(q) ||
-      s.namespace.toLowerCase().includes(q) ||
-      s.keys.some(k => k.toLowerCase().includes(q))
-    );
-  }, [data, q]);
+  const filteredExternal = useMemo(
+    () => searchSecrets((data?.external_secrets ?? []).map(es => ({ ...es, extra: [es.store] })), q),
+    [data, q],
+  );
+  const filteredK8s = useMemo(() => searchSecrets(data?.kubernetes_secrets ?? [], q), [data, q]);
+  const keysToShow = (m: { item: { namespace: string; name: string; keys: string[] }; keys: string[] }) =>
+    showAllKeys[`${m.item.namespace}/${m.item.name}`] ? [...m.item.keys].sort((a, b) => a.localeCompare(b)) : m.keys;
 
   const badgeColor = (type: string) => {
     if (type.includes("service-account")) return "bg-blue-500/15 text-blue-400 border-blue-500/30";
@@ -373,7 +370,7 @@ export default function SecretsPage() {
                 {search ? `No ExternalSecrets matching "${search}"` : "No ExternalSecrets found"}
               </div>
             )}
-            {filteredExternal.map(es => (
+            {filteredExternal.map(m => { const es = m.item; return (
               <div key={`${es.namespace}/${es.name}`} className="glass-panel rounded-xl border border-brand-green/15 p-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex items-center gap-3 min-w-0">
@@ -393,15 +390,16 @@ export default function SecretsPage() {
                 </div>
                 {es.keys.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-1.5">
-                    {es.keys.map(k => (
+                    {keysToShow(m).map(k => (
                       <span key={k} className="text-xs bg-zinc-100 dark:bg-zinc-800 border border-[var(--input-border)] text-zinc-700 dark:text-zinc-300 px-2 py-0.5 rounded font-mono">
                         {k}
                       </span>
                     ))}
+                    <HiddenKeysToggle hidden={m.hidden} id={`${es.namespace}/${es.name}`} showAll={showAllKeys} setShowAll={setShowAllKeys} />
                   </div>
                 )}
               </div>
-            ))}
+            ); })}
           </div>
         )}
 
@@ -413,7 +411,7 @@ export default function SecretsPage() {
                 {search ? `No Secrets matching "${search}"` : "No Secrets found"}
               </div>
             )}
-            {filteredK8s.map(s => (
+            {filteredK8s.map(m => { const s = m.item; return (
               <div key={`${s.namespace}/${s.name}`} className="glass-panel rounded-xl border border-[var(--card-border)] p-4">
                 <div className="flex items-start justify-between gap-4 mb-3">
                   <div className="flex items-center gap-3 min-w-0">
@@ -430,12 +428,13 @@ export default function SecretsPage() {
                   </span>
                 </div>
                 <div className="space-y-1.5">
-                  {s.keys.map(key => {
+                  {keysToShow(m).map(key => {
                     const mapKey = `${s.namespace}/${s.name}/${key}`;
                     const revealed = revealedKeys[mapKey];
                     const rLoading = revealLoading[mapKey];
                     return (
-                      <div key={key} className="flex items-center gap-2 bg-zinc-100 dark:bg-zinc-900/60 rounded-lg px-3 py-2">
+                      <div key={key}>
+                      <div className="flex items-center gap-2 bg-zinc-100 dark:bg-zinc-900/60 rounded-lg px-3 py-2">
                         <span className="text-xs font-mono text-zinc-600 dark:text-zinc-400 w-40 shrink-0 truncate">{key}</span>
                         {editing[mapKey] ? (
                           <input
@@ -467,8 +466,12 @@ export default function SecretsPage() {
                         {canWrite && !editing[mapKey] && (
                           <button
                             onClick={async () => {
-                              if (revealed === undefined) await revealKey(s.name, s.namespace, key);
-                              setDraft(prev => ({ ...prev, [mapKey]: revealedKeys[mapKey] ?? "" }));
+                              const current = revealed !== undefined ? revealed : await revealKey(s.name, s.namespace, key);
+                              setDraft(prev => ({ ...prev, [mapKey]: current ?? "" }));
+                              setSaveError(prev => ({
+                                ...prev,
+                                [mapKey]: current === undefined ? "the current value could not be read: what you type replaces it" : "",
+                              }));
                               setEditing(prev => ({ ...prev, [mapKey]: true }));
                             }}
                             title="Edit value"
@@ -483,15 +486,25 @@ export default function SecretsPage() {
                               className="text-xs text-brand-green hover:opacity-80 shrink-0 disabled:opacity-40">
                               {saving[mapKey] ? "…" : "Save"}
                             </button>
-                            <button onClick={() => setEditing(prev => { const n = { ...prev }; delete n[mapKey]; return n; })}
+                            <button onClick={() => {
+                                setEditing(prev => { const n = { ...prev }; delete n[mapKey]; return n; });
+                                setSaveError(prev => ({ ...prev, [mapKey]: "" }));
+                              }}
                               className="text-xs text-zinc-500 hover:text-zinc-300 shrink-0">
                               Cancel
                             </button>
                           </>
                         )}
                       </div>
+                      {/* Until this existed a refused write said nothing at
+                          all, and looked like a Save button that did not work. */}
+                      {saveError[mapKey] && (
+                        <p className="text-xs text-red-500 px-3 pt-1 break-words">{saveError[mapKey]}</p>
+                      )}
+                      </div>
                     );
                   })}
+                  <HiddenKeysToggle hidden={m.hidden} id={`${s.namespace}/${s.name}`} showAll={showAllKeys} setShowAll={setShowAllKeys} />
                 </div>
 
                 <div className="flex flex-wrap items-center gap-3 mt-2">
@@ -542,7 +555,7 @@ export default function SecretsPage() {
                   )
                 )}
               </div>
-            ))}
+            ); })}
           </div>
         )}
       </div>
@@ -553,5 +566,22 @@ export default function SecretsPage() {
         </p>
       )}
     </main>
+  );
+}
+
+/** During a search, a Secret shows only its matching keys; this says how many
+ *  were left out and brings them back on request. */
+function HiddenKeysToggle({ hidden, id, showAll, setShowAll }: {
+  hidden: number; id: string;
+  showAll: Record<string, boolean>;
+  setShowAll: (f: (prev: Record<string, boolean>) => Record<string, boolean>) => void;
+}) {
+  if (hidden <= 0) return null;
+  const open = !!showAll[id];
+  return (
+    <button type="button" onClick={() => setShowAll(prev => ({ ...prev, [id]: !open }))}
+      className="text-xs text-zinc-500 hover:text-brand-green transition px-1">
+      {open ? "show matching keys only" : `+${hidden} other key${hidden === 1 ? "" : "s"}`}
+    </button>
   );
 }
