@@ -246,6 +246,22 @@ func main() {
 		AllowCredentials: allowOrigins != "*",
 	}))
 
+	// The API answers in JSON and is never meant to be rendered, framed or
+	// cached. Saying so costs nothing, and no-store matters most for the
+	// vault: sealed blobs and tokens have no business in a shared cache or
+	// the browser's disk cache after the tab is closed.
+	app.Use(func(c *fiber.Ctx) error {
+		c.Set("X-Content-Type-Options", "nosniff")
+		c.Set("X-Frame-Options", "DENY")
+		c.Set("Referrer-Policy", "no-referrer")
+		c.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		err := c.Next()
+		if len(c.Response().Header.Peek("Cache-Control")) == 0 {
+			c.Set("Cache-Control", "no-store")
+		}
+		return err
+	})
+
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"message": "Welcome to CommitKube API"})
 	})
