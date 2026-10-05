@@ -17,6 +17,14 @@ var JWTSecret = func() []byte {
 	return []byte(s)
 }()
 
+// AccessTokenType marks the one kind of token that is a sign-in. Everything
+// else signed with JWTSecret -- the stage tickets handed out between the
+// password and the MFA code -- carries a user_id too, and was accepted here as
+// though it were a session: a password alone was enough to call the API as
+// that person. The check is on what a token says it is, not on what it lacks,
+// so a token type added later is refused until someone decides otherwise.
+const AccessTokenType = "access"
+
 func AuthRequired() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tokenString := ""
@@ -45,7 +53,7 @@ func AuthRequired() fiber.Handler {
 		}
 
 		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
+		if !ok || claims["typ"] != AccessTokenType {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token claims"})
 		}
 

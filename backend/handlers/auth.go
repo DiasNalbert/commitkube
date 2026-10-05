@@ -30,6 +30,7 @@ type MFARequest struct {
 
 func issueTokens(user models.User) (string, string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"typ":     middleware.AccessTokenType,
 		"user_id": user.ID,
 		"role":    user.Role,
 		"exp":     time.Now().Add(time.Hour).Unix(),
@@ -153,6 +154,7 @@ func RefreshTokenHandler(c *fiber.Ctx) error {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"typ":     middleware.AccessTokenType,
 		"user_id": user.ID,
 		"role":    user.Role,
 		"exp":     time.Now().Add(time.Hour).Unix(),
