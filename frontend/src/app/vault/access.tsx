@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { deliverPendingKeys, shareVault, vaultFetch, type VaultSummary } from "@/lib/vault-session";
+import { deliverKeys, shareVault, vaultFetch, type PendingKey, type VaultSummary } from "@/lib/vault-session";
 import {
-  btnClass, errorText, IconTrash, IconUser, IconUsers, inputClass, selectClass,
+  btnClass, btnPrimary, errorText, IconTrash, IconUser, IconUsers, inputClass, selectClass,
 } from "./ui";
 
 export type Role = "writer" | "reader";
@@ -128,11 +128,89 @@ export function GroupPicker({ groups, exclude, onPick }: {
   );
 }
 
+/** The people a group says should have a vault, waiting for someone holding
+ *  its key to seal them a copy. Nothing goes out until it is ticked here.
+ *
+ *  Group membership is edited by whoever holds user.manage, not by the vault
+ *  owner. Without this step, anyone able to edit a group could add
+ *  themselves to it and be handed the key on the owner's next unlock. Each
+ *  row shows the fingerprint of the key that would be sealed to, so a key
+ *  the server swapped in has a chance of being noticed. */
+export function KeyReview({ pending, vaults, onDone }: {
+  pending: PendingKey[];
+  vaults: VaultSummary[];
+  onDone: () => void;
+}) {
+  const id = (p: PendingKey) => `${p.vault_uuid}:${p.user_id}`;
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const toggle = (p: PendingKey) => setChosen(prev => {
+    const next = new Set(prev);
+    if (next.has(id(p))) next.delete(id(p)); else next.add(id(p));
+    return next;
+  });
+
+  async function seal() {
+    setBusy(true);
+    setError("");
+    try {
+      const failed = await deliverKeys(vaults, pending.filter(p => chosen.has(id(p))));
+      if (failed.length) setError(`Could not seal a key for ${failed.join(", ")}.`);
+      setChosen(new Set());
+      onDone();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (pending.length === 0) return null;
+  return (
+    <div className="border border-amber-500/40 bg-amber-500/5 rounded p-3 space-y-2">
+      <p className="text-sm font-medium">
+        {pending.length === 1 ? "1 person is" : `${pending.length} people are`} waiting for a vault key
+      </p>
+      <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+        They are in a group that was given the vault. Group membership is managed in IAM, not
+        here, so check each person should really have it before sealing their key. If one
+        should not, leave them unticked and have them taken out of the group.
+      </p>
+      <div className="space-y-1">
+        {pending.map(p => (
+          <label key={id(p)} className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={chosen.has(id(p))} onChange={() => toggle(p)} />
+            <span className="flex-1 min-w-0 truncate">
+              <span className="font-medium">{p.email}</span>
+              <span className="text-zinc-500"> → {p.vault_name} · via {p.group || "a group"} · {p.role === "writer" ? "can edit" : "can read"}</span>
+            </span>
+            <code className="text-[10px] text-zinc-400 font-mono" title="Fingerprint of the key that will be sealed to">
+              {p.fingerprint.slice(0, 16)}
+            </code>
+          </label>
+        ))}
+      </div>
+      {error && <p className="text-sm text-red-500">{error}</p>}
+      <div className="flex items-center gap-2">
+        <button className={btnPrimary} disabled={busy || chosen.size === 0} onClick={seal}>
+          {busy ? "Sealing…" : chosen.size ? `Seal ${chosen.size} key${chosen.size === 1 ? "" : "s"}` : "Seal keys"}
+        </button>
+        <button type="button" className="text-[11px] text-zinc-500 hover:text-brand-green"
+          onClick={() => setChosen(new Set(pending.map(id)))}>Select all</button>
+      </div>
+    </div>
+  );
+}
+
 /** Who can use a team vault, and how. Anyone in the vault can see this; only
  *  the owner, holding vault.share, can change it. */
-export function AccessPanel({ vault, canShare, onClose, onChanged }: {
+export function AccessPanel({ vault, canShare, pending, onClose, onChanged }: {
   vault: VaultSummary;
   canShare: boolean;
+  /** Keys waiting for this vault, from the page's queue. */
+  pending: PendingKey[];
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -188,10 +266,11 @@ export function AccessPanel({ vault, canShare, onClose, onChanged }: {
     run(async () => { await call(`/vaults/${vault.uuid}/members/${m.user_id}`, { method: "DELETE" }); });
   };
 
+  // Giving a group access seals nothing by itself: its members appear in
+  // the review below, to be approved one by one.
   const addGroup = (g: GroupEntry) => run(async () => {
     await call(`/vaults/${vault.uuid}/groups`, { method: "POST", body: JSON.stringify({ group_id: g.id, role: newRole }) });
-    const n = await deliverPendingKeys([vault]);
-    setNote(n ? `Keys sealed for ${n} member${n === 1 ? "" : "s"} of ${g.name}.` : "");
+    setNote(`${g.name} has access. Approve its members below to seal their keys.`);
   });
   const setGroupRole = (g: GroupAccess, role: Role) =>
     run(async () => { await call(`/vaults/${vault.uuid}/groups`, { method: "POST", body: JSON.stringify({ group_id: g.group_id, role }) }); });
@@ -199,14 +278,9 @@ export function AccessPanel({ vault, canShare, onClose, onChanged }: {
     if (!confirm(`Remove ${g.name}? Everyone who has this vault only through that group loses their key. People added by name keep theirs.`)) return;
     run(async () => { await call(`/vaults/${vault.uuid}/groups/${g.group_id}`, { method: "DELETE" }); });
   };
-  const deliverNow = () => run(async () => {
-    const n = await deliverPendingKeys([vault]);
-    setNote(n ? `Keys sealed for ${n} more ${n === 1 ? "person" : "people"}.` : "Nobody was waiting on a key you can seal.");
-  });
 
   const memberIDs = new Set(members.map(m => m.user_id));
   const grantedIDs = new Set(access.map(a => a.group_id));
-  const waiting = access.reduce((n, a) => n + a.awaiting_key.length, 0);
 
   return (
     <div className="glass-card p-4 space-y-4">
@@ -252,8 +326,8 @@ export function AccessPanel({ vault, canShare, onClose, onChanged }: {
             )}
           </div>
         ))}
-        {manage && waiting > 0 && (
-          <button className={btnClass} disabled={busy} onClick={deliverNow}>Seal waiting keys now</button>
+        {manage && (
+          <KeyReview pending={pending} vaults={[vault]} onDone={() => { load(); onChanged(); }} />
         )}
       </section>
 

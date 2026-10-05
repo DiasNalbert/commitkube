@@ -60,6 +60,8 @@ export interface PendingKey {
   public_key: string;
   fingerprint: string;
   group_id: number;
+  group: string;
+  vault_name: string;
   role: "writer" | "reader";
 }
 
@@ -380,26 +382,30 @@ export async function shareVault(
   if (!res.ok) throw await errorOf(res, "could not share the vault");
 }
 
-/** Seals a key for everyone a group entitles who does not hold one yet. The
- *  server can record that a group was given a vault but cannot act on it --
- *  this is the browser carrying the decision out, and it runs on every
- *  unlock so people who join a group later get the vault without anyone
- *  having to remember them. Returns how many keys were delivered. */
-export async function deliverPendingKeys(vaults: VaultSummary[]): Promise<number> {
+/** Who a group entitles to a vault the caller can hand keys to, and who does
+ *  not hold a key yet. Nothing is sealed here: the list is shown, and a key
+ *  goes only to the people the person approves. */
+export async function fetchPendingKeys(): Promise<PendingKey[]> {
   const res = await vaultFetch("/vault/pending-keys");
-  if (!res.ok) return 0;
-  const pending: PendingKey[] = await res.json();
-  let delivered = 0;
-  for (const p of pending) {
+  if (!res.ok) return [];
+  return res.json();
+}
+
+/** Seals a key for each approved entry. The server can record that a group
+ *  was given a vault but cannot act on it; this is the browser carrying out
+ *  the decision, one person at a time, for exactly the people chosen.
+ *  Returns the emails that could not be sealed, if any. */
+export async function deliverKeys(vaults: VaultSummary[], approved: PendingKey[]): Promise<string[]> {
+  const failed: string[] = [];
+  for (const p of approved) {
     const v = vaults.find(x => x.uuid === p.vault_uuid && !x.pending);
-    if (!v) continue;
     try {
+      if (!v) throw new Error("vault not loaded");
       await shareVault(v, p, p.role, p.group_id);
-      delivered++;
     } catch {
-      // One recipient whose key will not seal must not stop the others. The
-      // sharing panel lists whoever is still waiting.
+      // One recipient whose key will not seal must not stop the others.
+      failed.push(p.email);
     }
   }
-  return delivered;
+  return failed;
 }

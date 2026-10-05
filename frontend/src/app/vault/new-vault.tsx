@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import {
-  createVault, deliverPendingKeys, myFingerprint, shareVault, vaultFetch, type VaultSummary,
+  createVault, myFingerprint, shareVault, vaultFetch, type VaultSummary,
 } from "@/lib/vault-session";
 import { btnClass, btnPrimary, errorText, Field, IconTrash, IconUser, IconUsers, inputClass } from "./ui";
 import {
@@ -51,7 +51,6 @@ export function NewVault({ myPublicKey, canShare, onCreated, onCancel }: {
             throw new Error(j.error || `could not give ${g.name} access`);
           }
         }
-        await deliverPendingKeys([v]);
       }
       onCreated(uuid);
     } catch (err) {
@@ -130,6 +129,8 @@ export function NewVault({ myPublicKey, canShare, onCreated, onCancel }: {
           </div>
           <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
             You are the owner. Everyone else gets the role you pick here; it can be changed later.
+            People named here get their key straight away. Members of a group are listed for you
+            to approve first, since group membership is managed in IAM rather than by you.
           </p>
         </div>
       )}

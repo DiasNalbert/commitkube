@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { loadPermissions, PERMISSIONS } from "@/lib/permissions";
 import { openOverview } from "@/lib/vault-crypto";
 import {
-  deliverPendingKeys,
   ensurePersonalVault,
+  fetchPendingKeys,
   fetchKeyring,
   fetchVaultStatus,
   hasVaultSession,
@@ -17,13 +17,14 @@ import {
   vaultFetch,
   vaultKey,
   type Keyring,
+  type PendingKey,
   type VaultStatus,
   type VaultSummary,
 } from "@/lib/vault-session";
 import { btnClass, btnPrimary, errorText, IconPlus, IconShield, IconTrash, IconUser, IconUsers, inputClass } from "./ui";
 import { ChangePassphrase, CodePanel, MFASetupPanel, SetupPanel, UnlockPanel } from "./gate";
 import { ItemCard, ItemEditor, typeOf, type DecryptedItem, type ItemRow } from "./items";
-import { AccessPanel } from "./access";
+import { AccessPanel, KeyReview } from "./access";
 import { NewVault } from "./new-vault";
 
 const roleLabel = (r: VaultSummary["role"]) => (r === "owner" ? "owner" : r === "writer" ? "can edit" : "can read");
@@ -61,7 +62,8 @@ export default function VaultPage() {
   const [changingPass, setChangingPass] = useState(false);
   const [perms, setPerms] = useState({ create: false, edit: false, share: false });
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [pendingKeys, setPendingKeys] = useState<PendingKey[]>([]);
+  const [reviewing, setReviewing] = useState(false);
 
   const refreshStatus = useCallback(() => {
     fetchVaultStatus().then(setStatus).catch(e => setError(errorText(e)));
@@ -98,27 +100,27 @@ export default function VaultPage() {
     if (unlocked && !keyring) fetchKeyring().then(setKeyring).catch(e => setError(errorText(e)));
   }, [unlocked, keyring]);
 
-  // After every unlock: make sure the personal vault exists, then hand out
-  // any keys a group is owed. Both need a browser holding keys, so this is
-  // the moment they can happen.
+  // Keys a group says somebody is owed. Only listed, never sealed here: the
+  // person has to approve each one (see KeyReview).
+  const loadPending = useCallback(async () => {
+    if (!perms.share) return setPendingKeys([]);
+    setPendingKeys(await fetchPendingKeys());
+  }, [perms.share]);
+
+  // After every unlock: make sure the personal vault exists, and find out
+  // who is waiting for a key. Both need a browser holding keys.
   useEffect(() => {
     if (!unlocked || !keyring) return;
     (async () => {
       try {
-        let list = await loadVaults();
-        if (await ensurePersonalVault(list, keyring.public_key)) list = await loadVaults();
-        if (perms.share) {
-          const n = await deliverPendingKeys(list);
-          if (n > 0) {
-            setNotice(`Sealed vault keys for ${n} new team member${n === 1 ? "" : "s"}.`);
-            await loadVaults();
-          }
-        }
+        const list = await loadVaults();
+        if (await ensurePersonalVault(list, keyring.public_key)) await loadVaults();
+        await loadPending();
       } catch (e) {
         setError(errorText(e));
       }
     })();
-  }, [unlocked, keyring, perms.share, loadVaults]);
+  }, [unlocked, keyring, loadVaults, loadPending]);
 
   const activeVault = useMemo(() => vaults.find(v => v.uuid === active), [vaults, active]);
 
@@ -284,16 +286,33 @@ export default function VaultPage() {
             </aside>
 
             <section className="space-y-3 min-w-0">
-              {notice && (
-                <p className="text-sm text-brand-green flex items-center justify-between">
-                  {notice}
-                  <button className="text-[11px] text-zinc-500" onClick={() => setNotice("")}>dismiss</button>
-                </p>
+              {pendingKeys.length > 0 && !reviewing && (
+                <div className="flex items-center justify-between gap-2 border border-amber-500/40 bg-amber-500/5 rounded px-3 py-2">
+                  <p className="text-sm">
+                    {pendingKeys.length === 1 ? "1 person is" : `${pendingKeys.length} people are`} waiting
+                    for a key to a team vault you can share.
+                  </p>
+                  <button className={btnClass} onClick={() => setReviewing(true)}>Review</button>
+                </div>
+              )}
+              {reviewing && (
+                <div className="glass-card p-3 space-y-2">
+                  <div className="flex justify-end">
+                    <button className={btnClass} onClick={() => setReviewing(false)}>Close</button>
+                  </div>
+                  <KeyReview pending={pendingKeys} vaults={vaults}
+                    onDone={async () => {
+                      await loadVaults();
+                      const left = await fetchPendingKeys();
+                      setPendingKeys(left);
+                      if (left.length === 0) setReviewing(false);
+                    }} />
+                </div>
               )}
 
               {creating && keyring && (
                 <NewVault myPublicKey={keyring.public_key} canShare={perms.share}
-                  onCreated={async uuid => { setCreating(false); await loadVaults(); setActive(uuid); }}
+                  onCreated={async uuid => { setCreating(false); await loadVaults(); setActive(uuid); await loadPending(); }}
                   onCancel={() => setCreating(false)} />
               )}
 
@@ -339,7 +358,9 @@ export default function VaultPage() {
 
                   {sharing && activeVault.kind === "team" && (
                     <AccessPanel vault={activeVault} canShare={perms.share}
-                      onClose={() => setSharing(false)} onChanged={loadVaults} />
+                      pending={pendingKeys.filter(p => p.vault_uuid === activeVault.uuid)}
+                      onClose={() => setSharing(false)}
+                      onChanged={() => { loadVaults(); loadPending(); }} />
                   )}
 
                   <div className="flex flex-wrap items-center gap-2">

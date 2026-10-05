@@ -862,8 +862,11 @@ func RemoveVaultGroupAccess(c *fiber.Ctx) error {
 
 // ListPendingVaultKeys is the work queue for the caller's browser: everyone
 // a group entitles to a vault the caller can hand keys out for, who has
-// enrolled, and who does not hold a key yet. The browser seals one key per
-// row and posts it back through AddVaultMember.
+// enrolled, and who does not hold a key yet. The browser shows the list and
+// seals a key only for the rows the person approves -- group membership is
+// managed by whoever holds user.manage, and without that review anyone who
+// can edit a group could add themselves to it and be handed the key on the
+// owner's next unlock.
 func ListPendingVaultKeys(c *fiber.Ctx) error {
 	userID := currentUserID(c)
 	var mine []models.VaultMember
@@ -876,6 +879,8 @@ func ListPendingVaultKeys(c *fiber.Ctx) error {
 		PublicKey   string `json:"public_key"`
 		Fingerprint string `json:"fingerprint"`
 		GroupID     uint   `json:"group_id"`
+		Group       string `json:"group"`
+		VaultName   string `json:"vault_name"`
 		Role        string `json:"role"`
 	}
 	out := []entry{}
@@ -891,6 +896,8 @@ func ListPendingVaultKeys(c *fiber.Ctx) error {
 		db.DB.Where("vault_id = ?", v.ID).Find(&grants)
 		queued := map[uint]bool{}
 		for _, g := range grants {
+			var group models.UserGroup
+			db.DB.First(&group, g.GroupID)
 			var userIDs []uint
 			db.DB.Model(&models.UserGroupMember{}).Where("group_id = ?", g.GroupID).Pluck("user_id", &userIDs)
 			for _, uid := range userIDs {
@@ -910,7 +917,7 @@ func ListPendingVaultKeys(c *fiber.Ctx) error {
 				out = append(out, entry{
 					VaultUUID: v.UUID, UserID: uid, Email: db.GetUserEmail(uid),
 					PublicKey: kr.PublicKey, Fingerprint: kr.Fingerprint,
-					GroupID: g.GroupID, Role: g.Role,
+					GroupID: g.GroupID, Group: group.Name, VaultName: v.Name, Role: g.Role,
 				})
 			}
 		}
