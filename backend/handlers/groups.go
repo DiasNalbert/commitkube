@@ -144,6 +144,9 @@ func DeleteGroup(c *fiber.Ctx) error {
 	// so rather than deleting something nobody asked to delete.
 	db.DB.Where("subject_type = ? AND subject_id = ?", "group", gID).Delete(&models.PermissionGrant{})
 	db.DB.Where("subject_type = ? AND subject_id = ?", "group", gID).Delete(&models.NamespaceScope{})
+	// Vault keys the group handed out go with it. The ciphertext they read
+	// is not un-read, the same as removing a member by hand.
+	RevokeGroupVaultKeys(g.ID, nil)
 	return c.JSON(fiber.Map{"message": "group deleted"})
 }
 
@@ -194,6 +197,10 @@ func RemoveGroupMember(c *fiber.Ctx) error {
 	result := db.DB.Where("group_id = ? AND user_id = ?", groupID, userID).Delete(&models.UserGroupMember{})
 	if result.RowsAffected == 0 {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "member not found in group"})
+	}
+	if gid, err := strconv.ParseUint(groupID, 10, 64); err == nil {
+		uid := uint(userID)
+		RevokeGroupVaultKeys(uint(gid), &uid)
 	}
 	return c.JSON(fiber.Map{"message": "member removed"})
 }

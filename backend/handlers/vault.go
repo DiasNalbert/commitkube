@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -66,11 +67,57 @@ func vaultFor(c *fiber.Ctx, userID uint) (*models.Vault, *models.VaultMember, bo
 		return nil, nil, false
 	}
 	var m models.VaultMember
-	if err := db.DB.Where("vault_id = ? AND user_id = ?", v.ID, userID).First(&m).Error; err != nil {
+	if err := db.DB.Where("vault_id = ? AND user_id = ?", v.ID, userID).First(&m).Error; err != nil ||
+		!groupMembershipHolds(&m) {
 		_ = c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "vault not found"})
 		return nil, nil, false
 	}
 	return &v, &m, true
+}
+
+// callerHolds answers an IAM question from inside a handler, for the routes
+// whose requirement depends on the request: creating a team vault needs more
+// than creating a personal one.
+func callerHolds(c *fiber.Ctx, permission string) bool {
+	role, _ := c.Locals("role").(string)
+	return permissionsFor(currentUserID(c), role)[permission]
+}
+
+// groupMembershipHolds checks that somebody who is in a vault because of a
+// group still is in that group, and that the group still has the vault. When
+// either has gone the sealed key is deleted on the spot. Doing it at the door
+// rather than only when a group changes is what keeps it true whichever path
+// the change took -- an IAM edit, a deleted group, a database restored from
+// before either.
+func groupMembershipHolds(m *models.VaultMember) bool {
+	if m.ViaGroupID == nil {
+		return true
+	}
+	var grants, inGroup int64
+	db.DB.Model(&models.VaultGroupAccess{}).
+		Where("vault_id = ? AND group_id = ?", m.VaultID, *m.ViaGroupID).Count(&grants)
+	db.DB.Model(&models.UserGroupMember{}).
+		Where("group_id = ? AND user_id = ?", *m.ViaGroupID, m.UserID).Count(&inGroup)
+	if grants > 0 && inGroup > 0 {
+		return true
+	}
+	db.DB.Delete(m)
+	return false
+}
+
+// RevokeGroupVaultKeys deletes the sealed keys a group handed out: every one
+// when the group itself is gone, or one person's when they leave it. Called
+// from the group handlers so the change is immediate rather than waiting for
+// the person's next request to find it.
+func RevokeGroupVaultKeys(groupID uint, userID *uint) {
+	q := db.DB.Where("via_group_id = ?", groupID)
+	if userID != nil {
+		q = q.Where("user_id = ?", *userID)
+	}
+	q.Delete(&models.VaultMember{})
+	if userID == nil {
+		db.DB.Where("group_id = ?", groupID).Delete(&models.VaultGroupAccess{})
+	}
 }
 
 // ---- keyring --------------------------------------------------------------
@@ -267,50 +314,85 @@ func ListVaultPublicKeys(c *fiber.Ctx) error {
 
 // ---- vaults ---------------------------------------------------------------
 
+// ListVaults returns the vaults the caller holds a key for, and after them
+// the ones a group has given them but nobody has sealed a key for yet. Those
+// come without a key, flagged as waiting: saying "your team has a vault, the
+// next owner to unlock will hand you its key" beats a vault that is simply
+// missing until then.
 func ListVaults(c *fiber.Ctx) error {
 	userID := currentUserID(c)
 	var members []models.VaultMember
 	db.DB.Where("user_id = ?", userID).Find(&members)
-	if len(members) == 0 {
-		return c.JSON([]any{})
-	}
 	ids := make([]uint, 0, len(members))
 	byVault := map[uint]models.VaultMember{}
-	for _, m := range members {
-		ids = append(ids, m.VaultID)
-		byVault[m.VaultID] = m
+	for i := range members {
+		if !groupMembershipHolds(&members[i]) {
+			continue
+		}
+		ids = append(ids, members[i].VaultID)
+		byVault[members[i].VaultID] = members[i]
 	}
-	var vaults []models.Vault
-	db.DB.Where("id IN ?", ids).Order("kind, name").Find(&vaults)
 
-	encKey := crypto.MasterKey()
 	type entry struct {
 		UUID        string `json:"uuid"`
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		Kind        string `json:"kind"`
-		GroupID     *uint  `json:"group_id"`
 		Role        string `json:"role"`
 		WrappedKey  string `json:"wrapped_key"`
 		ItemCount   int64  `json:"item_count"`
 		MemberCount int64  `json:"member_count"`
+		Owner       string `json:"owner"`
+		Pending     bool   `json:"pending"`
 	}
-	out := make([]entry, 0, len(vaults))
-	for _, v := range vaults {
-		m := byVault[v.ID]
-		var items, mem int64
-		db.DB.Model(&models.VaultItem{}).Where("vault_id = ?", v.ID).Count(&items)
-		db.DB.Model(&models.VaultMember{}).Where("vault_id = ?", v.ID).Count(&mem)
-		out = append(out, entry{
-			UUID: v.UUID, Name: v.Name, Description: v.Description, Kind: v.Kind,
-			GroupID: v.GroupID, Role: m.Role,
-			WrappedKey: crypto.DecryptField(encKey, m.WrappedKey),
-			ItemCount:  items, MemberCount: mem,
-		})
+	out := []entry{}
+
+	if len(ids) > 0 {
+		var vaults []models.Vault
+		db.DB.Where("id IN ?", ids).Order("kind, name").Find(&vaults)
+		encKey := crypto.MasterKey()
+		for _, v := range vaults {
+			m := byVault[v.ID]
+			var items, mem int64
+			db.DB.Model(&models.VaultItem{}).Where("vault_id = ?", v.ID).Count(&items)
+			db.DB.Model(&models.VaultMember{}).Where("vault_id = ?", v.ID).Count(&mem)
+			out = append(out, entry{
+				UUID: v.UUID, Name: v.Name, Description: v.Description, Kind: v.Kind,
+				Role:       m.Role,
+				WrappedKey: crypto.DecryptField(encKey, m.WrappedKey),
+				ItemCount:  items, MemberCount: mem,
+				Owner: db.GetUserEmail(v.OwnerID),
+			})
+		}
+	}
+
+	var groupIDs []uint
+	db.DB.Model(&models.UserGroupMember{}).Where("user_id = ?", userID).Pluck("group_id", &groupIDs)
+	if len(groupIDs) > 0 {
+		var grants []models.VaultGroupAccess
+		db.DB.Where("group_id IN ?", groupIDs).Find(&grants)
+		seen := map[uint]bool{}
+		for _, g := range grants {
+			if _, held := byVault[g.VaultID]; held || seen[g.VaultID] {
+				continue
+			}
+			seen[g.VaultID] = true
+			var v models.Vault
+			if db.DB.First(&v, g.VaultID).Error != nil {
+				continue
+			}
+			out = append(out, entry{
+				UUID: v.UUID, Name: v.Name, Description: v.Description, Kind: v.Kind,
+				Role: g.Role, Owner: db.GetUserEmail(v.OwnerID), Pending: true,
+			})
+		}
 	}
 	return c.JSON(out)
 }
 
+// CreateVault makes a personal or a team vault. A team vault needs
+// vault.share on top of vault.create: the whole point of one is choosing who
+// else gets in, and that choice is what vault.share governs.
 func CreateVault(c *fiber.Ctx) error {
 	userID := currentUserID(c)
 	var req struct {
@@ -318,38 +400,61 @@ func CreateVault(c *fiber.Ctx) error {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		Kind        string `json:"kind"`
-		GroupID     *uint  `json:"group_id"`
 		WrappedKey  string `json:"wrapped_key"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
 	}
-	req.Name = strings.TrimSpace(req.Name)
-	if req.Name == "" || len(req.Name) > maxVaultNameLen || len(req.Description) > maxVaultDescLen {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "a name is required, up to 120 characters"})
-	}
-	if !validVaultUUID(req.UUID) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "uuid must be generated by the client"})
-	}
-	if !validVaultBlob(req.WrappedKey, maxWrappedKeyBytes) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "malformed wrapped key"})
-	}
 	if req.Kind == "" {
 		req.Kind = "personal"
 	}
-	if req.Kind != "personal" && req.Kind != "group" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "kind must be personal or group"})
-	}
 	if req.Kind == "group" {
-		if req.GroupID == nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "a group vault needs a group"})
-		}
-		var g models.UserGroup
-		if err := db.DB.First(&g, *req.GroupID).Error; err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "unknown group"})
-		}
-	} else {
-		req.GroupID = nil
+		req.Kind = "team" // the old name, from clients built before the rename
+	}
+	if req.Kind != "personal" && req.Kind != "team" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "kind must be personal or team"})
+	}
+	if req.Kind == "team" && !callerHolds(c, PermVaultShare) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error":               "creating a team vault needs permission to share vaults",
+			"required_permission": PermVaultShare,
+		})
+	}
+	return createVault(c, userID, req.UUID, req.Name, req.Description, req.Kind, req.WrappedKey)
+}
+
+// CreatePersonalVault gives somebody the personal vault every account is
+// meant to have. It needs only vault.read, because it is not a decision to
+// create something -- an administrator who takes vault.create away is saying
+// "no new vaults", not "no vault at all". It creates one, once: anyone who
+// already owns a personal vault is pointed at the ordinary route.
+func CreatePersonalVault(c *fiber.Ctx) error {
+	userID := currentUserID(c)
+	var owned int64
+	db.DB.Model(&models.Vault{}).Where("owner_id = ? AND kind = ?", userID, "personal").Count(&owned)
+	if owned > 0 {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "you already have a personal vault"})
+	}
+	var req struct {
+		UUID       string `json:"uuid"`
+		WrappedKey string `json:"wrapped_key"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid body"})
+	}
+	return createVault(c, userID, req.UUID, "Personal", "", "personal", req.WrappedKey)
+}
+
+func createVault(c *fiber.Ctx, userID uint, id, name, description, kind, wrappedKey string) error {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > maxVaultNameLen || len(description) > maxVaultDescLen {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "a name is required, up to 120 characters"})
+	}
+	if !validVaultUUID(id) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "uuid must be generated by the client"})
+	}
+	if !validVaultBlob(wrappedKey, maxWrappedKeyBytes) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "malformed wrapped key"})
 	}
 
 	// The creator has to be enrolled, or the key they just sealed was sealed
@@ -360,18 +465,18 @@ func CreateVault(c *fiber.Ctx) error {
 	}
 
 	v := models.Vault{
-		UUID: req.UUID, Name: req.Name, Description: req.Description,
-		Kind: req.Kind, OwnerID: userID, GroupID: req.GroupID,
+		UUID: id, Name: name, Description: description,
+		Kind: kind, OwnerID: userID,
 	}
 	if err := db.DB.Create(&v).Error; err != nil {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "a vault with that id already exists"})
 	}
 	db.DB.Create(&models.VaultMember{
 		VaultID: v.ID, UserID: userID, Role: "owner",
-		WrappedKey: crypto.EncryptField(crypto.MasterKey(), req.WrappedKey),
+		WrappedKey: crypto.EncryptField(crypto.MasterKey(), wrappedKey),
 		AddedBy:    userID,
 	})
-	db.LogAudit(userID, "vault_create", "vault", v.Name, req.Kind+" vault", c.IP())
+	db.LogAudit(userID, "vault_create", "vault", v.Name, kind+" vault", c.IP())
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"uuid": v.UUID})
 }
 
@@ -384,8 +489,20 @@ func DeleteVault(c *fiber.Ctx) error {
 	if m.Role != "owner" {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "only the owner can delete a vault"})
 	}
+	// Every account keeps one personal vault. Deleting the last would only
+	// have it created again, empty, on the next unlock -- which reads as the
+	// vault having lost everything rather than as a deletion.
+	if v.Kind == "personal" {
+		var others int64
+		db.DB.Model(&models.Vault{}).
+			Where("owner_id = ? AND kind = ? AND id <> ?", userID, "personal", v.ID).Count(&others)
+		if others == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "this is your only personal vault; it cannot be deleted"})
+		}
+	}
 	db.DB.Where("vault_id = ?", v.ID).Delete(&models.VaultItem{})
 	db.DB.Where("vault_id = ?", v.ID).Delete(&models.VaultMember{})
+	db.DB.Where("vault_id = ?", v.ID).Delete(&models.VaultGroupAccess{})
 	db.DB.Delete(v)
 	db.LogAudit(userID, "vault_delete", "vault", v.Name, "", c.IP())
 	return c.JSON(fiber.Map{"ok": true})
@@ -405,46 +522,60 @@ func ListVaultMembers(c *fiber.Ctx) error {
 		Role        string `json:"role"`
 		Fingerprint string `json:"fingerprint"`
 		AddedAt     string `json:"added_at"`
+		ViaGroupID  *uint  `json:"via_group_id"`
+		ViaGroup    string `json:"via_group"`
 	}
 	out := make([]entry, 0, len(members))
-	for _, m := range members {
+	for i := range members {
+		m := members[i]
+		if !groupMembershipHolds(&m) {
+			continue
+		}
 		var kr models.VaultKeyring
 		db.DB.Where("user_id = ?", m.UserID).First(&kr)
-		out = append(out, entry{
+		e := entry{
 			UserID: m.UserID, Email: db.GetUserEmail(m.UserID), Role: m.Role,
 			Fingerprint: kr.Fingerprint, AddedAt: m.CreatedAt.Format(time.RFC3339),
-		})
+			ViaGroupID: m.ViaGroupID,
+		}
+		if m.ViaGroupID != nil {
+			var g models.UserGroup
+			if db.DB.First(&g, *m.ViaGroupID).Error == nil {
+				e.ViaGroup = g.Name
+			}
+		}
+		out = append(out, e)
 	}
 	return c.JSON(out)
 }
 
 // AddVaultMember stores a copy of the vault key that only the new member can
-// open. The browser sealed it; the server checks who it was sealed to is real,
-// enrolled, and -- for a group vault -- actually in the group, so the member
-// list cannot drift away from the group it claims to represent.
+// open. The browser sealed it; the server checks who it was sealed to is real
+// and enrolled, and that the person sending it is entitled to:
+//
+//   - Adding somebody by name is a decision, and only the owner makes it.
+//   - Delivering a key to somebody a group already entitles is carrying out a
+//     decision the owner made when they gave the group access. Any owner or
+//     writer can do that -- they hold the key -- and the role comes from the
+//     group's grant, never from the request.
 func AddVaultMember(c *fiber.Ctx) error {
 	userID := currentUserID(c)
 	v, m, ok := vaultFor(c, userID)
 	if !ok {
 		return nil // vaultFor has already answered
 	}
-	if m.Role != "owner" {
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "only the owner can share a vault"})
-	}
-	if v.Kind == "personal" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "a personal vault cannot be shared; create a group vault instead"})
+	if v.Kind != "team" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "a personal vault cannot be shared; create a team vault instead"})
 	}
 
 	var req struct {
 		UserID     uint   `json:"user_id"`
 		Role       string `json:"role"`
 		WrappedKey string `json:"wrapped_key"`
+		ViaGroupID *uint  `json:"via_group_id"`
 	}
 	if err := c.BodyParser(&req); err != nil || req.UserID == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "user_id and wrapped_key are required"})
-	}
-	if req.Role != "writer" && req.Role != "reader" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be writer or reader"})
 	}
 	if !validVaultBlob(req.WrappedKey, maxWrappedKeyBytes) {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "malformed wrapped key"})
@@ -453,24 +584,99 @@ func AddVaultMember(c *fiber.Ctx) error {
 	if err := db.DB.Where("user_id = ?", req.UserID).First(&kr).Error; err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "that person has not set up a vault passphrase yet"})
 	}
-	if v.GroupID != nil {
-		var gm models.UserGroupMember
-		if err := db.DB.Where("group_id = ? AND user_id = ?", *v.GroupID, req.UserID).First(&gm).Error; err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "that person is not in the group this vault belongs to"})
+
+	var existing models.VaultMember
+	hasRow := db.DB.Where("vault_id = ? AND user_id = ?", v.ID, req.UserID).First(&existing).Error == nil
+
+	if req.ViaGroupID != nil {
+		if !vaultWriterRoles[m.Role] {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "only an owner or a writer can hand out keys"})
 		}
+		var grant models.VaultGroupAccess
+		if err := db.DB.Where("vault_id = ? AND group_id = ?", v.ID, *req.ViaGroupID).First(&grant).Error; err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "that group does not have access to this vault"})
+		}
+		var gm models.UserGroupMember
+		if err := db.DB.Where("group_id = ? AND user_id = ?", *req.ViaGroupID, req.UserID).First(&gm).Error; err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "that person is not in the group"})
+		}
+		// Somebody already holding a key keeps it, and keeps the role they
+		// were given by name: a decision about one person outranks one made
+		// about a team they happen to be in.
+		if hasRow {
+			return c.JSON(fiber.Map{"ok": true, "already_member": true})
+		}
+		gid := *req.ViaGroupID
+		if err := db.DB.Create(&models.VaultMember{
+			VaultID: v.ID, UserID: req.UserID, Role: grant.Role,
+			WrappedKey: crypto.EncryptField(crypto.MasterKey(), req.WrappedKey),
+			AddedBy:    userID, ViaGroupID: &gid,
+		}).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		db.LogAudit(userID, "vault_share", "vault", v.Name,
+			"key delivered to "+db.GetUserEmail(req.UserID)+" through a group, as "+grant.Role+
+				" (key fingerprint "+kr.Fingerprint+")", c.IP())
+		return c.JSON(fiber.Map{"ok": true})
 	}
 
+	if m.Role != "owner" {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "only the owner can share a vault"})
+	}
+	if req.Role != "writer" && req.Role != "reader" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be writer or reader"})
+	}
+	if hasRow && existing.Role == "owner" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "that person owns this vault"})
+	}
+	// Naming somebody who was already here through a group turns their
+	// access into a direct one, so it survives them leaving the group.
 	member := models.VaultMember{VaultID: v.ID, UserID: req.UserID}
 	if err := db.DB.Where("vault_id = ? AND user_id = ?", v.ID, req.UserID).
 		Assign(map[string]interface{}{
-			"role":        req.Role,
-			"wrapped_key": crypto.EncryptField(crypto.MasterKey(), req.WrappedKey),
-			"added_by":    userID,
+			"role":         req.Role,
+			"wrapped_key":  crypto.EncryptField(crypto.MasterKey(), req.WrappedKey),
+			"added_by":     userID,
+			"via_group_id": nil,
 		}).FirstOrCreate(&member).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	db.LogAudit(userID, "vault_share", "vault", v.Name,
 		"shared with "+db.GetUserEmail(req.UserID)+" as "+req.Role+" (key fingerprint "+kr.Fingerprint+")", c.IP())
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// UpdateVaultMemberRole changes what somebody added by name may do. People
+// who are here through a group take the group's role, so their role is
+// changed on the group.
+func UpdateVaultMemberRole(c *fiber.Ctx) error {
+	userID := currentUserID(c)
+	v, m, ok := vaultFor(c, userID)
+	if !ok {
+		return nil // vaultFor has already answered
+	}
+	if m.Role != "owner" {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "only the owner can change sharing"})
+	}
+	var req struct {
+		Role string `json:"role"`
+	}
+	if err := c.BodyParser(&req); err != nil || (req.Role != "writer" && req.Role != "reader") {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be writer or reader"})
+	}
+	var target models.VaultMember
+	if err := db.DB.Where("vault_id = ? AND user_id = ?", v.ID, c.Params("user_id")).First(&target).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not a member"})
+	}
+	if target.Role == "owner" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "the owner's role cannot be changed"})
+	}
+	if target.ViaGroupID != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "this person is here through a group; change the group's role instead"})
+	}
+	db.DB.Model(&target).Update("role", req.Role)
+	db.LogAudit(userID, "vault_share", "vault", v.Name,
+		db.GetUserEmail(target.UserID)+" is now "+req.Role, c.IP())
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -498,9 +704,218 @@ func RemoveVaultMember(c *fiber.Ctx) error {
 	if victim.Role == "owner" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "the owner cannot be removed; delete the vault instead"})
 	}
+	// Deleting the key of somebody a group still entitles would last until
+	// the next unlock delivered it again. Saying where their access comes
+	// from is the honest answer.
+	if victim.ViaGroupID != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "this person has access through a group; remove the group from the vault or take them out of the group",
+		})
+	}
 	db.DB.Delete(&victim)
 	db.LogAudit(userID, "vault_unshare", "vault", v.Name, "removed "+db.GetUserEmail(victim.UserID), c.IP())
 	return c.JSON(fiber.Map{"ok": true})
+}
+
+// ---- groups ---------------------------------------------------------------
+
+// ListVaultGroupDirectory is the list of IAM groups a team vault can be given
+// to. /groups needs user.manage, which is administering people; choosing a
+// group to share with is not, so this answers with names and counts only.
+func ListVaultGroupDirectory(c *fiber.Ctx) error {
+	var groups []models.UserGroup
+	db.DB.Order("name").Find(&groups)
+	type entry struct {
+		ID          uint   `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Members     int64  `json:"members"`
+		Enrolled    int64  `json:"enrolled"`
+	}
+	out := make([]entry, 0, len(groups))
+	for _, g := range groups {
+		var members, enrolled int64
+		db.DB.Model(&models.UserGroupMember{}).Where("group_id = ?", g.ID).Count(&members)
+		db.DB.Model(&models.UserGroupMember{}).
+			Joins("JOIN vault_keyrings ON vault_keyrings.user_id = user_group_members.user_id").
+			Where("user_group_members.group_id = ?", g.ID).Count(&enrolled)
+		out = append(out, entry{ID: g.ID, Name: g.Name, Description: g.Description, Members: members, Enrolled: enrolled})
+	}
+	return c.JSON(out)
+}
+
+// ListVaultGroupAccess shows each group a vault was given to, and for each
+// one who is still waiting: members whose key nobody has sealed yet, and
+// members who cannot be given one until they set up their own vault.
+func ListVaultGroupAccess(c *fiber.Ctx) error {
+	userID := currentUserID(c)
+	v, _, ok := vaultFor(c, userID)
+	if !ok {
+		return nil // vaultFor has already answered
+	}
+	var grants []models.VaultGroupAccess
+	db.DB.Where("vault_id = ?", v.ID).Find(&grants)
+	type entry struct {
+		GroupID    uint     `json:"group_id"`
+		Name       string   `json:"name"`
+		Role       string   `json:"role"`
+		Members    int      `json:"members"`
+		WithKey    int      `json:"with_key"`
+		AwaitKey   []string `json:"awaiting_key"`
+		Unenrolled []string `json:"unenrolled"`
+	}
+	out := make([]entry, 0, len(grants))
+	for _, g := range grants {
+		var group models.UserGroup
+		if db.DB.First(&group, g.GroupID).Error != nil {
+			continue
+		}
+		var userIDs []uint
+		db.DB.Model(&models.UserGroupMember{}).Where("group_id = ?", g.GroupID).Pluck("user_id", &userIDs)
+		e := entry{GroupID: g.GroupID, Name: group.Name, Role: g.Role, Members: len(userIDs),
+			AwaitKey: []string{}, Unenrolled: []string{}}
+		for _, uid := range userIDs {
+			var held int64
+			db.DB.Model(&models.VaultMember{}).Where("vault_id = ? AND user_id = ?", v.ID, uid).Count(&held)
+			if held > 0 {
+				e.WithKey++
+				continue
+			}
+			var enrolled int64
+			db.DB.Model(&models.VaultKeyring{}).Where("user_id = ?", uid).Count(&enrolled)
+			if enrolled > 0 {
+				e.AwaitKey = append(e.AwaitKey, db.GetUserEmail(uid))
+			} else {
+				e.Unenrolled = append(e.Unenrolled, db.GetUserEmail(uid))
+			}
+		}
+		out = append(out, e)
+	}
+	return c.JSON(out)
+}
+
+// SetVaultGroupAccess gives a group access to a team vault, or changes the
+// role it has. The role change reaches everyone already in through the group
+// straight away; new keys are sealed by the owner's browser right after this
+// returns, and by any owner or writer who unlocks later.
+func SetVaultGroupAccess(c *fiber.Ctx) error {
+	userID := currentUserID(c)
+	v, m, ok := vaultFor(c, userID)
+	if !ok {
+		return nil // vaultFor has already answered
+	}
+	if m.Role != "owner" {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "only the owner can change sharing"})
+	}
+	if v.Kind != "team" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "a personal vault cannot be shared; create a team vault instead"})
+	}
+	var req struct {
+		GroupID uint   `json:"group_id"`
+		Role    string `json:"role"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.GroupID == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "group_id is required"})
+	}
+	if req.Role != "writer" && req.Role != "reader" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be writer or reader"})
+	}
+	var g models.UserGroup
+	if err := db.DB.First(&g, req.GroupID).Error; err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "unknown group"})
+	}
+	grant := models.VaultGroupAccess{VaultID: v.ID, GroupID: g.ID}
+	if err := db.DB.Where("vault_id = ? AND group_id = ?", v.ID, g.ID).
+		Assign(map[string]interface{}{"role": req.Role, "added_by": userID}).
+		FirstOrCreate(&grant).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	db.DB.Model(&models.VaultMember{}).
+		Where("vault_id = ? AND via_group_id = ?", v.ID, g.ID).Update("role", req.Role)
+	db.LogAudit(userID, "vault_share", "vault", v.Name, "group "+g.Name+" given "+req.Role+" access", c.IP())
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// RemoveVaultGroupAccess takes a group's access away, and with it the key of
+// everyone who was here only through that group. People added by name stay.
+func RemoveVaultGroupAccess(c *fiber.Ctx) error {
+	userID := currentUserID(c)
+	v, m, ok := vaultFor(c, userID)
+	if !ok {
+		return nil // vaultFor has already answered
+	}
+	if m.Role != "owner" {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "only the owner can change sharing"})
+	}
+	var grant models.VaultGroupAccess
+	if err := db.DB.Where("vault_id = ? AND group_id = ?", v.ID, c.Params("group_id")).First(&grant).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "that group does not have access"})
+	}
+	db.DB.Delete(&grant)
+	removed := db.DB.Where("vault_id = ? AND via_group_id = ?", v.ID, grant.GroupID).Delete(&models.VaultMember{})
+	var g models.UserGroup
+	db.DB.Unscoped().First(&g, grant.GroupID)
+	db.LogAudit(userID, "vault_unshare", "vault", v.Name,
+		fmt.Sprintf("group %s removed; %d key(s) deleted", g.Name, removed.RowsAffected), c.IP())
+	return c.JSON(fiber.Map{"ok": true, "keys_removed": removed.RowsAffected})
+}
+
+// ListPendingVaultKeys is the work queue for the caller's browser: everyone
+// a group entitles to a vault the caller can hand keys out for, who has
+// enrolled, and who does not hold a key yet. The browser seals one key per
+// row and posts it back through AddVaultMember.
+func ListPendingVaultKeys(c *fiber.Ctx) error {
+	userID := currentUserID(c)
+	var mine []models.VaultMember
+	db.DB.Where("user_id = ? AND role IN ?", userID, []string{"owner", "writer"}).Find(&mine)
+
+	type entry struct {
+		VaultUUID   string `json:"vault_uuid"`
+		UserID      uint   `json:"user_id"`
+		Email       string `json:"email"`
+		PublicKey   string `json:"public_key"`
+		Fingerprint string `json:"fingerprint"`
+		GroupID     uint   `json:"group_id"`
+		Role        string `json:"role"`
+	}
+	out := []entry{}
+	for i := range mine {
+		if !groupMembershipHolds(&mine[i]) {
+			continue
+		}
+		var v models.Vault
+		if db.DB.First(&v, mine[i].VaultID).Error != nil || v.Kind != "team" {
+			continue
+		}
+		var grants []models.VaultGroupAccess
+		db.DB.Where("vault_id = ?", v.ID).Find(&grants)
+		queued := map[uint]bool{}
+		for _, g := range grants {
+			var userIDs []uint
+			db.DB.Model(&models.UserGroupMember{}).Where("group_id = ?", g.GroupID).Pluck("user_id", &userIDs)
+			for _, uid := range userIDs {
+				if queued[uid] {
+					continue
+				}
+				var held int64
+				db.DB.Model(&models.VaultMember{}).Where("vault_id = ? AND user_id = ?", v.ID, uid).Count(&held)
+				if held > 0 {
+					continue
+				}
+				var kr models.VaultKeyring
+				if db.DB.Where("user_id = ?", uid).First(&kr).Error != nil {
+					continue
+				}
+				queued[uid] = true
+				out = append(out, entry{
+					VaultUUID: v.UUID, UserID: uid, Email: db.GetUserEmail(uid),
+					PublicKey: kr.PublicKey, Fingerprint: kr.Fingerprint,
+					GroupID: g.GroupID, Role: g.Role,
+				})
+			}
+		}
+	}
+	return c.JSON(out)
 }
 
 // ---- items ----------------------------------------------------------------

@@ -301,15 +301,29 @@ export function newVaultKeyRaw(): Bytes {
 
 export interface ItemOverview {
   name: string;
+  /** What kind of secret this is: login, api_key, database, ssh_key, note or
+   *  custom. Sealed with the rest of the overview -- the server cannot tell a
+   *  database password from a note. Absent on items made before it existed,
+   *  which read as logins. */
+  type?: string;
   username?: string;
   url?: string;
   tags?: string[];
 }
 
+export interface ItemField {
+  label: string;
+  value: string;
+  /** Masked until asked for, and on screen only while somebody is looking. */
+  secret?: boolean;
+  /** Keys and certificates: shown in a box that keeps their line breaks. */
+  multiline?: boolean;
+}
+
 export interface ItemSecret {
   password?: string;
   notes?: string;
-  fields?: { label: string; value: string }[];
+  fields?: ItemField[];
 }
 
 /** Padded to a multiple of 256 bytes before sealing. GCM does not hide length,

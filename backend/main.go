@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -20,26 +21,31 @@ import (
 // start the server if one slips through anyway. Four role checks spread across
 // a hundred routes is how the previous arrangement left everything added since
 // open to any account.
-func guarded(r fiber.Router, method, path, perm string, h fiber.Handler) {
+func guarded(r fiber.Router, method, path, perm string, hs ...fiber.Handler) {
 	handlers.Declare(method, path, perm)
+	chain := append([]fiber.Handler{handlers.Requires(perm)}, hs...)
 	switch method {
 	case "GET":
-		r.Get(path, handlers.Requires(perm), h)
+		r.Get(path, chain...)
 	case "POST":
-		r.Post(path, handlers.Requires(perm), h)
+		r.Post(path, chain...)
 	case "PUT":
-		r.Put(path, handlers.Requires(perm), h)
+		r.Put(path, chain...)
 	case "DELETE":
-		r.Delete(path, handlers.Requires(perm), h)
+		r.Delete(path, chain...)
 	case "PATCH":
-		r.Patch(path, handlers.Requires(perm), h)
+		r.Patch(path, chain...)
 	}
 }
 
-func get(r fiber.Router, path, perm string, h fiber.Handler)  { guarded(r, "GET", path, perm, h) }
-func post(r fiber.Router, path, perm string, h fiber.Handler) { guarded(r, "POST", path, perm, h) }
-func put(r fiber.Router, path, perm string, h fiber.Handler)  { guarded(r, "PUT", path, perm, h) }
-func del(r fiber.Router, path, perm string, h fiber.Handler)  { guarded(r, "DELETE", path, perm, h) }
+func get(r fiber.Router, path, perm string, h ...fiber.Handler) { guarded(r, "GET", path, perm, h...) }
+func post(r fiber.Router, path, perm string, h ...fiber.Handler) {
+	guarded(r, "POST", path, perm, h...)
+}
+func put(r fiber.Router, path, perm string, h ...fiber.Handler) { guarded(r, "PUT", path, perm, h...) }
+func del(r fiber.Router, path, perm string, h ...fiber.Handler) {
+	guarded(r, "DELETE", path, perm, h...)
+}
 
 func main() {
 	db.ConnectDB()
@@ -231,8 +237,11 @@ func main() {
 		allowOrigins = "*"
 	}
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     allowOrigins,
-		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+		AllowOrigins: allowOrigins,
+		AllowHeaders: "Origin, Content-Type, Accept, Authorization, X-Vault-Session",
+		// A vault session is reissued in a response header while somebody is
+		// working; the browser can only read it back if it is exposed.
+		ExposeHeaders:    "X-Vault-Session",
 		AllowMethods:     "GET, POST, PUT, DELETE, PATCH, OPTIONS",
 		AllowCredentials: allowOrigins != "*",
 	}))
@@ -404,26 +413,57 @@ func main() {
 	// permission decides who may reach the API, and the wrapped key decides
 	// who can open what comes back. They are not the same control, and the
 	// second is the one that survives a compromised server.
-	get(api, "/vault/keyring", handlers.PermSelf, handlers.GetVaultKeyring)
-	post(api, "/vault/keyring", handlers.PermSelf, handlers.EnrollVaultKeyring)
-	put(api, "/vault/keyring", handlers.PermSelf, handlers.RekeyVaultKeyring)
+	//
+	// Everything that returns or changes sealed material also sits behind
+	// vaultMFA: a code from the vault's own authenticator entry, separate
+	// from the sign-in one, so a stolen session alone never reaches the
+	// sealed private key.
+	vaultMFA := handlers.VaultSessionRequired()
+	vaultCodeLimit := limiter.New(limiter.Config{
+		Max:        10,
+		Expiration: time.Minute,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return fmt.Sprintf("%s|%v", c.IP(), c.Locals("user_id"))
+		},
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"error": "too many attempts; wait a minute and try again",
+			})
+		},
+	})
+	get(api, "/vault/status", handlers.PermVaultRead, handlers.GetVaultStatus)
+	post(api, "/vault/mfa/setup", handlers.PermVaultRead, vaultCodeLimit, handlers.SetupVaultMFA)
+	post(api, "/vault/mfa/confirm", handlers.PermVaultRead, vaultCodeLimit, handlers.ConfirmVaultMFA)
+	post(api, "/vault/mfa/verify", handlers.PermVaultRead, vaultCodeLimit, handlers.VerifyVaultMFA)
+	del(api, "/users/:id/vault-mfa", handlers.PermUserManage, handlers.ResetUserVaultMFA)
+
+	get(api, "/vault/keyring", handlers.PermSelf, vaultMFA, handlers.GetVaultKeyring)
+	post(api, "/vault/keyring", handlers.PermSelf, vaultMFA, handlers.EnrollVaultKeyring)
+	put(api, "/vault/keyring", handlers.PermSelf, vaultMFA, handlers.RekeyVaultKeyring)
 	// Gated on share rather than read: it is a directory of everyone's email
 	// and public key, and it is only needed at the moment somebody is sealing a
 	// key to another person.
-	get(api, "/vault/public-keys", handlers.PermVaultShare, handlers.ListVaultPublicKeys)
+	get(api, "/vault/public-keys", handlers.PermVaultShare, vaultMFA, handlers.ListVaultPublicKeys)
+	get(api, "/vault/groups", handlers.PermVaultShare, vaultMFA, handlers.ListVaultGroupDirectory)
+	get(api, "/vault/pending-keys", handlers.PermVaultShare, vaultMFA, handlers.ListPendingVaultKeys)
+	post(api, "/vault/personal", handlers.PermVaultRead, vaultMFA, handlers.CreatePersonalVault)
 
-	get(api, "/vaults", handlers.PermVaultRead, handlers.ListVaults)
-	post(api, "/vaults", handlers.PermVaultWrite, handlers.CreateVault)
-	del(api, "/vaults/:uuid", handlers.PermVaultWrite, handlers.DeleteVault)
-	get(api, "/vaults/:uuid/members", handlers.PermVaultRead, handlers.ListVaultMembers)
-	post(api, "/vaults/:uuid/members", handlers.PermVaultShare, handlers.AddVaultMember)
-	del(api, "/vaults/:uuid/members/:user_id", handlers.PermVaultShare, handlers.RemoveVaultMember)
+	get(api, "/vaults", handlers.PermVaultRead, vaultMFA, handlers.ListVaults)
+	post(api, "/vaults", handlers.PermVaultCreate, vaultMFA, handlers.CreateVault)
+	del(api, "/vaults/:uuid", handlers.PermVaultWrite, vaultMFA, handlers.DeleteVault)
+	get(api, "/vaults/:uuid/members", handlers.PermVaultRead, vaultMFA, handlers.ListVaultMembers)
+	post(api, "/vaults/:uuid/members", handlers.PermVaultShare, vaultMFA, handlers.AddVaultMember)
+	put(api, "/vaults/:uuid/members/:user_id", handlers.PermVaultShare, vaultMFA, handlers.UpdateVaultMemberRole)
+	del(api, "/vaults/:uuid/members/:user_id", handlers.PermVaultShare, vaultMFA, handlers.RemoveVaultMember)
+	get(api, "/vaults/:uuid/groups", handlers.PermVaultRead, vaultMFA, handlers.ListVaultGroupAccess)
+	post(api, "/vaults/:uuid/groups", handlers.PermVaultShare, vaultMFA, handlers.SetVaultGroupAccess)
+	del(api, "/vaults/:uuid/groups/:group_id", handlers.PermVaultShare, vaultMFA, handlers.RemoveVaultGroupAccess)
 
-	get(api, "/vaults/:uuid/items", handlers.PermVaultRead, handlers.ListVaultItems)
-	post(api, "/vaults/:uuid/items", handlers.PermVaultWrite, handlers.CreateVaultItem)
-	put(api, "/vaults/:uuid/items/:item_uuid", handlers.PermVaultWrite, handlers.UpdateVaultItem)
-	del(api, "/vaults/:uuid/items/:item_uuid", handlers.PermVaultWrite, handlers.DeleteVaultItem)
-	get(api, "/vaults/:uuid/items/:item_uuid/secret", handlers.PermVaultRead, handlers.RevealVaultItem)
+	get(api, "/vaults/:uuid/items", handlers.PermVaultRead, vaultMFA, handlers.ListVaultItems)
+	post(api, "/vaults/:uuid/items", handlers.PermVaultCreate, vaultMFA, handlers.CreateVaultItem)
+	put(api, "/vaults/:uuid/items/:item_uuid", handlers.PermVaultWrite, vaultMFA, handlers.UpdateVaultItem)
+	del(api, "/vaults/:uuid/items/:item_uuid", handlers.PermVaultWrite, vaultMFA, handlers.DeleteVaultItem)
+	get(api, "/vaults/:uuid/items/:item_uuid/secret", handlers.PermVaultRead, vaultMFA, handlers.RevealVaultItem)
 
 	get(api, "/audit-logs", handlers.PermAuditRead, handlers.GetAuditLogs)
 

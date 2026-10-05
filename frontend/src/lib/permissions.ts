@@ -26,6 +26,7 @@ export const PERMISSIONS = {
   securityRead: "security.read",
   securityScan: "security.scan",
   vaultRead: "vault.read",
+  vaultCreate: "vault.create",
   vaultWrite: "vault.write",
   vaultShare: "vault.share",
   settingsRead: "settings.read",

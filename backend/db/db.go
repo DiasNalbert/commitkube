@@ -129,6 +129,8 @@ func ConnectDB() {
 		&models.Vault{},
 		&models.VaultMember{},
 		&models.VaultItem{},
+		&models.VaultGroupAccess{},
+		&models.VaultMFA{},
 		&models.PostureAssessment{},
 		&models.PostureRuleResult{},
 	)
@@ -172,6 +174,25 @@ func ConnectDB() {
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_df_src_time ON dependency_failures (src_namespace, src_name, bucket_at)")
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_leg_workload_time ON log_error_groups (namespace, workload, bucket_at)")
 	DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sp_open_cluster ON service_problems (cluster_id, namespace, workload, kind) WHERE closed_at IS NULL")
+
+	// Shared vaults were called group vaults while each one belonged to a
+	// single group. They can now be given to people and to several groups,
+	// so the kind is "team".
+	DB.Exec("UPDATE vaults SET kind = 'team' WHERE kind = 'group'")
+
+	// vault.write used to cover creating as well as editing. It has been
+	// split, so a grant or a denial someone wrote against the old meaning is
+	// carried over to vault.create -- otherwise a person whose write access
+	// was taken away would find they can suddenly create again. It runs only
+	// while no vault.create row exists, so a decision made after the split is
+	// never overwritten by one made before it.
+	var splitDone int64
+	DB.Model(&models.PermissionGrant{}).Where("permission = ?", "vault.create").Count(&splitDone)
+	if splitDone == 0 {
+		DB.Exec(`INSERT INTO permission_grants (created_at, subject_type, subject_id, permission, denied, granted_by)
+			SELECT created_at, subject_type, subject_id, 'vault.create', denied, granted_by
+			FROM permission_grants WHERE permission = 'vault.write'`)
+	}
 
 	bootstrapAdmin()
 }

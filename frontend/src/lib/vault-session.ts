@@ -36,12 +36,31 @@ export interface VaultSummary {
   uuid: string;
   name: string;
   description: string;
-  kind: "personal" | "group";
-  group_id: number | null;
+  kind: "personal" | "team";
   role: "owner" | "writer" | "reader";
   wrapped_key: string;
   item_count: number;
   member_count: number;
+  owner: string;
+  /** A group gave this person the vault, and nobody has sealed them a key
+   *  yet. It is listed so the vault does not look missing; it cannot be
+   *  opened until an owner or writer unlocks and delivers the key. */
+  pending: boolean;
+}
+
+export interface VaultStatus {
+  mfa_enabled: boolean;
+  enrolled: boolean;
+}
+
+export interface PendingKey {
+  vault_uuid: string;
+  user_id: number;
+  email: string;
+  public_key: string;
+  fingerprint: string;
+  group_id: number;
+  role: "writer" | "reader";
 }
 
 /** Ten minutes. Long enough to copy a password and go back for a second one,
@@ -50,12 +69,15 @@ const LOCK_AFTER_MS = 10 * 60 * 1000;
 
 let identity: CryptoKey | null = null;
 let fingerprint = "";
+/** The vault session the second factor bought. Held here for the same
+ *  reason as the identity: written anywhere, it outlives the tab. */
+let session = "";
 let vaultKeys = new Map<string, CryptoKey>();
 let lockTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<(unlocked: boolean) => void>();
 
 function announce() {
-  for (const fn of listeners) fn(identity !== null);
+  for (const fn of listeners) fn(isUnlocked());
 }
 
 export function onLockChange(fn: (unlocked: boolean) => void): () => void {
@@ -64,7 +86,11 @@ export function onLockChange(fn: (unlocked: boolean) => void): () => void {
 }
 
 export function isUnlocked(): boolean {
-  return identity !== null;
+  return identity !== null && session !== "";
+}
+
+export function hasVaultSession(): boolean {
+  return session !== "";
 }
 
 export function myFingerprint(): string {
@@ -74,6 +100,7 @@ export function myFingerprint(): string {
 export function lock() {
   identity = null;
   fingerprint = "";
+  session = "";
   vaultKeys = new Map();
   if (lockTimer) clearTimeout(lockTimer);
   lockTimer = null;
@@ -89,8 +116,58 @@ export function touch() {
   lockTimer = setTimeout(lock, LOCK_AFTER_MS);
 }
 
+/** Every vault request goes through here. It carries the vault session,
+ *  picks up the reissued one the server sends while somebody is working, and
+ *  locks the tab the moment the server says the session is over -- so a
+ *  reset factor or an expired session shows as "locked", not as a row of
+ *  failed requests. */
+export async function vaultFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const res = await apiFetch(path, {
+    ...options,
+    headers: { ...((options.headers as Record<string, string>) || {}), "X-Vault-Session": session },
+  });
+  const renewed = res.headers.get("X-Vault-Session");
+  if (renewed) session = renewed;
+  if (res.status === 403) {
+    const body = await res.clone().json().catch(() => ({}));
+    if (body.vault_mfa_required) lock();
+  }
+  return res;
+}
+
+async function errorOf(res: Response, fallback: string): Promise<Error> {
+  const j = await res.json().catch(() => ({}));
+  return new Error(j.error || fallback);
+}
+
+export async function fetchVaultStatus(): Promise<VaultStatus> {
+  const res = await apiFetch("/vault/status");
+  if (!res.ok) throw await errorOf(res, "could not load the vault");
+  return res.json();
+}
+
+/** Starts the vault's own authenticator entry. Refused by the server once one
+ *  is active, so a signed-in session cannot move it to another phone. */
+export async function startVaultMFA(): Promise<{ otpauth_url: string; secret: string }> {
+  const res = await apiFetch("/vault/mfa/setup", { method: "POST" });
+  if (!res.ok) throw await errorOf(res, "could not start the vault code setup");
+  return res.json();
+}
+
+export async function confirmVaultMFA(code: string): Promise<void> {
+  const res = await apiFetch("/vault/mfa/confirm", { method: "POST", body: JSON.stringify({ code }) });
+  if (!res.ok) throw await errorOf(res, "that code is not right");
+  session = (await res.json()).session;
+}
+
+export async function verifyVaultCode(code: string): Promise<void> {
+  const res = await apiFetch("/vault/mfa/verify", { method: "POST", body: JSON.stringify({ code }) });
+  if (!res.ok) throw await errorOf(res, "that code is not right");
+  session = (await res.json()).session;
+}
+
 export async function fetchKeyring(): Promise<Keyring | null> {
-  const res = await apiFetch("/vault/keyring");
+  const res = await vaultFetch("/vault/keyring");
   if (res.status === 404) return null;
   if (!res.ok) throw new Error("could not load your vault keys");
   return res.json();
@@ -125,7 +202,7 @@ export async function unlock(keyring: Keyring, passphrase: string): Promise<void
  *  it is never sent to the server in any form it could be read from. */
 export async function setUpVault(passphrase: string): Promise<string> {
   const e = await enrol(passphrase);
-  const res = await apiFetch("/vault/keyring", {
+  const res = await vaultFetch("/vault/keyring", {
     method: "POST",
     body: JSON.stringify({
       public_key: e.publicKey,
@@ -165,7 +242,7 @@ export async function changePassphrase(
     kdfOf(keyring)
   );
   const sealed = await reseal(pkcs8, keyring.fingerprint, newPassphrase);
-  const res = await apiFetch("/vault/keyring", {
+  const res = await vaultFetch("/vault/keyring", {
     method: "PUT",
     body: JSON.stringify({
       private_key_enc: sealed.blob,
@@ -186,7 +263,7 @@ export async function recoverWithCode(
   recoveryCode: string,
   newPassphrase: string
 ): Promise<string> {
-  const res = await apiFetch("/vault/keyring?recovery=1");
+  const res = await vaultFetch("/vault/keyring?recovery=1");
   if (!res.ok) throw new Error("could not load your recovery key");
   const kr = await res.json();
 
@@ -201,7 +278,7 @@ export async function recoverWithCode(
   const nextCode = (await import("./vault-crypto")).generateRecoveryCode();
   const sealedRec = await reseal(pkcs8, kr.fingerprint, nextCode);
 
-  const save = await apiFetch("/vault/keyring", {
+  const save = await vaultFetch("/vault/keyring", {
     method: "PUT",
     body: JSON.stringify({
       private_key_enc: sealedPass.blob,
@@ -235,39 +312,54 @@ export async function vaultKey(v: VaultSummary): Promise<CryptoKey> {
 export async function createVault(opts: {
   name: string;
   description: string;
-  kind: "personal" | "group";
-  groupID?: number;
+  kind: "personal" | "team";
   myPublicKey: string;
 }): Promise<string> {
   const uuid = crypto.randomUUID();
   const raw = newVaultKeyRaw();
   const wrapped = await wrapVaultKey(fromB64(opts.myPublicKey), raw, uuid, fingerprint);
-  const res = await apiFetch("/vaults", {
+  const res = await vaultFetch("/vaults", {
     method: "POST",
     body: JSON.stringify({
       uuid,
       name: opts.name,
       description: opts.description,
       kind: opts.kind,
-      group_id: opts.kind === "group" ? opts.groupID : undefined,
       wrapped_key: wrapped,
     }),
   });
-  if (!res.ok) {
-    const j = await res.json().catch(() => ({}));
-    throw new Error(j.error || "could not create the vault");
-  }
+  if (!res.ok) throw await errorOf(res, "could not create the vault");
   return uuid;
+}
+
+/** Every account has a personal vault. It is made here, the first time the
+ *  vault is unlocked without one, because the key for it can only be made in
+ *  the browser. Returns true when one was created. */
+export async function ensurePersonalVault(vaults: VaultSummary[], myPublicKey: string): Promise<boolean> {
+  if (vaults.some(v => v.kind === "personal" && v.role === "owner")) return false;
+  const uuid = crypto.randomUUID();
+  const wrapped = await wrapVaultKey(fromB64(myPublicKey), newVaultKeyRaw(), uuid, fingerprint);
+  const res = await vaultFetch("/vault/personal", {
+    method: "POST",
+    body: JSON.stringify({ uuid, wrapped_key: wrapped }),
+  });
+  // 409 means another tab got there first, which is the outcome wanted.
+  if (!res.ok && res.status !== 409) throw await errorOf(res, "could not create your personal vault");
+  return res.ok;
 }
 
 /** Shares a vault by resealing its key to somebody else's public key. The
  *  fingerprint is recomputed from the key that arrived rather than trusted
  *  from the response, so a substituted key at least produces a fingerprint
- *  that does not match the one the other person can read out to you. */
+ *  that does not match the one the other person can read out to you.
+ *
+ *  With viaGroupID the key is being delivered to somebody a group already
+ *  entitles; the server then takes the role from the group's grant. */
 export async function shareVault(
   v: VaultSummary,
   recipient: { user_id: number; public_key: string; fingerprint: string },
-  role: "writer" | "reader"
+  role: "writer" | "reader",
+  viaGroupID?: number
 ): Promise<void> {
   const spki = fromB64(recipient.public_key);
   const computed = await fingerprintOf(spki);
@@ -281,12 +373,33 @@ export async function shareVault(
   const raw = await unwrapVaultKeyRaw(identity, v.wrapped_key, v.uuid, fingerprint);
   const wrapped = await wrapVaultKey(spki, raw, v.uuid, computed);
 
-  const res = await apiFetch(`/vaults/${v.uuid}/members`, {
+  const res = await vaultFetch(`/vaults/${v.uuid}/members`, {
     method: "POST",
-    body: JSON.stringify({ user_id: recipient.user_id, role, wrapped_key: wrapped }),
+    body: JSON.stringify({ user_id: recipient.user_id, role, wrapped_key: wrapped, via_group_id: viaGroupID }),
   });
-  if (!res.ok) {
-    const j = await res.json().catch(() => ({}));
-    throw new Error(j.error || "could not share the vault");
+  if (!res.ok) throw await errorOf(res, "could not share the vault");
+}
+
+/** Seals a key for everyone a group entitles who does not hold one yet. The
+ *  server can record that a group was given a vault but cannot act on it --
+ *  this is the browser carrying the decision out, and it runs on every
+ *  unlock so people who join a group later get the vault without anyone
+ *  having to remember them. Returns how many keys were delivered. */
+export async function deliverPendingKeys(vaults: VaultSummary[]): Promise<number> {
+  const res = await vaultFetch("/vault/pending-keys");
+  if (!res.ok) return 0;
+  const pending: PendingKey[] = await res.json();
+  let delivered = 0;
+  for (const p of pending) {
+    const v = vaults.find(x => x.uuid === p.vault_uuid && !x.pending);
+    if (!v) continue;
+    try {
+      await shareVault(v, p, p.role, p.group_id);
+      delivered++;
+    } catch {
+      // One recipient whose key will not seal must not stop the others. The
+      // sharing panel lists whoever is still waiting.
+    }
   }
+  return delivered;
 }

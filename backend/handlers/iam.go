@@ -47,9 +47,13 @@ const (
 	// sealed to a member's public key, so an account holding vault.read
 	// without a sealed copy fetches ciphertext it cannot open. Revoking the
 	// permission closes the door; removing the membership takes away the key.
-	PermVaultRead  = "vault.read"  // list vaults and items, reveal what you hold a key for
-	PermVaultWrite = "vault.write" // create and edit vaults and items
-	PermVaultShare = "vault.share" // add and remove members of a shared vault
+	//
+	// Each is also capped by the person's role inside the vault: a reader
+	// there stays a reader, whatever they hold here.
+	PermVaultRead   = "vault.read"   // open vaults you belong to, reveal what you hold a key for
+	PermVaultCreate = "vault.create" // create vaults and add new secrets to them
+	PermVaultWrite  = "vault.write"  // edit and delete existing secrets, delete vaults you own
+	PermVaultShare  = "vault.share"  // create team vaults, choose the people and groups that use them
 
 	// Platform administration
 	PermSettingsRead  = "settings.read"
@@ -80,7 +84,7 @@ var AllPermissions = []string{
 	PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 	PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 	PermSecurityRead, PermSecurityScan,
-	PermVaultRead, PermVaultWrite, PermVaultShare,
+	PermVaultRead, PermVaultCreate, PermVaultWrite, PermVaultShare,
 	PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
 }
 
@@ -94,7 +98,7 @@ var rolePermissions = map[string][]string{
 		PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 		PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 		PermSecurityRead, PermSecurityScan,
-		PermVaultRead, PermVaultWrite, PermVaultShare,
+		PermVaultRead, PermVaultCreate, PermVaultWrite, PermVaultShare,
 		PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
 	},
 	// What a plain account could reach before this existed, minus the things
@@ -109,7 +113,7 @@ var rolePermissions = map[string][]string{
 		// all, and it is readable by nobody else by construction. Withholding
 		// it by default would leave the feature switched off for everyone who
 		// is not an admin; it can still be denied per person.
-		PermVaultRead, PermVaultWrite,
+		PermVaultRead, PermVaultCreate, PermVaultWrite,
 		PermSettingsRead,
 	},
 }
@@ -222,9 +226,15 @@ func GetMyPermissions(c *fiber.Ctx) error {
 	role, _ := c.Locals("role").(string)
 	held := permissionsFor(userID, role)
 
+	// The map also carries what was explicitly taken away (a denial writes
+	// false) and iam.manage for everyone who is not root. Listing keys rather
+	// than values handed the UI those too, so a denied permission still
+	// showed its button.
 	list := make([]string, 0, len(held))
-	for p := range held {
-		list = append(list, p)
+	for p, ok := range held {
+		if ok {
+			list = append(list, p)
+		}
 	}
 	sort.Strings(list)
 	return c.JSON(fiber.Map{"role": role, "permissions": list})

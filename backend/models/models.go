@@ -815,9 +815,62 @@ type Vault struct {
 	Name        string `gorm:"not null" json:"name"`
 	Description string `json:"description"`
 
-	Kind    string `gorm:"not null;default:'personal'" json:"kind"` // personal | group
+	Kind    string `gorm:"not null;default:'personal'" json:"kind"` // personal | team
 	OwnerID uint   `gorm:"index;not null" json:"owner_id"`
-	GroupID *uint  `gorm:"index" json:"group_id"`
+
+	// GroupID is what a team vault was tied to before access could be given
+	// to people and to several groups at once. Nothing reads it any more; it
+	// is kept so an upgraded database still says what the vault used to be.
+	// VaultGroupAccess is where a group's access lives now.
+	GroupID *uint `gorm:"index" json:"group_id"`
+}
+
+// VaultGroupAccess gives everyone in an IAM group access to a team vault.
+// The server can record the decision but cannot carry it out: only a browser
+// holding the vault key can seal a copy to a new member. So the row is a
+// standing instruction, and the next owner or writer to unlock delivers the
+// keys it implies -- to whoever is in the group by then.
+type VaultGroupAccess struct {
+	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	VaultID   uint      `gorm:"uniqueIndex:idx_vga_ident;not null" json:"vault_id"`
+	GroupID   uint      `gorm:"uniqueIndex:idx_vga_ident;not null" json:"group_id"`
+	Role      string    `gorm:"not null;default:'reader'" json:"role"` // writer | reader
+	AddedBy   uint      `json:"added_by"`
+}
+
+// VaultMFA is the second factor in front of the vault, and it is a different
+// secret from the one used to sign in. The point is that a stolen session --
+// or a phished sign-in code -- is not also a way into the vault: reaching the
+// sealed private key takes a code from an authenticator entry nobody can use
+// for anything else.
+type VaultMFA struct {
+	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UserID    uint      `gorm:"uniqueIndex;not null" json:"user_id"`
+
+	// SecretEnc is the TOTP seed under ENCRYPTION_KEY. Unlike the vault's own
+	// data the server has to be able to read it, because it is the server
+	// that checks the code.
+	SecretEnc string     `gorm:"not null" json:"-"`
+	EnabledAt *time.Time `json:"enabled_at"`
+
+	// LastStep is the 30-second window of the last code accepted. A code is
+	// good for one use: anything at or before it is refused, so a code read
+	// over somebody's shoulder is spent by the time it is typed again.
+	LastStep int64 `json:"-"`
+
+	// Failures and LockedUntil make guessing slow. Six digits is a million
+	// codes, and without a lockout an attacker holding a session gets
+	// unlimited tries at them.
+	Failures    int        `json:"-"`
+	LockedUntil *time.Time `json:"-"`
+
+	// Generation is bumped when the factor is reset, and is carried inside
+	// every vault session. A reset therefore ends every session issued under
+	// the old secret instead of letting them run out their clock.
+	Generation uint `gorm:"not null;default:1" json:"-"`
 }
 
 // VaultMember is one sealed copy of a vault's data key. Removing the row
@@ -836,6 +889,12 @@ type VaultMember struct {
 
 	Role    string `gorm:"not null;default:'reader'" json:"role"` // owner | writer | reader
 	AddedBy uint   `json:"added_by"`
+
+	// ViaGroupID is set when the person is here because a group was given
+	// access, and nil when they were added by name. It is what lets a member
+	// who leaves the group lose the vault with it, without touching someone
+	// who was added directly and happens to be in the same group.
+	ViaGroupID *uint `gorm:"index" json:"via_group_id"`
 }
 
 // VaultItem is split in two on purpose. The overview is what a list needs --

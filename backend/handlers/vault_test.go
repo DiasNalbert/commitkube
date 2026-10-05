@@ -39,6 +39,7 @@ func useVaultDB(t *testing.T) {
 	if err := gdb.AutoMigrate(
 		&models.User{}, &models.UserGroup{}, &models.UserGroupMember{}, &models.AuditLog{},
 		&models.VaultKeyring{}, &models.Vault{}, &models.VaultMember{}, &models.VaultItem{},
+		&models.VaultGroupAccess{}, &models.VaultMFA{}, &models.PermissionGrant{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -47,12 +48,25 @@ func useVaultDB(t *testing.T) {
 
 // vaultApp mounts the handlers under a middleware that plays the part the JWT
 // normally does, so the tests exercise the real routing and parameter parsing.
+// The vault code is left out here and tested on its own below; every test in
+// this file would otherwise begin with an authenticator.
 func vaultApp(actAs func() uint) *fiber.App {
+	return vaultAppAs(actAs, func() string { return "admin" })
+}
+
+func vaultAppAs(actAs func() uint, role func() string) *fiber.App {
 	app := fiber.New()
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("user_id", float64(actAs()))
+		c.Locals("role", role())
 		return c.Next()
 	})
+	app.Post("/vault/personal", CreatePersonalVault)
+	app.Get("/vault/pending-keys", ListPendingVaultKeys)
+	app.Get("/vaults/:uuid/groups", ListVaultGroupAccess)
+	app.Post("/vaults/:uuid/groups", SetVaultGroupAccess)
+	app.Delete("/vaults/:uuid/groups/:group_id", RemoveVaultGroupAccess)
+	app.Put("/vaults/:uuid/members/:user_id", UpdateVaultMemberRole)
 	app.Get("/vault/keyring", GetVaultKeyring)
 	app.Post("/vault/keyring", EnrollVaultKeyring)
 	app.Put("/vault/keyring", RekeyVaultKeyring)
@@ -202,14 +216,11 @@ func TestSharingRequiresAnEnrolledRecipient(t *testing.T) {
 	app := vaultApp(func() uint { return actor })
 	enroll(t, app)
 
-	db.DB.Create(&models.UserGroup{Name: "platform"})
-	db.DB.Create(&models.UserGroupMember{GroupID: 1, UserID: 2})
-	gid := uint(1)
 	id := uuid.NewString()
 	if code, body := do(t, app, "POST", "/vaults", fiber.Map{
-		"uuid": id, "name": "Platform", "kind": "group", "group_id": gid, "wrapped_key": blob(80),
+		"uuid": id, "name": "Platform", "kind": "team", "wrapped_key": blob(80),
 	}); code != http.StatusCreated {
-		t.Fatalf("create group vault: %d %v", code, body)
+		t.Fatalf("create team vault: %d %v", code, body)
 	}
 
 	code, _ := do(t, app, "POST", "/vaults/"+id+"/members", fiber.Map{
@@ -228,16 +239,6 @@ func TestSharingRequiresAnEnrolledRecipient(t *testing.T) {
 	}); code != http.StatusOK {
 		t.Fatalf("share to an enrolled member failed: %d %v", code, body)
 	}
-
-	// And somebody outside the group still cannot be added to the group vault.
-	actor = 3
-	enroll(t, app)
-	actor = 1
-	if code, _ := do(t, app, "POST", "/vaults/"+id+"/members", fiber.Map{
-		"user_id": 3, "role": "reader", "wrapped_key": blob(80),
-	}); code != http.StatusBadRequest {
-		t.Errorf("a non-member of the group was added to its vault: %d", code)
-	}
 }
 
 func TestReaderCannotWrite(t *testing.T) {
@@ -249,12 +250,9 @@ func TestReaderCannotWrite(t *testing.T) {
 	enroll(t, app)
 	actor = 1
 
-	db.DB.Create(&models.UserGroup{Name: "platform"})
-	db.DB.Create(&models.UserGroupMember{GroupID: 1, UserID: 2})
-	gid := uint(1)
 	id := uuid.NewString()
 	do(t, app, "POST", "/vaults", fiber.Map{
-		"uuid": id, "name": "Platform", "kind": "group", "group_id": gid, "wrapped_key": blob(80),
+		"uuid": id, "name": "Platform", "kind": "team", "wrapped_key": blob(80),
 	})
 	do(t, app, "POST", "/vaults/"+id+"/members", fiber.Map{
 		"user_id": 2, "role": "reader", "wrapped_key": blob(80),
@@ -463,7 +461,7 @@ func TestOwnerCannotBeRemovedFromTheirOwnVault(t *testing.T) {
 // The vault permissions have to be grantable, or the only way to give somebody
 // access to a shared vault is to make them an admin of everything.
 func TestVaultPermissionsAreGrantable(t *testing.T) {
-	for _, p := range []string{PermVaultRead, PermVaultWrite, PermVaultShare} {
+	for _, p := range []string{PermVaultRead, PermVaultCreate, PermVaultWrite, PermVaultShare} {
 		if !validPermission(p) {
 			t.Errorf("%s is not in the catalog, so it can never be granted", p)
 		}
@@ -472,7 +470,7 @@ func TestVaultPermissionsAreGrantable(t *testing.T) {
 	for _, p := range rolePermissions["user"] {
 		held[p] = true
 	}
-	if !held[PermVaultRead] || !held[PermVaultWrite] {
+	if !held[PermVaultRead] || !held[PermVaultCreate] || !held[PermVaultWrite] {
 		t.Error("a plain account cannot keep a personal vault")
 	}
 	if held[PermVaultShare] {

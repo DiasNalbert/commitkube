@@ -38,6 +38,14 @@ export function UserActions({ user, myRole, rootCount, onChanged, onError }: {
     call(`/users/${user.id}/mfa`, { method: "DELETE" }, "mfa reset");
   };
 
+  // The vault code is a separate authenticator entry. Resetting it does not
+  // open anything -- the vault passphrase is still needed -- it only lets
+  // them pair a new phone the next time they open the vault.
+  const resetVaultMFA = () => {
+    if (!confirm(`Reset the vault code for ${user.email}? They pair a new authenticator the next time they open the vault. Their vault contents are not affected.`)) return;
+    call(`/users/${user.id}/vault-mfa`, { method: "DELETE" }, "vault code reset");
+  };
+
   const remove = () => {
     if (!confirm(`Delete ${user.email}? Their grants and namespace scopes go with them.`)) return;
     call(`/users/${user.id}`, { method: "DELETE" }, "deleted");
@@ -86,6 +94,10 @@ export function UserActions({ user, myRole, rootCount, onChanged, onError }: {
         <button onClick={resetMFA}
           className="px-3 py-1.5 text-sm rounded-lg border border-[var(--card-border)] text-zinc-400 hover:text-brand-green transition">
           Reset MFA
+        </button>
+        <button onClick={resetVaultMFA}
+          className="px-3 py-1.5 text-sm rounded-lg border border-[var(--card-border)] text-zinc-400 hover:text-brand-green transition">
+          Reset vault code
         </button>
         <button onClick={remove}
           className="px-3 py-1.5 text-sm rounded-lg border border-red-500/30 text-red-500 hover:bg-red-500/10 transition">
