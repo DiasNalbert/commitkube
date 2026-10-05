@@ -35,9 +35,11 @@ func AuthRequired() fiber.Handler {
 				tokenString = parts[1]
 			}
 		}
-		if tokenString == "" {
-			tokenString = c.Query("token")
-		}
+		// The header is the only place a session is read from. A token in
+		// the query string ends up in proxy access logs, browser history
+		// and Referer headers -- nginx here logs every URL to stdout -- and
+		// nothing in the frontend needs it: the log stream uses fetch so it
+		// can send this header.
 		if tokenString == "" {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Missing authorization token"})
 		}

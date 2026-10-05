@@ -48,4 +48,13 @@ func TestOnlyAccessTokensPassAuth(t *testing.T) {
 	if code := status(access); code != http.StatusOK {
 		t.Errorf("a real access token was refused: %d", code)
 	}
+
+	// The same token in the URL is refused: URLs are logged.
+	res, err := app.Test(httptest.NewRequest("GET", "/x?token="+access, nil), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a token in the query string was accepted: %d", res.StatusCode)
+	}
 }
