@@ -290,10 +290,10 @@ export function AccessPanel({ vault, canShare, pending, onClose, onChanged }: {
       </div>
       <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
         The vault key is resealed in a browser to each person&apos;s public key — the server never
-        holds it. When a group is given access, everyone in it who has set up a vault gets a key,
-        and anyone who joins the group later gets one the next time an owner or editor unlocks.
-        Leaving the group removes the key. Removing somebody does not un-read what they already
-        opened; rotate anything they saw.
+        holds it. When a group is given access, its members who have set up a vault are listed
+        here for you to approve, and so is anyone who joins the group later; each one gets a key
+        only once an owner or editor approves them. Leaving the group removes the key. Removing
+        somebody does not un-read what they already opened; rotate anything they saw.
       </p>
 
       {error && <p className="text-sm text-red-500">{error}</p>}
