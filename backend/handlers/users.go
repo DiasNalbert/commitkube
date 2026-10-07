@@ -281,10 +281,19 @@ func ChangePassword(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Cannot change root password"})
 	}
 
+	// The profile page sends new_password; the IAM panel sends password.
+	// Both mean the same thing here, so take either.
 	var req struct {
 		NewPassword string `json:"new_password"`
+		Password    string `json:"password"`
 	}
-	if err := c.BodyParser(&req); err != nil || req.NewPassword == "" {
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "new_password required"})
+	}
+	if req.NewPassword == "" {
+		req.NewPassword = req.Password
+	}
+	if req.NewPassword == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "new_password required"})
 	}
 
