@@ -54,7 +54,7 @@ export function UserActions({ user, myRole, rootCount, onChanged, onError }: {
   const setPassword = async () => {
     if (!newPassword) return;
     const done = await call(`/users/${user.id}/password`,
-      { method: "PUT", body: JSON.stringify({ new_password: newPassword }) }, "password set");
+      { method: "PUT", body: JSON.stringify({ password: newPassword }) }, "password set");
     if (done) { setNewPassword(""); setResetting(false); }
   };
 
