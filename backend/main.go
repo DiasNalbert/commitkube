@@ -229,6 +229,11 @@ func main() {
 
 	app := fiber.New(fiber.Config{
 		BodyLimit: 50 * 1024 * 1024,
+		// The API sets no cookies, but it is served under a domain other
+		// sites set theirs on, and the browser sends all of them. Fiber's
+		// default 4 KB header buffer turned those into a plain-text 431
+		// that the sign-in page could not read.
+		ReadBufferSize: 64 * 1024,
 	})
 
 	app.Use(logger.New())

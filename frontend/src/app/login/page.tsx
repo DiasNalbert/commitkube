@@ -5,6 +5,17 @@ import ThemeToggle from "@/app/components/ThemeToggle";
 import KubeLogo from "@/app/components/KubeLogo";
 import { API } from "@/lib/api";
 
+/** A proxy or the server itself can answer in plain text (a 431 or a 502,
+ *  say). Surface that text instead of a JSON parse error. */
+async function readJSON(res: Response): Promise<any> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text.trim() || `${res.status} ${res.statusText}` };
+  }
+}
+
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -27,7 +38,7 @@ export default function LoginPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password }),
         });
-        const data = await res.json();
+        const data = await readJSON(res);
         if (!res.ok) throw new Error(data.error || "Login failed");
 
         if (data.setup_required) {
@@ -49,7 +60,7 @@ export default function LoginPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ mfa_token: mfaToken, code: mfaCode }),
         });
-        const data = await res.json();
+        const data = await readJSON(res);
         if (!res.ok) throw new Error(data.error || "MFA validation failed");
 
         localStorage.setItem("token", data.token);
