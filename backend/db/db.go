@@ -135,6 +135,7 @@ func ConnectDB() {
 		&models.PostureRuleResult{},
 		&models.CloudflareZone{},
 		&models.CloudflareAlert{},
+		&models.CloudflareExposure{},
 	)
 	if err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
@@ -179,7 +180,11 @@ func ConnectDB() {
 
 	// One open threshold alert per rule and zone, and each alert copied from
 	// Cloudflare's history only once however often the poller reads it back.
-	DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cfa_open ON cloudflare_alerts (zone_ref_id, alert_type) WHERE resolved_at IS NULL AND source = 'commitkube'")
+	// The open index gained external_id when exposure alerts arrived (one per
+	// exposed port); the old, narrower one has to go or it would allow only
+	// one open port per zone.
+	DB.Exec("DROP INDEX IF EXISTS idx_cfa_open")
+	DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cfa_open_key ON cloudflare_alerts (zone_ref_id, alert_type, external_id) WHERE resolved_at IS NULL AND source = 'commitkube'")
 	DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cfa_external ON cloudflare_alerts (zone_ref_id, external_id) WHERE source = 'cloudflare'")
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_cfa_zone_time ON cloudflare_alerts (zone_ref_id, started_at)")
 

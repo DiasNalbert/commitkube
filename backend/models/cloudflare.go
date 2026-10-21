@@ -58,8 +58,11 @@ type CloudflareAlert struct {
 	CreatedAt time.Time `json:"created_at"`
 	ZoneRefID uint      `gorm:"index;not null" json:"zone_ref_id"`
 
-	Source     string `gorm:"index;not null" json:"source"`
-	AlertType  string `gorm:"index;not null" json:"alert_type"`
+	Source    string `gorm:"index;not null" json:"source"`
+	AlertType string `gorm:"index;not null" json:"alert_type"`
+	// For Cloudflare's alerts, its history ID. For exposure alerts, what the
+	// alert is about (an IP, an IP and port, a record name), so each exposed
+	// port is an alert of its own that opens and closes on its own.
 	ExternalID string `json:"external_id,omitempty"`
 	Severity   string `gorm:"not null" json:"severity"` // critical, high, medium, info
 	Title      string `gorm:"not null" json:"title"`
@@ -75,4 +78,16 @@ type CloudflareAlert struct {
 
 	// Everything else worth showing on the expanded row, as JSON.
 	Details string `gorm:"type:text" json:"details"`
+}
+
+// CloudflareExposure is the latest exposure check of a zone: its DNS records,
+// the IPs they point at, what the internet can reach on each, and the
+// findings drawn from that. One row per zone, replaced on every check; what
+// changes between checks is recorded as alerts, not as history here.
+type CloudflareExposure struct {
+	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	ZoneRefID uint      `gorm:"uniqueIndex;not null" json:"zone_ref_id"`
+	ScannedAt time.Time `json:"scanned_at"`
+	Error     string    `gorm:"type:text" json:"error"`
+	Result    string    `gorm:"type:text" json:"-"` // JSON, see cfExposureResult
 }

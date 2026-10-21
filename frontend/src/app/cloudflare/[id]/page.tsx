@@ -9,6 +9,7 @@ import {
   AlertLog, BarList, Card, Modal, SectionError, Stat, Zone, ZoneForm, fmtBytesSI, fmtFull, fmtNum, fmtPct,
   fmtStamp, relativeTime, sourceLabel, zoneToForm,
 } from "../shared";
+import ExposureTab from "../exposure";
 
 // ---- payload --------------------------------------------------------------------
 
@@ -54,10 +55,10 @@ const RANGES = [
   { key: "24h", label: "24 hours" }, { key: "3d", label: "3 days" }, { key: "7d", label: "7 days" },
 ];
 
-const TABS = ["overview", "security", "traffic", "bots", "events", "alerts", "settings"] as const;
+const TABS = ["overview", "security", "exposure", "traffic", "bots", "events", "alerts", "settings"] as const;
 type Tab = typeof TABS[number];
 const TAB_LABEL: Record<Tab, string> = {
-  overview: "Overview", security: "Security", traffic: "Traffic", bots: "Bots",
+  overview: "Overview", security: "Security", exposure: "Exposure", traffic: "Traffic", bots: "Bots",
   events: "Security events", alerts: "Alerts", settings: "Settings",
 };
 
@@ -322,7 +323,7 @@ export default function ZonePage() {
         ))}
       </div>
 
-      {!data && loading && tab !== "alerts" && tab !== "settings" && <p className="text-sm text-zinc-500">Querying Cloudflare…</p>}
+      {!data && loading && !["alerts", "settings", "exposure"].includes(tab) && <p className="text-sm text-zinc-500">Querying Cloudflare…</p>}
 
       {/* ---- overview ---- */}
       {tab === "overview" && data && (
@@ -449,6 +450,9 @@ export default function ZonePage() {
           </div>
         </div>
       )}
+
+      {/* ---- exposure ---- */}
+      {tab === "exposure" && <ExposureTab zoneRefId={zone.id} canScan={canPoll} />}
 
       {/* ---- traffic ---- */}
       {tab === "traffic" && data && (

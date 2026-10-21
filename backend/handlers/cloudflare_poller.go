@@ -222,8 +222,8 @@ func evaluateCloudflareRule(z *models.CloudflareZone, r cfRule, details string) 
 	// Find rather than First: no open alert is the normal case, and First
 	// would log it as an error on every pass.
 	var found []models.CloudflareAlert
-	db.DB.Where("zone_ref_id = ? AND alert_type = ? AND source = ? AND resolved_at IS NULL",
-		z.ID, r.Type, "commitkube").Limit(1).Find(&found)
+	db.DB.Where("zone_ref_id = ? AND alert_type = ? AND external_id = ? AND source = ? AND resolved_at IS NULL",
+		z.ID, r.Type, "", "commitkube").Limit(1).Find(&found)
 	hasOpen := len(found) > 0
 	var open models.CloudflareAlert
 	if hasOpen {

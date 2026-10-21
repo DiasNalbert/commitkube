@@ -35,6 +35,7 @@ type fakeCloudflare struct {
 	baseline  int64
 	fwRows    []map[string]interface{}
 	history   []services.CloudflareAlertHistory
+	dns       []services.CloudflareDNSRecord
 	refuse    *regexp.Regexp // GraphQL queries matching this get an error
 	queries   []string
 	maxDurSec int64
@@ -58,6 +59,9 @@ func (f *fakeCloudflare) handler(t *testing.T) http.Handler {
 				"plan":    map[string]string{"name": "Free Website"},
 				"account": map[string]string{"id": testAccountID, "name": "Example Corp"},
 			}})
+		case r.URL.Path == "/zones/"+testZoneID+"/dns_records":
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "result": f.dns,
+				"result_info": map[string]int{"page": 1, "total_pages": 1}})
 		case strings.HasSuffix(r.URL.Path, "/alerting/v3/history"):
 			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "result": f.history})
 		case r.URL.Path == "/graphql":
@@ -122,7 +126,7 @@ func setupCloudflareTest(t *testing.T) (*fakeCloudflare, *models.CloudflareZone)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := gdb.AutoMigrate(&models.CloudflareZone{}, &models.CloudflareAlert{},
+	if err := gdb.AutoMigrate(&models.CloudflareZone{}, &models.CloudflareAlert{}, &models.CloudflareExposure{},
 		&models.NotificationConfig{}, &models.WebhookConfig{}); err != nil {
 		t.Fatal(err)
 	}

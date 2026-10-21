@@ -119,7 +119,15 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   threat_spike: "Threat spike",
   origin_errors: "Server errors",
   traffic_spike: "Traffic spike",
+  origin_exposed: "Origin exposure",
+  exposed_port: "Open port",
+  known_vulns: "Known vulnerabilities",
+  dangling_cname: "Dangling record",
 };
+
+/** Rules measured against a number; exposure alerts are about a thing
+ *  (an IP, a port, a record) and carry no value or threshold. */
+export const THRESHOLD_TYPES = new Set(["ddos_l7", "threat_spike", "origin_errors", "traffic_spike"]);
 
 export const SEVERITY_BADGE: Record<string, string> = {
   critical: "text-red-500 dark:text-red-400 border-red-500/30 bg-red-500/10",
@@ -327,7 +335,8 @@ export function ZoneForm({ initial, zoneRefId, onSaved, onCancel }: {
             onChange={e => set("api_token", e.target.value)} placeholder={editing ? "••••••••" : "Cloudflare API token"} />
           <span className="block text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">
             Needs <span className="font-mono">Zone › Zone: Read</span> and <span className="font-mono">Zone › Analytics: Read</span>.
-            Add <span className="font-mono">Account › Notifications: Read</span> to see the alerts Cloudflare itself sends.
+            Add <span className="font-mono">Zone › DNS: Read</span> for the exposure check (origin IPs, open ports, dangling records),
+            and <span className="font-mono">Account › Notifications: Read</span> to see the alerts Cloudflare itself sends.
             Stored encrypted; never shown again.
           </span>
         </label>
@@ -509,10 +518,12 @@ export function AlertLog({ zoneRefId, zones, refreshKey = 0 }: { zoneRefId?: num
                 ["alert_type", a.alert_type],
                 ["severity", a.severity],
                 ...(zones ? [["zone", zoneName.get(a.zone_ref_id) ?? `#${a.zone_ref_id}`] as [string, React.ReactNode]] : []),
-                ...(a.source === "commitkube" ? [
+                ...(a.source === "commitkube" && THRESHOLD_TYPES.has(a.alert_type) ? [
                   ["value", a.alert_type === "origin_errors" ? fmtPct(a.value) : a.alert_type === "traffic_spike" ? `${a.value.toFixed(1)}×` : fmtFull(a.value)],
                   ["peak", a.alert_type === "origin_errors" ? fmtPct(a.peak) : a.alert_type === "traffic_spike" ? `${a.peak.toFixed(1)}×` : fmtFull(a.peak)],
                   ["threshold", a.alert_type === "origin_errors" ? fmtPct(a.threshold) : a.alert_type === "traffic_spike" ? `${a.threshold}×` : fmtFull(a.threshold)],
+                ] as [string, React.ReactNode][] : []),
+                ...(a.source === "commitkube" ? [
                   ["last_seen", fmtStamp(a.last_seen_at)],
                   ["resolved", a.resolved_at ? fmtStamp(a.resolved_at) : "still open"],
                 ] as [string, React.ReactNode][] : []),

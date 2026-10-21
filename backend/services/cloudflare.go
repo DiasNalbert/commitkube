@@ -36,9 +36,13 @@ func NewCloudflareClient(token string) *CloudflareClient {
 }
 
 type cloudflareEnvelope struct {
-	Success bool            `json:"success"`
-	Errors  []cfMessage     `json:"errors"`
-	Result  json.RawMessage `json:"result"`
+	Success    bool            `json:"success"`
+	Errors     []cfMessage     `json:"errors"`
+	Result     json.RawMessage `json:"result"`
+	ResultInfo struct {
+		Page       int `json:"page"`
+		TotalPages int `json:"total_pages"`
+	} `json:"result_info"`
 }
 
 type cfMessage struct {
@@ -57,33 +61,41 @@ type CloudflareError struct {
 func (e *CloudflareError) Error() string { return e.Message }
 
 func (c *CloudflareClient) rest(ctx context.Context, path string, query url.Values, out interface{}) error {
+	_, err := c.restPage(ctx, path, query, out)
+	return err
+}
+
+// restPage is rest for listings: it also says how many pages there are.
+func (c *CloudflareClient) restPage(ctx context.Context, path string, query url.Values, out interface{}) (totalPages int, err error) {
 	u := CloudflareAPI + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	resp, err := cloudflareHTTP.Do(req)
 	if err != nil {
-		return fmt.Errorf("cloudflare: %w", err)
+		return 0, fmt.Errorf("cloudflare: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 
 	var env cloudflareEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
-		return &CloudflareError{Status: resp.StatusCode, Message: fmt.Sprintf("cloudflare returned %d", resp.StatusCode)}
+		return 0, &CloudflareError{Status: resp.StatusCode, Message: fmt.Sprintf("cloudflare returned %d", resp.StatusCode)}
 	}
 	if !env.Success || resp.StatusCode >= 300 {
-		return &CloudflareError{Status: resp.StatusCode, Message: joinCFMessages(env.Errors, resp.StatusCode)}
+		return 0, &CloudflareError{Status: resp.StatusCode, Message: joinCFMessages(env.Errors, resp.StatusCode)}
 	}
 	if out != nil {
-		return json.Unmarshal(env.Result, out)
+		if err := json.Unmarshal(env.Result, out); err != nil {
+			return 0, err
+		}
 	}
-	return nil
+	return env.ResultInfo.TotalPages, nil
 }
 
 func joinCFMessages(errs []cfMessage, status int) string {
@@ -206,4 +218,78 @@ func (c *CloudflareClient) GraphQL(ctx context.Context, query string, variables 
 		return json.Unmarshal(env.Data, out)
 	}
 	return nil
+}
+
+type CloudflareDNSRecord struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	Proxied bool   `json:"proxied"`
+	TTL     int    `json:"ttl"`
+	Comment string `json:"comment"`
+}
+
+// ListDNSRecords reads every record in the zone. The API returns the record's
+// real content even when it is proxied -- which is the point: the origin IP
+// is exactly what has to be checked for exposure.
+func (c *CloudflareClient) ListDNSRecords(ctx context.Context, zoneID string) ([]CloudflareDNSRecord, error) {
+	var all []CloudflareDNSRecord
+	for page := 1; page <= 50; page++ {
+		q := url.Values{}
+		q.Set("per_page", "1000")
+		q.Set("page", fmt.Sprint(page))
+		var batch []CloudflareDNSRecord
+		total, err := c.restPage(ctx, "/zones/"+zoneID+"/dns_records", q, &batch)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, batch...)
+		if page >= total || len(batch) == 0 {
+			break
+		}
+	}
+	return all, nil
+}
+
+// InternetDB is Shodan's free, keyless view of an IP: the ports, software and
+// known CVEs its crawlers saw from the internet. It is the outside view this
+// module needs -- a scan from inside the cluster would see the cluster's own
+// network, not what an attacker sees. Shodan refreshes it about weekly, so it
+// answers "what has been exposed lately", not "what is open this second".
+var InternetDBURL = "https://internetdb.shodan.io"
+
+var internetDBHTTP = &http.Client{Timeout: 15 * time.Second}
+
+type InternetDBHost struct {
+	IP        string   `json:"ip"`
+	Ports     []int    `json:"ports"`
+	CPEs      []string `json:"cpes"`
+	Hostnames []string `json:"hostnames"`
+	Tags      []string `json:"tags"`
+	Vulns     []string `json:"vulns"`
+}
+
+// LookupInternetDB returns nil, nil when Shodan has seen nothing on the IP.
+func LookupInternetDB(ctx context.Context, ip string) (*InternetDBHost, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, InternetDBURL+"/"+url.PathEscape(ip), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := internetDBHTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("internetdb: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("internetdb returned %d", resp.StatusCode)
+	}
+	var h InternetDBHost
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&h); err != nil {
+		return nil, fmt.Errorf("internetdb: %w", err)
+	}
+	return &h, nil
 }

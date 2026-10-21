@@ -41,6 +41,10 @@ const ALL_EVENTS = [
   { value: "cloudflare.origin_errors", label: "Cloudflare: server errors (5xx) above threshold" },
   { value: "cloudflare.traffic_spike", label: "Cloudflare: traffic spike" },
   { value: "cloudflare.native_alert", label: "Cloudflare: alert sent by Cloudflare" },
+  { value: "cloudflare.origin_exposed", label: "Cloudflare: origin reachable without Cloudflare" },
+  { value: "cloudflare.exposed_port", label: "Cloudflare: port open to the internet" },
+  { value: "cloudflare.known_vulns", label: "Cloudflare: known vulnerabilities on an exposed IP" },
+  { value: "cloudflare.dangling_cname", label: "Cloudflare: dangling CNAME / takeover risk" },
 ];
 
 const TYPE_LABELS: Record<string, { label: string; color: string }> = {

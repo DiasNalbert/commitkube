@@ -247,6 +247,25 @@ func main() {
 		}
 	}()
 
+	go func() {
+		// Cloudflare exposure: origin IPs, open ports and dangling records,
+		// from the zone's DNS and Shodan's InternetDB. The data behind it
+		// changes over days, so a few passes a day is plenty.
+		interval := 6 * time.Hour
+		if v := os.Getenv("CLOUDFLARE_EXPOSURE_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d >= 10*time.Minute {
+				interval = d
+			}
+		}
+		time.Sleep(2 * time.Minute) // wait for startup
+		handlers.PollCloudflareExposure()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			handlers.PollCloudflareExposure()
+		}
+	}()
+
 	app := fiber.New(fiber.Config{
 		BodyLimit: 50 * 1024 * 1024,
 		// The API sets no cookies, but it is served under a domain other
@@ -419,6 +438,8 @@ func main() {
 	get(api, "/cloudflare/zones/:id/analytics", handlers.PermSecurityRead, handlers.GetCloudflareAnalytics)
 	get(api, "/cloudflare/zones/:id/alerts", handlers.PermSecurityRead, handlers.ListCloudflareAlerts)
 	post(api, "/cloudflare/zones/:id/poll", handlers.PermSecurityScan, handlers.PollCloudflareZoneNow)
+	get(api, "/cloudflare/zones/:id/exposure", handlers.PermSecurityRead, handlers.GetCloudflareExposure)
+	post(api, "/cloudflare/zones/:id/exposure/scan", handlers.PermSecurityScan, handlers.ScanCloudflareExposureNow)
 	get(api, "/cloudflare/alerts", handlers.PermSecurityRead, handlers.ListCloudflareAlerts)
 
 	get(api, "/clusters", handlers.PermK8sRead, handlers.ListClusters)

@@ -21,9 +21,10 @@ import (
 // from Cloudflare on demand (cloudflare_analytics.go) and a poller checks each
 // zone every few minutes against its alert thresholds (cloudflare_poller.go).
 //
-// The token needs Zone > Zone: Read and Zone > Analytics: Read. Account >
-// Notifications: Read is optional and adds Cloudflare's own alert history to
-// the zone's log.
+// The token needs Zone > Zone: Read and Zone > Analytics: Read. Two more are
+// optional: Zone > DNS: Read enables the exposure check
+// (cloudflare_exposure.go), and Account > Notifications: Read adds
+// Cloudflare's own alert history to the zone's log.
 
 // Defaults for a new zone, over a five-minute window.
 const (
@@ -124,6 +125,9 @@ func verifyCloudflareZone(ctx context.Context, zoneID, accountID, token string) 
 		return nil, nil, fmt.Errorf("the token cannot read this zone's analytics (it needs Zone > Analytics: Read): %v", err)
 	}
 	var warnings []string
+	if _, err := cf.ListDNSRecords(ctx, zoneID); err != nil {
+		warnings = append(warnings, "The exposure check (origin IPs, open ports, dangling records) needs Zone > DNS: Read ("+err.Error()+")")
+	}
 	if _, err := cf.AlertHistory(ctx, accountID, time.Now().Add(-time.Hour)); err != nil {
 		warnings = append(warnings, "Cloudflare's own alert history will not be shown: the token needs Account > Notifications: Read ("+err.Error()+")")
 	}
@@ -270,6 +274,11 @@ func CreateCloudflareZone(c *fiber.Ctx) error {
 	// The first measurement now rather than at the next tick, so the new
 	// card does not sit empty for up to five minutes.
 	go pollCloudflareZone(zone.ID)
+	go func(z models.CloudflareZone) {
+		cfExposureMu.Lock()
+		defer cfExposureMu.Unlock()
+		scanCloudflareExposure(&z)
+	}(zone)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": zone.ID, "warnings": warnings})
 }
@@ -341,6 +350,7 @@ func DeleteCloudflareZone(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "zone not found"})
 	}
 	db.DB.Where("zone_ref_id = ?", zone.ID).Delete(&models.CloudflareAlert{})
+	db.DB.Where("zone_ref_id = ?", zone.ID).Delete(&models.CloudflareExposure{})
 	db.DB.Delete(zone)
 	invalidateCloudflareCache(zone.ZoneID)
 	db.LogAudit(currentUserID(c), "delete_cloudflare_zone", "cloudflare_zone", zone.ZoneName, zone.ZoneID, c.IP())
