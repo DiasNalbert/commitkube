@@ -3,6 +3,7 @@ package db
 import (
 	"log"
 	"os"
+	"strings"
 
 	"github.com/kubecommit/backend/models"
 	"golang.org/x/crypto/bcrypt"
@@ -136,6 +137,7 @@ func ConnectDB() {
 		&models.CloudflareZone{},
 		&models.CloudflareAlert{},
 		&models.CloudflareExposure{},
+		&models.UserArgoCDToken{},
 	)
 	if err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
@@ -207,7 +209,36 @@ func ConnectDB() {
 			FROM permission_grants WHERE permission = 'vault.write'`)
 	}
 
+	MigratePersonalArgoCDTokens()
+
 	bootstrapAdmin()
+}
+
+// MigratePersonalArgoCDTokens carries the old per-user ArgoCD fields -- one
+// URL and one token in user_keys, never shown in the UI any more -- into
+// per-instance tokens, where their URL matches a registered instance. A token
+// that matches nothing stays where it is and is simply not used.
+func MigratePersonalArgoCDTokens() {
+	var keys []models.UserKeys
+	DB.Where("argo_cd_server_url <> '' AND argo_cd_auth_token <> ''").Find(&keys)
+	if len(keys) == 0 {
+		return
+	}
+	var instances []models.ArgoCDInstance
+	DB.Find(&instances)
+	norm := func(u string) string { return strings.TrimRight(strings.ToLower(strings.TrimSpace(u)), "/") }
+	for _, k := range keys {
+		for _, inst := range instances {
+			if norm(inst.ServerURL) != norm(k.ArgoCDServerURL) {
+				continue
+			}
+			var n int64
+			DB.Model(&models.UserArgoCDToken{}).Where("user_id = ? AND instance_id = ?", k.UserID, inst.ID).Count(&n)
+			if n == 0 {
+				DB.Create(&models.UserArgoCDToken{UserID: k.UserID, InstanceID: inst.ID, Token: k.ArgoCDAuthToken})
+			}
+		}
+	}
 }
 
 func bootstrapAdmin() {

@@ -147,7 +147,8 @@ type provisionResult struct {
 	Repo      models.Repository
 	DeployKey *RepoDeployKey
 	// ArgoCD is "configured", "failed", "skipped" (the creator chose no
-	// instance) or "not_configured" (there was none to use).
+	// instance), "not_configured" (there was none to use) or "no_token" (the
+	// creator has no personal token for the instance).
 	ArgoCD   string
 	Warnings []string
 }
@@ -209,36 +210,29 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 		argoProject   string
 	)
 
-	// No instance id used to mean "fall back to the legacy per-user ArgoCD
-	// settings" and, when those were empty, quietly do nothing -- which is
-	// what happened whenever the instance list failed to load in the browser.
-	// Now only an explicit "No ArgoCD" skips it; otherwise the configured
-	// instance is used when there is one.
+	// Which ArgoCD: the instance the creator picked, or the first one
+	// registered. Which credential: always the creator's own token for that
+	// instance -- never one stored on the instance and shared by everyone.
+	// Without a personal token the ArgoCD steps are skipped and the result
+	// says how to add one.
+	var argoInstance string
 	switch {
 	case req.SkipArgoCD:
-	case req.ArgoCDInstanceID > 0:
-		var inst models.ArgoCDInstance
-		if err := db.DB.Where("id = ?", req.ArgoCDInstanceID).First(&inst).Error; err != nil {
-			return nil, &provisionError{fiber.StatusBadRequest, "argocd instance not found"}
-		}
-		argoURL = inst.ServerURL
-		argoToken = crypto.DecryptField(encKey, inst.AuthToken)
-		argoNamespace = inst.DefaultNamespace
-		argoProject = inst.DefaultProject
 	default:
-		var keys models.UserKeys
-		if db.DB.Where("user_id = ?", userID).First(&keys).Error == nil {
-			argoURL = keys.ArgoCDServerURL
-			argoToken = crypto.DecryptField(encKey, keys.ArgoCDAuthToken)
-		}
-		if argoURL == "" || argoToken == "" {
-			var inst models.ArgoCDInstance
-			if db.DB.Order("id asc").First(&inst).Error == nil {
-				argoURL = inst.ServerURL
-				argoToken = crypto.DecryptField(encKey, inst.AuthToken)
-				argoNamespace = inst.DefaultNamespace
-				argoProject = inst.DefaultProject
+		var inst models.ArgoCDInstance
+		if req.ArgoCDInstanceID > 0 {
+			if err := db.DB.Where("id = ?", req.ArgoCDInstanceID).First(&inst).Error; err != nil {
+				return nil, &provisionError{fiber.StatusBadRequest, "argocd instance not found"}
 			}
+		} else {
+			db.DB.Order("id asc").Limit(1).Find(&inst)
+		}
+		if inst.ID != 0 {
+			argoInstance = inst.Alias
+			argoURL = inst.ServerURL
+			argoToken, _ = argoCredential(userID, inst)
+			argoNamespace = inst.DefaultNamespace
+			argoProject = inst.DefaultProject
 		}
 	}
 	if argoNamespace == "" {
@@ -428,9 +422,12 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 	switch {
 	case req.SkipArgoCD:
 		result.ArgoCD = "skipped"
-	case argoURL == "" || argoToken == "":
+	case argoURL == "":
 		result.ArgoCD = "not_configured"
 		setupWarnings = append(setupWarnings, "ArgoCD: no ArgoCD instance is configured, so no Application was created")
+	case argoToken == "":
+		result.ArgoCD = "no_token"
+		setupWarnings = append(setupWarnings, fmt.Sprintf("ArgoCD: you have no ArgoCD token for %s. Add yours under Profile › ArgoCD Instances, then connect this repository in ArgoCD with the deploy key below and create the application -- CommitKube only reaches ArgoCD with the token of the person acting.", argoInstance))
 	default:
 		result.ArgoCD = "configured"
 		argoClient := services.NewArgoCDClient(argoURL, argoToken)
@@ -639,17 +636,21 @@ func DeleteRepository(c *fiber.Ctx) error {
 			}
 		}
 
-		// Delete from ArgoCD
+		// Delete from ArgoCD, as the person deleting.
 		var inst models.ArgoCDInstance
-		if db.DB.First(&inst).Error == nil {
-			argoToken := crypto.DecryptField(encKey, inst.AuthToken)
-			argoClient := services.NewArgoCDClient(inst.ServerURL, argoToken)
-			appName := repo.ArgoApp
-			if appName == "" {
-				appName = name
-			}
-			if err := argoClient.DeleteApplication(services.AppName(appName)); err != nil {
-				warnings = append(warnings, fmt.Sprintf("ArgoCD: %v", err))
+		if db.DB.Order("id asc").Limit(1).Find(&inst); inst.ID != 0 {
+			argoToken, _ := argoCredential(userID, inst)
+			if argoToken == "" {
+				warnings = append(warnings, fmt.Sprintf("ArgoCD: you have no ArgoCD token for %s, so its application was not deleted. Add your token under Profile › ArgoCD Instances, or delete the application in ArgoCD.", inst.Alias))
+			} else {
+				argoClient := services.NewArgoCDClient(inst.ServerURL, argoToken)
+				appName := repo.ArgoApp
+				if appName == "" {
+					appName = name
+				}
+				if err := argoClient.DeleteApplication(services.AppName(appName)); err != nil {
+					warnings = append(warnings, fmt.Sprintf("ArgoCD: %v", err))
+				}
 			}
 		}
 	}

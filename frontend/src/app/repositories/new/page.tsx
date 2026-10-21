@@ -8,7 +8,7 @@ type Template = { id: number; name: string; path: string; content: string; type:
 type RepoVariable = { key: string; value: string; secured: boolean };
 type UploadedFile = { path: string; content: string };
 type Workspace = { id: number; alias: string; workspace_id: string; project_key: string };
-type ArgoCDInst = { id: number; alias: string; server_url: string };
+type ArgoCDInst = { id: number; alias: string; server_url: string; has_my_token?: boolean; my_username?: string };
 type Project = { id: number; project_key: string; alias: string };
 type RegistryCred = { id: number; alias: string; host: string; type: string };
 type RepoEntry = { name: string; projectKey: string; files: UploadedFile[]; editedTmpls: Record<number, string>; skippedTmpls: number[] };
@@ -488,10 +488,22 @@ export default function NewRepository() {
                       onChange={e => setSelectedArgoCDId(Number(e.target.value))}
                     >
                       {argoInstances.map(inst => (
-                        <option key={inst.id} value={inst.id}>{inst.alias} ({inst.server_url})</option>
+                        <option key={inst.id} value={inst.id}>{inst.alias} ({inst.server_url}){inst.has_my_token ? "" : " — no token of yours"}</option>
                       ))}
                       <option value={0}>— No ArgoCD —</option>
                     </select>
+                    {(() => {
+                      // The instance the backend will use: the one picked, or the first.
+                      const chosen = selectedArgoCDId > 0 ? argoInstances.find(i => i.id === selectedArgoCDId)
+                        : selectedArgoCDId === 0 ? undefined : argoInstances[0];
+                      if (!chosen) return null;
+                      return chosen.has_my_token
+                        ? <p className="text-xs text-zinc-500 mt-1">Created in ArgoCD as <span className="font-mono">{chosen.my_username || "you"}</span>.</p>
+                        : <p className="text-xs text-amber-500 mt-1">
+                            You have no ArgoCD token for {chosen.alias}, so the repository will be created without its ArgoCD application.{" "}
+                            <a href="/profile" className="underline">Add yours in Profile</a> first.
+                          </p>;
+                    })()}
                   </div>
                 )}
               </div>
@@ -781,7 +793,7 @@ export default function NewRepository() {
                     <p className="text-xs text-zinc-500">
                       <span className="font-mono">{r.name}</span> · ArgoCD:{" "}
                       <span className={r.argocd === "configured" ? "text-brand-green" : r.argocd === "skipped" ? "text-zinc-400" : "text-amber-500"}>
-                        {{ configured: "connected", failed: "failed", skipped: "skipped", not_configured: "no instance configured" }[r.argocd] ?? r.argocd}
+                        {{ configured: "connected", failed: "failed", skipped: "skipped", not_configured: "no instance configured", no_token: "no personal token" }[r.argocd] ?? r.argocd}
                       </span>
                     </p>
                   )}

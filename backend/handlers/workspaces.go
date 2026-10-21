@@ -161,12 +161,6 @@ func DeleteWorkspace(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "workspace deleted"})
 }
 
-func ListArgoCDInstances(c *fiber.Ctx) error {
-	var instances []models.ArgoCDInstance
-	db.DB.Find(&instances)
-	return c.JSON(instances)
-}
-
 func CreateArgoCDInstance(c *fiber.Ctx) error {
 	if !callerIsAdmin(c) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Only admins can create ArgoCD instances"})
@@ -196,12 +190,12 @@ func CreateArgoCDInstance(c *fiber.Ctx) error {
 		proj = "default"
 	}
 
-	key := crypto.MasterKey()
+	// A token sent here is ignored: ArgoCD is reached with each person's own
+	// token (argocd_tokens.go), never with one stored on the instance.
 	inst := models.ArgoCDInstance{
 		UserID:           userID,
 		Alias:            req.Alias,
 		ServerURL:        req.ServerURL,
-		AuthToken:        crypto.EncryptField(key, req.AuthToken),
 		DefaultNamespace: ns,
 		DefaultProject:   proj,
 	}
@@ -237,10 +231,6 @@ func UpdateArgoCDInstance(c *fiber.Ctx) error {
 	}
 	if req.ServerURL != "" {
 		inst.ServerURL = req.ServerURL
-	}
-	key := crypto.MasterKey()
-	if req.AuthToken != "" {
-		inst.AuthToken = crypto.EncryptField(key, req.AuthToken)
 	}
 	if req.DefaultNamespace != "" {
 		inst.DefaultNamespace = req.DefaultNamespace

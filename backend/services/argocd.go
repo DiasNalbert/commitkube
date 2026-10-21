@@ -181,3 +181,29 @@ func (c *ArgoCDClient) DeleteApplication(appName string) error {
 	}
 	return nil
 }
+
+// UserInfo asks ArgoCD who a token belongs to. It is how a personal token is
+// checked before it is saved, and how the profile can say whose ArgoCD
+// account the person is acting as.
+func (c *ArgoCDClient) UserInfo() (username string, err error) {
+	res, err := c.request("GET", "session/userinfo", nil)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if res.StatusCode >= 400 {
+		return "", fmt.Errorf("HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var info struct {
+		LoggedIn bool   `json:"loggedIn"`
+		Username string `json:"username"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		return "", fmt.Errorf("unexpected answer from ArgoCD: %v", err)
+	}
+	if !info.LoggedIn {
+		return "", fmt.Errorf("ArgoCD does not accept this token")
+	}
+	return info.Username, nil
+}

@@ -384,10 +384,17 @@ func main() {
 	post(api, "/workspaces/:workspace_id/projects", handlers.PermSCMWrite, handlers.CreateProject)
 	del(api, "/workspaces/:workspace_id/projects/:id", handlers.PermSCMWrite, handlers.DeleteProject)
 
-	get(api, "/argocd-instances", handlers.PermSettingsRead, handlers.ListArgoCDInstances)
+	// Any signed-in user: everyone who creates repositories needs to see the
+	// instances to add their own token, and the list carries no credential.
+	get(api, "/argocd-instances", handlers.PermSelf, handlers.ListArgoCDInstances)
 	post(api, "/argocd-instances", handlers.PermSettingsWrite, handlers.CreateArgoCDInstance)
 	put(api, "/argocd-instances/:id", handlers.PermSettingsWrite, handlers.UpdateArgoCDInstance)
 	del(api, "/argocd-instances/:id", handlers.PermSettingsWrite, handlers.DeleteArgoCDInstance)
+	// Each person's own ArgoCD token. Self: it is the caller's credential,
+	// and the only thing it lets them do is act in ArgoCD as themselves.
+	put(api, "/argocd-instances/:id/my-token", handlers.PermSelf, handlers.SetMyArgoCDToken)
+	del(api, "/argocd-instances/:id/my-token", handlers.PermSelf, handlers.DeleteMyArgoCDToken)
+	del(api, "/argocd-instances/:id/shared-token", handlers.PermSettingsWrite, handlers.DeleteSharedArgoCDToken)
 
 	get(api, "/registry-credentials", handlers.PermSettingsRead, handlers.ListRegistryCredentials)
 	post(api, "/registry-credentials", handlers.PermSettingsWrite, handlers.CreateRegistryCredential)

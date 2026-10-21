@@ -13,7 +13,10 @@ interface UserProfile {
 }
 
 type Workspace = { id: number; alias: string; username: string; workspace_id: string; project_key: string; ssh_pub_key: string };
-type ArgoCDInst = { id: number; alias: string; server_url: string; default_namespace: string; default_project: string; prometheus_url: string };
+type ArgoCDInst = {
+  id: number; alias: string; server_url: string; default_namespace: string; default_project: string; prometheus_url: string;
+  has_my_token?: boolean; my_username?: string; has_shared_token?: boolean;
+};
 type Project = { id: number; project_key: string; alias: string };
 type RegistryCred = { id: number; alias: string; host: string; type: string; username: string; aws_region: string; has_password: boolean; has_aws_key: boolean; has_gcr_key: boolean };
 
@@ -147,19 +150,22 @@ export default function ProfilePage() {
     setProjects(prev => ({ ...prev, [wsId]: prev[wsId].filter(p => p.id !== projId) }));
   };
 
+  const reloadArgo = async () => {
+    const list = await apiFetch("/argocd-instances").then(r => r.json()).catch(() => []);
+    setArgoInstances(Array.isArray(list) ? list : []);
+  };
+
   const createArgoCDInstance = async () => {
     if (!newArgoForm.alias || !newArgoForm.server_url) return;
-    const res = await apiFetch("/argocd-instances", { method: "POST", body: JSON.stringify(newArgoForm) });
-    const inst = await res.json();
-    setArgoInstances(prev => [...prev, inst]);
+    await apiFetch("/argocd-instances", { method: "POST", body: JSON.stringify(newArgoForm) });
+    await reloadArgo();
     setNewArgoForm(emptyArgo()); setShowNewArgo(false);
     msg("✅ ArgoCD instance created!");
   };
 
   const saveArgoCDInstance = async (id: number) => {
-    const res = await apiFetch(`/argocd-instances/${id}`, { method: "PUT", body: JSON.stringify(argoForm) });
-    const updated = await res.json();
-    setArgoInstances(prev => prev.map(a => a.id === id ? updated : a));
+    await apiFetch(`/argocd-instances/${id}`, { method: "PUT", body: JSON.stringify(argoForm) });
+    await reloadArgo();
     setEditingArgo(null); msg("✅ ArgoCD instance saved!");
   };
 
@@ -385,7 +391,9 @@ export default function ProfilePage() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-xl font-bold">ArgoCD Instances</h2>
-            <p className="text-zinc-400 text-sm mt-1">Register multiple ArgoCD servers. {!isAdmin && <span className="text-yellow-500 text-xs">Admin only</span>}</p>
+            <p className="text-zinc-400 text-sm mt-1">
+              Admins register where ArgoCD is. Everyone adds their own token for it: CommitKube reaches ArgoCD only as the person acting, never with a shared account.
+            </p>
           </div>
           {isAdmin && <button onClick={() => setShowNewArgo(!showNewArgo)} className="btn-primary text-sm px-3 py-1.5 shrink-0">+ New Instance</button>}
         </div>
@@ -400,10 +408,9 @@ export default function ProfilePage() {
               <label className="text-xs text-zinc-400 mb-1 block">Server URL</label>
               <input className="input-tech text-sm" placeholder="https://argocd.example.com" value={newArgoForm.server_url} onChange={e => setNewArgoForm({ ...newArgoForm, server_url: e.target.value })} />
             </div>
-            <div>
-              <label className="text-xs text-zinc-400 mb-1 block">Auth Token</label>
-              <input type="password" className="input-tech text-sm" placeholder="Access token..." value={newArgoForm.auth_token} onChange={e => setNewArgoForm({ ...newArgoForm, auth_token: e.target.value })} />
-            </div>
+            <p className="text-xs text-zinc-500">
+              No token here: each person adds their own token for this instance below, and CommitKube acts in ArgoCD as them.
+            </p>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-zinc-400 mb-1 block">Destination Namespace <span className="text-zinc-600">(default: default)</span></label>
@@ -439,6 +446,7 @@ export default function ProfilePage() {
                   <button onClick={() => deleteArgoCDInstance(inst.id)} className="text-red-400 hover:text-red-300 text-sm px-1">✕</button>
                 </>}
               </div>
+              <MyArgoToken inst={inst} isAdmin={isAdmin} onChanged={reloadArgo} notify={msg} />
               {editingArgo === inst.id && (
                 <div className="p-4 border-t border-zinc-700 bg-zinc-950 space-y-3">
                   <div>
@@ -448,10 +456,6 @@ export default function ProfilePage() {
                   <div>
                     <label className="text-xs text-zinc-400 mb-1 block">Server URL</label>
                     <input className="input-tech text-sm" value={argoForm.server_url} onChange={e => setArgoForm({ ...argoForm, server_url: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="text-xs text-zinc-400 mb-1 block">Auth Token <span className="text-zinc-500">(leave blank to keep)</span></label>
-                    <input type="password" className="input-tech text-sm" placeholder="New token..." value={argoForm.auth_token} onChange={e => setArgoForm({ ...argoForm, auth_token: e.target.value })} />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -616,6 +620,81 @@ function RegistryForm({ form, onChange, onSave, onCancel }: {
         <button onClick={onCancel} className="px-3 py-1.5 text-sm border border-zinc-600 rounded text-zinc-400 hover:bg-zinc-800 transition">Cancel</button>
         <button onClick={onSave} className="btn-primary text-sm px-4 py-1.5">Save</button>
       </div>
+    </div>
+  );
+}
+
+
+/** One person's own token for one ArgoCD instance. Checked against ArgoCD
+ *  before it is saved, so a stale token fails here rather than halfway
+ *  through creating a repository. */
+function MyArgoToken({ inst, isAdmin, onChanged, notify }: {
+  inst: ArgoCDInst; isAdmin: boolean; onChanged: () => Promise<void>; notify: (m: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    setBusy(true); setError("");
+    try {
+      const res = await apiFetch(`/argocd-instances/${inst.id}/my-token`, { method: "PUT", body: JSON.stringify({ token }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { setError(body.error ?? `Request failed (${res.status})`); return; }
+      setToken(""); setEditing(false);
+      await onChanged();
+      notify(`✅ Connected to ${inst.alias} as ${body.username}`);
+    } finally { setBusy(false); }
+  };
+  const remove = async () => {
+    await apiFetch(`/argocd-instances/${inst.id}/my-token`, { method: "DELETE" });
+    await onChanged();
+    notify(`Token for ${inst.alias} removed`);
+  };
+  const removeShared = async () => {
+    await apiFetch(`/argocd-instances/${inst.id}/shared-token`, { method: "DELETE" });
+    await onChanged();
+    notify("Shared token removed");
+  };
+
+  return (
+    <div className="px-4 py-3 border-t border-zinc-700 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm">
+          <span className="text-zinc-400">Your token: </span>
+          {inst.has_my_token
+            ? <span className="text-brand-green">● Connected{inst.my_username ? <> as <span className="font-mono">{inst.my_username}</span></> : null}</span>
+            : <span className="text-amber-500">○ Not set — you cannot create or delete applications in this ArgoCD from CommitKube</span>}
+        </p>
+        <div className="flex gap-2">
+          {!editing && <button onClick={() => { setEditing(true); setError(""); }} className="btn-secondary text-xs px-2 py-1">{inst.has_my_token ? "Replace" : "Add my token"}</button>}
+          {!editing && inst.has_my_token && <button onClick={remove} className="text-xs px-2 py-1 text-red-400 hover:text-red-300">Remove</button>}
+        </div>
+      </div>
+      {editing && (
+        <div className="space-y-2">
+          <input type="password" autoComplete="off" className="input-tech text-sm font-mono" placeholder="Your ArgoCD API token"
+            value={token} onChange={e => setToken(e.target.value)} />
+          <p className="text-[11px] text-zinc-500">
+            Generate it for your own ArgoCD account: Settings › Accounts › your account › Tokens, or <span className="font-mono">argocd account generate-token</span>.
+            It is checked against ArgoCD, stored encrypted and never shown again.
+          </p>
+          {error && <p className="text-xs text-red-400 break-words">{error}</p>}
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => { setEditing(false); setToken(""); }} className="btn-secondary text-xs px-3 py-1">Cancel</button>
+            <button onClick={save} disabled={busy || !token.trim()} className="btn-primary text-xs px-3 py-1 disabled:opacity-50">{busy ? "Checking…" : "Save"}</button>
+          </div>
+        </div>
+      )}
+      {isAdmin && inst.has_shared_token && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded bg-amber-500/5 border border-amber-500/30 px-3 py-2">
+          <p className="text-xs text-amber-500">
+            A shared token from before tokens were personal is still stored for this instance. CommitKube no longer uses it — remove it here, and revoke it in ArgoCD.
+          </p>
+          <button onClick={removeShared} className="text-xs px-2 py-1 rounded border border-amber-500/40 text-amber-500 hover:bg-amber-500/10">Remove shared token</button>
+        </div>
+      )}
     </div>
   );
 }

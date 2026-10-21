@@ -286,6 +286,21 @@ type ArgoCDInstance struct {
 	DefaultProject   string         `gorm:"default:'default'" json:"default_project"`
 }
 
+// UserArgoCDToken is one person's ArgoCD API token for one instance. Every
+// call CommitKube makes to ArgoCD on someone's behalf -- registering a
+// repository, creating or deleting an application -- goes out with that
+// person's token, so ArgoCD's own RBAC and audit log see who acted. The
+// instance holds only where ArgoCD is; it no longer holds a credential.
+type UserArgoCDToken struct {
+	ID         uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	UserID     uint      `gorm:"uniqueIndex:idx_user_argo;not null" json:"user_id"`
+	InstanceID uint      `gorm:"uniqueIndex:idx_user_argo;not null" json:"instance_id"`
+	Token      string    `gorm:"type:text;not null" json:"-"` // encrypted
+	Username   string    `json:"username"`                    // the ArgoCD account it belongs to
+}
+
 type GoldenPath struct {
 	ID                uint           `gorm:"primarykey;autoIncrement" json:"id"`
 	CreatedAt         time.Time      `json:"created_at"`
