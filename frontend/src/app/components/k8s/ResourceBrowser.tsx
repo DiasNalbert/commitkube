@@ -38,7 +38,7 @@ export default function ResourceBrowser({
   namespaced?: boolean;
 }) {
   const [rows, setRows] = useState<ResourceRow[]>([]);
-  const [totals, setTotals] = useState<Totals | null>(null);
+  const [, setTotals] = useState<Totals | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 

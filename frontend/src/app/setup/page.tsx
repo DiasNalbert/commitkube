@@ -67,8 +67,8 @@ export default function SetupPage() {
       setQrDataUrl(dataUrl);
       setMfaSecret(data.mfa_secret);
       setStep("qr");
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError((err instanceof Error ? err.message : String(err)));
     } finally {
       setLoading(false);
     }
@@ -93,8 +93,8 @@ export default function SetupPage() {
       if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
       if (data.user?.role) localStorage.setItem("role", data.user.role);
       window.location.href = "/";
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError((err instanceof Error ? err.message : String(err)));
     } finally {
       setLoading(false);
     }
@@ -191,6 +191,8 @@ export default function SetupPage() {
               <div className="flex flex-col items-center gap-4">
                 {qrDataUrl && (
                   <div className="p-3 bg-white rounded-xl">
+                    {/* A data: URL generated in the browser; next/image has nothing to optimise here. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={qrDataUrl} alt="QR Code MFA" width={220} height={220} />
                   </div>
                 )}
@@ -199,7 +201,7 @@ export default function SetupPage() {
                 </p>
                 <details className="w-full">
                   <summary className="text-xs text-zinc-500 cursor-pointer hover:text-zinc-300 text-center">
-                    Can't scan — show manual code
+                    Can&apos;t scan — show manual code
                   </summary>
                   <div className="mt-2 p-3 bg-surface rounded-md border border-zinc-700 text-center">
                     <code className="text-sm font-mono text-brand-gold tracking-wider break-all">{mfaSecret}</code>

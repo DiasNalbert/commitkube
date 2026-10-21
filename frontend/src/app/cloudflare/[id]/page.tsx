@@ -190,7 +190,7 @@ export default function ZonePage() {
     } finally { setPolling(false); }
   };
 
-  const s = data?.sections ?? {};
+  const s = useMemo(() => data?.sections ?? {}, [data]);
 
   // ---- derived numbers ----
   const totals = useMemo(() => {

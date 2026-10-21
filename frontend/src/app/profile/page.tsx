@@ -108,7 +108,7 @@ export default function ProfilePage() {
       if (!res.ok) throw new Error(data.error || "Failed to change password");
       setPwSuccess("Password changed successfully.");
       setNewPassword(""); setConfirmPassword("");
-    } catch (err: any) { setPwError(err.message); }
+    } catch (err) { setPwError((err instanceof Error ? err.message : String(err))); }
     finally { setSaving(false); }
   };
 

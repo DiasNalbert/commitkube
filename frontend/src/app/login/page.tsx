@@ -7,7 +7,19 @@ import { API } from "@/lib/api";
 
 /** A proxy or the server itself can answer in plain text (a 431 or a 502,
  *  say). Surface that text instead of a JSON parse error. */
-async function readJSON(res: Response): Promise<any> {
+/** The fields the sign-in endpoints answer with; any of them may be absent. */
+interface AuthResponse {
+  error?: string;
+  setup_required?: boolean;
+  setup_token?: string;
+  is_bootstrap?: boolean;
+  mfa_token?: string;
+  token?: string;
+  refresh_token?: string;
+  user?: { role?: string };
+}
+
+async function readJSON(res: Response): Promise<AuthResponse> {
   const text = await res.text();
   try {
     return JSON.parse(text);
@@ -42,16 +54,16 @@ export default function LoginPage() {
         if (!res.ok) throw new Error(data.error || "Login failed");
 
         if (data.setup_required) {
-          localStorage.setItem("setup_token", data.setup_token);
+          localStorage.setItem("setup_token", data.setup_token ?? "");
           localStorage.setItem("setup_is_bootstrap", String(data.is_bootstrap));
           window.location.href = "/setup";
           return;
         }
 
-        setMfaToken(data.mfa_token);
+        setMfaToken(data.mfa_token ?? "");
         setStep("mfa");
-      } catch (err: any) {
-        setError(err.message);
+      } catch (err) {
+        setError((err instanceof Error ? err.message : String(err)));
       }
     } else if (step === "mfa") {
       try {
@@ -63,12 +75,12 @@ export default function LoginPage() {
         const data = await readJSON(res);
         if (!res.ok) throw new Error(data.error || "MFA validation failed");
 
-        localStorage.setItem("token", data.token);
+        localStorage.setItem("token", data.token ?? "");
         if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
         if (data.user?.role) localStorage.setItem("role", data.user.role);
         window.location.href = "/";
-      } catch (err: any) {
-        setError(err.message);
+      } catch (err) {
+        setError((err instanceof Error ? err.message : String(err)));
       }
     }
   };

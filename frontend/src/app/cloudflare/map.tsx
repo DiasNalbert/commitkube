@@ -258,7 +258,7 @@ function CountryDetail({ zoneRefId, range, code, requests, threats, dark, onClos
     return () => { live = false; };
   }, [zoneRefId, range, code]);
 
-  const regions = data?.sections.regions?.data ?? [];
+  const regions = useMemo(() => data?.sections.regions?.data ?? [], [data]);
   const byUF = useMemo(() => {
     const m = new Map<string, number>();
     if (code === "BR") regions.forEach(r => { const uf = toUF(r.key); if (uf) m.set(uf, (m.get(uf) ?? 0) + r.count); });

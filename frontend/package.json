@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint --ext .ts,.tsx src",
     "test:crypto": "tsc src/lib/vault-crypto.ts --outDir .crypto-test --module esnext --target es2022 --moduleResolution bundler --skipLibCheck --lib es2022,dom && node -e \"require('fs').writeFileSync('.crypto-test/package.json','{\\\"type\\\":\\\"module\\\"}')\" && node test/vault-crypto.test.mjs"
   },
   "dependencies": {

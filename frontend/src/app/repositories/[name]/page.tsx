@@ -71,7 +71,7 @@ export default function RepositoryDetail() {
   }
   const [vulnDetail, setVulnDetail] = useState<VulnDetail | null>(null);
   const [vulnTab, setVulnTab] = useState<"code" | "image">("code");
-  const [vulnLoading, setVulnLoading] = useState(false);
+  const [vulnLoading] = useState(false);
   const [vulnSevFilter, setVulnSevFilter] = useState("ALL");
   const [vulnSearch, setVulnSearch] = useState("");
 
@@ -133,8 +133,8 @@ export default function RepositoryDetail() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Analysis failed");
       setAnalyzeResult(data);
-    } catch (err: any) {
-      setAnalyzeError(err.message);
+    } catch (err) {
+      setAnalyzeError((err instanceof Error ? err.message : String(err)));
     } finally {
       setAnalyzing(false);
     }
@@ -159,8 +159,8 @@ export default function RepositoryDetail() {
       setScanResult(data);
       const detail = await apiFetch(`/scan-dashboard/${repoName}`).then(r => r.json());
       if (detail.findings) setVulnDetail(detail);
-    } catch (err: any) {
-      setScanError(err.message);
+    } catch (err) {
+      setScanError((err instanceof Error ? err.message : String(err)));
     } finally {
       setScanning(false);
     }
@@ -190,7 +190,7 @@ export default function RepositoryDetail() {
       const contentType = res.headers.get("Content-Type") || "";
       if (contentType.includes("application/json")) {
         const data = await res.json();
-        const entries: DirEntry[] = (data.values || []).map((v: any) => ({
+        const entries: DirEntry[] = (data.values || []).map((v: { type: DirEntry["type"]; path: string; size?: number }) => ({
           type: v.type,
           path: v.path,
           size: v.size,
@@ -250,8 +250,8 @@ export default function RepositoryDetail() {
       setCommitSuccess("File committed successfully!");
       setFileContent(editContent);
       setEditing(false);
-    } catch (err: any) {
-      setCommitError(err.message);
+    } catch (err) {
+      setCommitError((err instanceof Error ? err.message : String(err)));
     } finally {
       setCommitting(false);
     }
@@ -298,8 +298,8 @@ export default function RepositoryDetail() {
       setStagedSuccess(`${stagedFiles.length} file(s) committed successfully!`);
       setStagedFiles([]);
       setStagedCommitMessage("");
-    } catch (err: any) {
-      setStagedError(err.message);
+    } catch (err) {
+      setStagedError((err instanceof Error ? err.message : String(err)));
     } finally {
       setStagedCommitting(false);
     }
@@ -387,7 +387,7 @@ export default function RepositoryDetail() {
   useEffect(() => {
     apiFetch("/workspaces")
       .then(r => r.json())
-      .then((ws: any[]) => setUserHasKeys(Array.isArray(ws) && ws.some(w => w.has_app_pass)))
+      .then((ws: { has_app_pass?: boolean }[]) => setUserHasKeys(Array.isArray(ws) && ws.some(w => w.has_app_pass)))
       .catch(() => setUserHasKeys(false));
   }, []);
 
@@ -396,7 +396,7 @@ export default function RepositoryDetail() {
     apiFetch(`/repositories/${repoName}/branches`)
       .then(r => r.json())
       .then(data => {
-        const names: string[] = (data.values || []).map((b: any) => b.name as string);
+        const names: string[] = (data.values || []).map((b: { name: string }) => b.name);
         setBranches(names);
       })
       .catch(() => {});
