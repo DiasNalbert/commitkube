@@ -439,6 +439,8 @@ func main() {
 	get(api, "/cloudflare/zones/:id/alerts", handlers.PermSecurityRead, handlers.ListCloudflareAlerts)
 	post(api, "/cloudflare/zones/:id/poll", handlers.PermSecurityScan, handlers.PollCloudflareZoneNow)
 	get(api, "/cloudflare/zones/:id/exposure", handlers.PermSecurityRead, handlers.GetCloudflareExposure)
+	get(api, "/cloudflare/zones/:id/geo", handlers.PermSecurityRead, handlers.GetCloudflareGeo)
+	get(api, "/cloudflare/zones/:id/waf", handlers.PermSecurityRead, handlers.GetCloudflareWAF)
 	post(api, "/cloudflare/zones/:id/exposure/scan", handlers.PermSecurityScan, handlers.ScanCloudflareExposureNow)
 	get(api, "/cloudflare/alerts", handlers.PermSecurityRead, handlers.ListCloudflareAlerts)
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/kubecommit/backend/models"
 	"github.com/kubecommit/backend/services"
 )
 
@@ -283,6 +284,8 @@ var cfProbePatterns = []struct {
 	{regexp.MustCompile(`(?i)wp-login|wp-admin|xmlrpc\.php|wp-content|wp-includes|wlwmanifest`), "WordPress probe"},
 	{regexp.MustCompile(`(?i)phpmyadmin|/pma/|adminer|/mysql/`), "database admin probe"},
 	{regexp.MustCompile(`(?i)\.\./|%2e%2e|/etc/passwd|/proc/self|win\.ini`), "path traversal"},
+	{regexp.MustCompile(`(?i)serviceaccountkey\.json|credentials\.json|/\.terraform|\.tfstate|/\.kube/|/\.gcloud|/\.azure|/\.boto|application_default_credentials`), "cloud credentials"},
+	{regexp.MustCompile(`(?i)icecoder|elfinder|filemanager|file-manager|/terminal|terminal-xhr|webshell|/c99|/r57|/wso\.php|/alfa|/shell\.php|/cmd\.php|/up\.php|/adminer`), "web shell / file manager"},
 	{regexp.MustCompile(`(?i)/cgi-bin/|/boaform|/hnap1|/gponform|/setup\.cgi|/shell|/cmd\.|/eval-stdin`), "device / RCE exploit"},
 	{regexp.MustCompile(`(?i)/vendor/phpunit|/actuator|/jolokia|/solr/|/console/|/manager/html|/jmx-console|/_ignition`), "framework exploit"},
 	{regexp.MustCompile(`(?i)\.(sql|bak|old|backup|swp|zip|tar|tgz|gz|7z)$`), "backup / dump file"},
@@ -381,19 +384,29 @@ func GetCloudflareAnalytics(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "range must be one of 30m, 1h, 6h, 24h, 3d, 7d"})
 	}
 
+	ctx, cancel := context.WithTimeout(c.Context(), 60*time.Second)
+	defer cancel()
+	body, at, err := cachedCloudflareAnalytics(ctx, zone, rangeKey, span)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(withCachedAt(body, at))
+}
+
+// cachedCloudflareAnalytics is the analytics payload for a zone and range,
+// from the cache when it is fresh. The WAF suggestions read the same payload,
+// so opening that tab after the overview costs no further queries.
+func cachedCloudflareAnalytics(ctx context.Context, zone *models.CloudflareZone, rangeKey string, span time.Duration) (fiber.Map, time.Time, error) {
 	cacheKey := zone.ZoneID + "|" + rangeKey
 	cfAnalyticsMu.Lock()
 	hit, cached := cfAnalyticsCache[cacheKey]
 	cfAnalyticsMu.Unlock()
 	if cached && time.Since(hit.at) < cfAnalyticsTTL {
-		return c.JSON(withCachedAt(hit.body, hit.at))
+		return hit.body, hit.at, nil
 	}
-
-	ctx, cancel := context.WithTimeout(c.Context(), 60*time.Second)
-	defer cancel()
 	body, err := buildCloudflareAnalytics(ctx, zone.ZoneID, cloudflareToken(zone), span)
 	if err != nil {
-		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+		return nil, time.Time{}, err
 	}
 	body["range"] = rangeKey
 	now := time.Now()
@@ -403,7 +416,7 @@ func GetCloudflareAnalytics(c *fiber.Ctx) error {
 		body fiber.Map
 	}{now, body}
 	cfAnalyticsMu.Unlock()
-	return c.JSON(withCachedAt(body, now))
+	return body, now, nil
 }
 
 // withCachedAt answers with a copy: the cached map is shared by every request

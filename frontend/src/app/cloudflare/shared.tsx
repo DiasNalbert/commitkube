@@ -335,7 +335,8 @@ export function ZoneForm({ initial, zoneRefId, onSaved, onCancel }: {
             onChange={e => set("api_token", e.target.value)} placeholder={editing ? "••••••••" : "Cloudflare API token"} />
           <span className="block text-[11px] text-zinc-500 dark:text-zinc-400 mt-1">
             Needs <span className="font-mono">Zone › Zone: Read</span> and <span className="font-mono">Zone › Analytics: Read</span>.
-            Add <span className="font-mono">Zone › DNS: Read</span> for the exposure check (origin IPs, open ports, dangling records),
+            Add <span className="font-mono">Zone › WAF: Read</span> to list the WAF rules and get suggestions,
+            <span className="font-mono"> Zone › DNS: Read</span> for the exposure check (origin IPs, open ports, dangling records),
             and <span className="font-mono">Account › Notifications: Read</span> to see the alerts Cloudflare itself sends.
             Stored encrypted; never shown again.
           </span>

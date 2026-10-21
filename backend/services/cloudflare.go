@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -292,4 +293,53 @@ func LookupInternetDB(ctx context.Context, ip string) (*InternetDBHost, error) {
 		return nil, fmt.Errorf("internetdb: %w", err)
 	}
 	return &h, nil
+}
+
+// CloudflareRule is one rule of a ruleset: a custom WAF rule, a rate limiting
+// rule, or -- in the managed phase -- the rule that deploys a managed ruleset
+// (action "execute", with the ruleset's ID in its action parameters).
+type CloudflareRule struct {
+	ID               string          `json:"id"`
+	Version          string          `json:"version"`
+	Action           string          `json:"action"`
+	Expression       string          `json:"expression"`
+	Description      string          `json:"description"`
+	LastUpdated      string          `json:"last_updated"`
+	Ref              string          `json:"ref"`
+	Enabled          *bool           `json:"enabled"`
+	ActionParameters json.RawMessage `json:"action_parameters,omitempty"`
+	Ratelimit        *struct {
+		Characteristics    []string `json:"characteristics"`
+		Period             int      `json:"period"`
+		RequestsPerPeriod  int      `json:"requests_per_period"`
+		MitigationTimeout  int      `json:"mitigation_timeout"`
+		CountingExpression string   `json:"counting_expression"`
+	} `json:"ratelimit,omitempty"`
+}
+
+// IsEnabled treats a missing flag as on, which is the API's own default.
+func (r CloudflareRule) IsEnabled() bool { return r.Enabled == nil || *r.Enabled }
+
+type CloudflareRuleset struct {
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	Phase       string           `json:"phase"`
+	LastUpdated string           `json:"last_updated"`
+	Rules       []CloudflareRule `json:"rules"`
+}
+
+// PhaseEntrypoint reads the zone's ruleset for one phase. A zone that never
+// had a rule in the phase has no entry point at all; that is an empty
+// ruleset, not an error.
+func (c *CloudflareClient) PhaseEntrypoint(ctx context.Context, zoneID, phase string) (*CloudflareRuleset, error) {
+	var rs CloudflareRuleset
+	err := c.rest(ctx, "/zones/"+zoneID+"/rulesets/phases/"+url.PathEscape(phase)+"/entrypoint", nil, &rs)
+	var cfErr *CloudflareError
+	if errors.As(err, &cfErr) && cfErr.Status == http.StatusNotFound {
+		return &CloudflareRuleset{Phase: phase}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &rs, nil
 }

@@ -21,8 +21,9 @@ import (
 // from Cloudflare on demand (cloudflare_analytics.go) and a poller checks each
 // zone every few minutes against its alert thresholds (cloudflare_poller.go).
 //
-// The token needs Zone > Zone: Read and Zone > Analytics: Read. Two more are
-// optional: Zone > DNS: Read enables the exposure check
+// The token needs Zone > Zone: Read and Zone > Analytics: Read. Three more are
+// optional: Zone > WAF: Read lists the WAF rules (cloudflare_waf.go),
+// Zone > DNS: Read enables the exposure check
 // (cloudflare_exposure.go), and Account > Notifications: Read adds
 // Cloudflare's own alert history to the zone's log.
 
@@ -127,6 +128,9 @@ func verifyCloudflareZone(ctx context.Context, zoneID, accountID, token string) 
 	var warnings []string
 	if _, err := cf.ListDNSRecords(ctx, zoneID); err != nil {
 		warnings = append(warnings, "The exposure check (origin IPs, open ports, dangling records) needs Zone > DNS: Read ("+err.Error()+")")
+	}
+	if _, err := cf.PhaseEntrypoint(ctx, zoneID, "http_request_firewall_custom"); err != nil {
+		warnings = append(warnings, "The WAF rules tab and its suggestions need Zone > WAF: Read ("+err.Error()+")")
 	}
 	if _, err := cf.AlertHistory(ctx, accountID, time.Now().Add(-time.Hour)); err != nil {
 		warnings = append(warnings, "Cloudflare's own alert history will not be shown: the token needs Account > Notifications: Read ("+err.Error()+")")

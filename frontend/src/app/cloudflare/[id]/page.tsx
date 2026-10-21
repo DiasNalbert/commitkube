@@ -10,6 +10,8 @@ import {
   fmtStamp, relativeTime, sourceLabel, zoneToForm,
 } from "../shared";
 import ExposureTab from "../exposure";
+import TrafficMap from "../map";
+import WAFTab from "../waf";
 
 // ---- payload --------------------------------------------------------------------
 
@@ -55,10 +57,10 @@ const RANGES = [
   { key: "24h", label: "24 hours" }, { key: "3d", label: "3 days" }, { key: "7d", label: "7 days" },
 ];
 
-const TABS = ["overview", "security", "exposure", "traffic", "bots", "events", "alerts", "settings"] as const;
+const TABS = ["overview", "security", "waf", "exposure", "traffic", "bots", "events", "alerts", "settings"] as const;
 type Tab = typeof TABS[number];
 const TAB_LABEL: Record<Tab, string> = {
-  overview: "Overview", security: "Security", exposure: "Exposure", traffic: "Traffic", bots: "Bots",
+  overview: "Overview", security: "Security", waf: "WAF rules", exposure: "Exposure", traffic: "Traffic", bots: "Bots",
   events: "Security events", alerts: "Alerts", settings: "Settings",
 };
 
@@ -323,7 +325,7 @@ export default function ZonePage() {
         ))}
       </div>
 
-      {!data && loading && !["alerts", "settings", "exposure"].includes(tab) && <p className="text-sm text-zinc-500">Querying Cloudflare…</p>}
+      {!data && loading && !["alerts", "settings", "exposure", "waf"].includes(tab) && <p className="text-sm text-zinc-500">Querying Cloudflare…</p>}
 
       {/* ---- overview ---- */}
       {tab === "overview" && data && (
@@ -351,11 +353,13 @@ export default function ZonePage() {
             </Card>
           </div>
 
+          <TrafficMap zoneRefId={zone.id} range={range} />
+
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2">
             <Card title="Response status">
               {s.status?.error ? <SectionError error={s.status.error} /> : <BarList rows={statusClasses} total={totals.statusTotal} />}
             </Card>
-            <Card title="Mitigated by">
+            <Card title="Mitigated requests by feature">
               {s.fw_sources?.error ? <SectionError error={s.fw_sources.error} /> :
                 <BarList color="bg-[#eda100] dark:bg-[#c98500]" empty="No security feature acted in this range."
                   rows={(s.fw_sources?.data ?? []).map(r => ({ key: r.key, label: sourceLabel(r.key), value: r.count }))} />}
@@ -382,7 +386,7 @@ export default function ZonePage() {
             {s.mitigation?.error ? <SectionError error={s.mitigation.error} /> : chartBox(s.mitigation?.data, "mitigated", threatColor, "Mitigated")}
           </Card>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-            <Card title="Actions taken">
+            <Card title="Security events by action">
               {s.fw_actions?.error ? <SectionError error={s.fw_actions.error} /> :
                 <BarList color="bg-[#eda100] dark:bg-[#c98500]"
                   rows={(s.fw_actions?.data ?? []).map(r => ({
@@ -390,17 +394,17 @@ export default function ZonePage() {
                     badge: r.mitigated ? <span className="text-[10px] text-amber-600 dark:text-amber-400">mitigated</span> : <span className="text-[10px] text-zinc-500">observed</span>,
                   }))} />}
             </Card>
-            <Card title="By security feature">
+            <Card title="Security events by feature">
               {s.fw_sources?.error ? <SectionError error={s.fw_sources.error} /> :
                 <BarList color="bg-[#eda100] dark:bg-[#c98500]" rows={(s.fw_sources?.data ?? []).map(r => ({ key: r.key, label: sourceLabel(r.key), value: r.count }))} />}
             </Card>
-            <Card title="Attacking countries">
+            <Card title="Security events by country">
               {s.fw_countries?.error ? <SectionError error={s.fw_countries.error} /> :
                 <BarList color="bg-[#eda100] dark:bg-[#c98500]" rows={(s.fw_countries?.data ?? []).map(r => ({ key: r.key, label: r.key || "Unknown", value: r.count }))} />}
             </Card>
           </div>
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
-            <Card title="Top offending IPs">
+            <Card title="Top offending IPs (security events)">
               {s.fw_ips?.error ? <SectionError error={s.fw_ips.error} /> : (
                 <table className="w-full text-xs">
                   <thead><tr className="text-left text-zinc-500 dark:text-zinc-400"><th className="py-1 font-medium">IP</th><th className="font-medium">Country</th><th className="font-medium">ASN</th><th className="font-medium text-right">Events</th></tr></thead>
@@ -416,7 +420,7 @@ export default function ZonePage() {
                 </table>
               )}
             </Card>
-            <Card title="Targeted paths">
+            <Card title="Security events by path">
               {s.fw_paths?.error ? <SectionError error={s.fw_paths.error} /> :
                 <BarList mono color="bg-[#eda100] dark:bg-[#c98500]" empty="No security events in this range."
                   rows={(s.fw_paths?.data ?? []).map(r => ({ key: r.path, label: r.path, value: r.count, badge: <ProbeBadge reason={r.reason} /> }))} />}
@@ -430,7 +434,7 @@ export default function ZonePage() {
               {s.probes?.error ? <SectionError error={s.probes.error} /> :
                 <BarList mono rows={(s.probes?.data ?? []).map(r => ({ key: r.path, label: r.path, value: r.count, badge: <ProbeBadge reason={r.reason} /> }))} />}
             </Card>
-            <Card title="Rules that fired">
+            <Card title="Rules that fired (events per rule)">
               {s.fw_rules?.error ? <SectionError error={s.fw_rules.error} /> : (
                 <table className="w-full text-xs">
                   <thead><tr className="text-left text-zinc-500 dark:text-zinc-400"><th className="py-1 font-medium">Rule</th><th className="font-medium">Feature</th><th className="font-medium text-right">Events</th></tr></thead>
@@ -450,6 +454,9 @@ export default function ZonePage() {
           </div>
         </div>
       )}
+
+      {/* ---- waf ---- */}
+      {tab === "waf" && <WAFTab zoneRefId={zone.id} range={range} accountId={zone.account_id} zoneName={zone.zone_name} />}
 
       {/* ---- exposure ---- */}
       {tab === "exposure" && <ExposureTab zoneRefId={zone.id} canScan={canPoll} />}

@@ -62,6 +62,9 @@ func (f *fakeCloudflare) handler(t *testing.T) http.Handler {
 		case r.URL.Path == "/zones/"+testZoneID+"/dns_records":
 			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "result": f.dns,
 				"result_info": map[string]int{"page": 1, "total_pages": 1}})
+		case strings.Contains(r.URL.Path, "/rulesets/phases/"):
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "errors": []map[string]interface{}{{"code": 10003, "message": "not found"}}})
 		case strings.HasSuffix(r.URL.Path, "/alerting/v3/history"):
 			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "result": f.history})
 		case r.URL.Path == "/graphql":
@@ -70,6 +73,10 @@ func (f *fakeCloudflare) handler(t *testing.T) http.Handler {
 			}
 			json.NewDecoder(r.Body).Decode(&body)
 			f.queries = append(f.queries, body.Query)
+			if t := introspect(body.Query); t != nil {
+				json.NewEncoder(w).Encode(map[string]interface{}{"data": t})
+				return
+			}
 			if f.refuse != nil && f.refuse.MatchString(body.Query) {
 				json.NewEncoder(w).Encode(map[string]interface{}{"data": nil, "errors": []map[string]string{{"message": "zone does not have access to the field"}}})
 				return
@@ -116,6 +123,46 @@ func (f *fakeCloudflare) handler(t *testing.T) http.Handler {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
+}
+
+// introspect answers the schema walk cloudflareDimensions makes, with a
+// dimensions type that has the region and city fields the drill-down looks for
+// -- and an edge location field it must not pick.
+func introspect(q string) map[string]interface{} {
+	if strings.Contains(q, "__schema") {
+		return map[string]interface{}{"__schema": map[string]interface{}{"queryType": map[string]string{"name": "Query"}}}
+	}
+	m := regexp.MustCompile(`__type\(name: "([^"]+)"\)`).FindStringSubmatch(q)
+	if m == nil {
+		return nil
+	}
+	named := func(name string) map[string]interface{} {
+		return map[string]interface{}{"name": name, "kind": "OBJECT"}
+	}
+	list := func(name string) map[string]interface{} {
+		return map[string]interface{}{"name": nil, "kind": "LIST", "ofType": map[string]interface{}{"name": nil, "kind": "NON_NULL", "ofType": named(name)}}
+	}
+	field := func(n string, t map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"name": n, "type": t}
+	}
+	var fields []map[string]interface{}
+	switch m[1] {
+	case "Query":
+		fields = []map[string]interface{}{field("viewer", named("viewer"))}
+	case "viewer":
+		fields = []map[string]interface{}{field("zones", list("zone"))}
+	case "zone":
+		fields = []map[string]interface{}{field("httpRequestsAdaptiveGroups", list("ZoneHttpRequestsAdaptiveGroups"))}
+	case "ZoneHttpRequestsAdaptiveGroups":
+		fields = []map[string]interface{}{field("count", named("uint64")), field("dimensions", named("ZoneHttpRequestsAdaptiveGroupsDimensions"))}
+	case "ZoneHttpRequestsAdaptiveGroupsDimensions":
+		for _, n := range []string{"clientCountryName", "clientRegionCode", "clientCityName", "coloCity", "edgeColoRegion", "clientIP"} {
+			fields = append(fields, field(n, named("string")))
+		}
+	default:
+		return map[string]interface{}{"__type": nil}
+	}
+	return map[string]interface{}{"__type": map[string]interface{}{"fields": fields}}
 }
 
 func setupCloudflareTest(t *testing.T) (*fakeCloudflare, *models.CloudflareZone) {
