@@ -174,6 +174,7 @@ func WebhookEventsJSON() string {
 		"deploy.status_changed",
 		"vulnerability.critical_found",
 		"pod.problem_opened",
+		"cloudflare.alert",
 		"ping",
 	}
 	b, _ := json.Marshal(events)

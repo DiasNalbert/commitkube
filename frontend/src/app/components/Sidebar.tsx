@@ -113,6 +113,11 @@ const IconBell = () => (
     <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/>
   </svg>
 );
+const IconCloud = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="w-5 h-5 shrink-0">
+    <path d="M17.5 19H7a5 5 0 01-.6-9.96A6.5 6.5 0 0119 9.5a4.75 4.75 0 01-1.5 9.5z" />
+  </svg>
+);
 const IconChevronLeft = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-4 h-4">
     <polyline points="15 18 9 12 15 6" />
@@ -259,6 +264,9 @@ const scmItems = [
 
 const mainItems = [
   { href: "/tools/base64", label: "Base64", icon: <IconHash /> },
+  // Edge security for the zones in front of the cluster. Not under
+  // Kubernetes: a zone is not bound to the cluster selected in the nav.
+  { href: "/cloudflare", label: "Cloudflare", icon: <IconCloud />, perm: P.securityRead },
   { href: "/notifications", label: "Notifications", icon: <IconBell />, perm: P.settingsRead },
   { href: "/settings", label: "Settings", icon: <IconGear />, perm: P.settingsRead },
   // Not grouped with Kubernetes Secrets, deliberately: that page reads what a
@@ -334,7 +342,7 @@ export default function Sidebar() {
   const w = collapsed ? "w-14" : "w-56";
 
   const NavItem = ({ href, label, icon }: { href: string; label: string; icon: React.ReactNode }) => {
-    const active = pathname === href;
+    const active = pathname === href || (href === "/cloudflare" && pathname.startsWith("/cloudflare/"));
     return (
       <a
         href={href}

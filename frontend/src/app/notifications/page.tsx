@@ -36,6 +36,11 @@ const ALL_EVENTS = [
   { value: "service.http_5xx", label: "Application returning server errors (5xx)" },
   { value: "service.error_logs", label: "Application logging errors / failed run" },
   { value: "service.dependency_failure", label: "Application cannot reach a dependency" },
+  { value: "cloudflare.ddos_l7", label: "Cloudflare: L7 DDoS attack detected" },
+  { value: "cloudflare.threat_spike", label: "Cloudflare: threats above threshold" },
+  { value: "cloudflare.origin_errors", label: "Cloudflare: server errors (5xx) above threshold" },
+  { value: "cloudflare.traffic_spike", label: "Cloudflare: traffic spike" },
+  { value: "cloudflare.native_alert", label: "Cloudflare: alert sent by Cloudflare" },
 ];
 
 const TYPE_LABELS: Record<string, { label: string; color: string }> = {

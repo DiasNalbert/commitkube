@@ -32,6 +32,7 @@ const DESCRIPTIONS: Record<string, string> = {
   "template.write": "Create and edit templates and golden paths",
   "security.read": "View security findings",
   "security.scan": "Trigger a scan by hand",
+  "cloudflare.manage": "Add, change and remove Cloudflare zones and their API tokens",
   "vault.read": "Open the vaults they belong to and reveal their secrets",
   "vault.create": "Create vaults and add new secrets to them",
   "vault.write": "Edit and delete existing secrets, delete vaults they own",
@@ -46,7 +47,7 @@ const DESCRIPTIONS: Record<string, string> = {
 const GROUPS: [string, string[]][] = [
   ["Kubernetes", ["k8s.read", "k8s.logs.read", "k8s.secrets.read", "k8s.secrets.show", "k8s.secrets.write", "k8s.pod.delete", "k8s.scale", "cluster.manage"]],
   ["Source control", ["scm.read", "scm.write", "scm.approve", "template.read", "template.write"]],
-  ["Security", ["security.read", "security.scan"]],
+  ["Security", ["security.read", "security.scan", "cloudflare.manage"]],
   // What someone may do in the vault. Inside a team vault their role there
   // still applies on top: a reader in that vault stays a reader.
   ["Vault", ["vault.read", "vault.create", "vault.write", "vault.share"]],

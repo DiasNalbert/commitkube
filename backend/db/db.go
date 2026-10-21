@@ -133,6 +133,8 @@ func ConnectDB() {
 		&models.VaultMFA{},
 		&models.PostureAssessment{},
 		&models.PostureRuleResult{},
+		&models.CloudflareZone{},
+		&models.CloudflareAlert{},
 	)
 	if err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
@@ -174,6 +176,12 @@ func ConnectDB() {
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_df_src_time ON dependency_failures (src_namespace, src_name, bucket_at)")
 	DB.Exec("CREATE INDEX IF NOT EXISTS idx_leg_workload_time ON log_error_groups (namespace, workload, bucket_at)")
 	DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sp_open_cluster ON service_problems (cluster_id, namespace, workload, kind) WHERE closed_at IS NULL")
+
+	// One open threshold alert per rule and zone, and each alert copied from
+	// Cloudflare's history only once however often the poller reads it back.
+	DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cfa_open ON cloudflare_alerts (zone_ref_id, alert_type) WHERE resolved_at IS NULL AND source = 'commitkube'")
+	DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cfa_external ON cloudflare_alerts (zone_ref_id, external_id) WHERE source = 'cloudflare'")
+	DB.Exec("CREATE INDEX IF NOT EXISTS idx_cfa_zone_time ON cloudflare_alerts (zone_ref_id, started_at)")
 
 	// Shared vaults were called group vaults while each one belonged to a
 	// single group. They can now be given to people and to several groups,

@@ -227,6 +227,26 @@ func main() {
 		}
 	}()
 
+	go func() {
+		// Cloudflare zones: each pass measures the last five minutes against
+		// the zone's thresholds and copies the account's own alert history.
+		// The window is fixed at five minutes; the interval only decides how
+		// soon a breach is noticed.
+		interval := 5 * time.Minute
+		if v := os.Getenv("CLOUDFLARE_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d >= time.Minute {
+				interval = d
+			}
+		}
+		time.Sleep(80 * time.Second) // wait for startup
+		handlers.PollCloudflare()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			handlers.PollCloudflare()
+		}
+	}()
+
 	app := fiber.New(fiber.Config{
 		BodyLimit: 50 * 1024 * 1024,
 		// The API sets no cookies, but it is served under a domain other
@@ -386,6 +406,20 @@ func main() {
 	get(api, "/security/posture", handlers.PermSecurityRead, handlers.GetPosture)
 	get(api, "/security/posture/history", handlers.PermSecurityRead, handlers.GetPostureHistory)
 	post(api, "/security/posture/assess", handlers.PermSecurityScan, handlers.RunPostureAssessment)
+
+	// Cloudflare zones. Looking needs security.read; adding, changing and
+	// removing a zone handles its API token, so that is a permission of its
+	// own.
+	get(api, "/cloudflare/zones", handlers.PermSecurityRead, handlers.ListCloudflareZones)
+	post(api, "/cloudflare/zones", handlers.PermCloudflareManage, handlers.CreateCloudflareZone)
+	post(api, "/cloudflare/zones/verify", handlers.PermCloudflareManage, handlers.VerifyCloudflareZone)
+	get(api, "/cloudflare/zones/:id", handlers.PermSecurityRead, handlers.GetCloudflareZone)
+	put(api, "/cloudflare/zones/:id", handlers.PermCloudflareManage, handlers.UpdateCloudflareZone)
+	del(api, "/cloudflare/zones/:id", handlers.PermCloudflareManage, handlers.DeleteCloudflareZone)
+	get(api, "/cloudflare/zones/:id/analytics", handlers.PermSecurityRead, handlers.GetCloudflareAnalytics)
+	get(api, "/cloudflare/zones/:id/alerts", handlers.PermSecurityRead, handlers.ListCloudflareAlerts)
+	post(api, "/cloudflare/zones/:id/poll", handlers.PermSecurityScan, handlers.PollCloudflareZoneNow)
+	get(api, "/cloudflare/alerts", handlers.PermSecurityRead, handlers.ListCloudflareAlerts)
 
 	get(api, "/clusters", handlers.PermK8sRead, handlers.ListClusters)
 	post(api, "/clusters", handlers.PermClusterWrite, handlers.CreateCluster)
