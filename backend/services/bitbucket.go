@@ -376,6 +376,12 @@ func (client *BitbucketClient) GetBranchHash(repoName, branch string) (string, e
 		return "", err
 	}
 	defer res.Body.Close()
+	// A 404 for a missing branch decodes into an empty hash just as happily
+	// as a real answer does; the status is what tells them apart.
+	if res.StatusCode >= 400 {
+		body, _ := io.ReadAll(res.Body)
+		return "", fmt.Errorf("branch %s HTTP %d: %s", branch, res.StatusCode, string(body))
+	}
 	var data struct {
 		Target struct {
 			Hash string `json:"hash"`
@@ -383,6 +389,9 @@ func (client *BitbucketClient) GetBranchHash(repoName, branch string) (string, e
 	}
 	if err := json.NewDecoder(res.Body).Decode(&data); err != nil {
 		return "", err
+	}
+	if data.Target.Hash == "" {
+		return "", fmt.Errorf("branch %s: Bitbucket returned no commit", branch)
 	}
 	return data.Target.Hash, nil
 }

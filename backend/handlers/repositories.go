@@ -391,7 +391,11 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 		  )
 		ORDER BY yt.type DESC, yt.id ASC
 	`, bbWorkspace, projectKey).Scan(&matched); result.Error != nil {
-		fmt.Printf("Warning: failed to load templates for repo %s (workspace=%s, project=%s): %v\n", req.Name, bbWorkspace, projectKey, result.Error)
+		// Said on the result, not only in the log: without its templates the
+		// repository is created with no pipeline and no manifests.
+		msg := fmt.Sprintf("templates: could not load them (%v), so none were committed", result.Error)
+		fmt.Printf("Warning: %s | repo=%s workspace=%s project=%s\n", msg, req.Name, bbWorkspace, projectKey)
+		setupWarnings = append(setupWarnings, msg)
 	}
 	fmt.Printf("Templates: matched=%d for workspace=%q project=%q\n", len(matched), bbWorkspace, projectKey)
 	for _, t := range matched {
@@ -409,11 +413,15 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 		if err := scmClient.CommitFiles(req.Name, "Initial commit: CommitKube manifests + source", "main", files); err != nil {
 			return nil, &provisionError{fiber.StatusInternalServerError, fmt.Sprintf("Failed to commit: %v", err)}
 		}
+	} else {
+		setupWarnings = append(setupWarnings, fmt.Sprintf("templates: none apply to workspace %s / project %s and no files were uploaded, so the repository is empty -- ArgoCD has nothing to deploy until something is committed", bbWorkspace, projectKey))
 	}
 
 	if req.ExtraBranch != "" && req.ExtraBranch != "main" {
 		if err := scmClient.CreateBranch(req.Name, req.ExtraBranch, "main"); err != nil {
-			fmt.Printf("Warning: failed to create branch %s on %s: %v\n", req.ExtraBranch, req.Name, err)
+			msg := fmt.Sprintf("create branch %s: %v", req.ExtraBranch, err)
+			fmt.Printf("Warning: %s | repo=%s\n", msg, req.Name)
+			setupWarnings = append(setupWarnings, msg)
 		}
 	}
 
@@ -464,7 +472,15 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 		repo.SSHPubKey = result.DeployKey.PublicKey
 		repo.SSHPrivKey = crypto.EncryptField(encKey, result.DeployKey.PrivateKey)
 	}
-	db.DB.Create(&repo)
+	if err := db.DB.Create(&repo).Error; err != nil {
+		// The repository exists in the SCM and in ArgoCD by now; only the
+		// record is missing. Say so instead of reporting a clean success --
+		// it will not appear on the dashboard, and the deploy key below is
+		// the only copy of its private half.
+		msg := fmt.Sprintf("CommitKube could not save its record of the repository (%v): it exists in the SCM but will not be listed here. Save the deploy key now, then use Import Repository to track it", err)
+		fmt.Printf("[DB ERROR] %s | repo=%s\n", msg, req.Name)
+		setupWarnings = append(setupWarnings, msg)
+	}
 
 	db.LogAudit(userID, "create_repository", "repository", req.Name, fmt.Sprintf(`{"provider":"%s","workspace_id":%d}`, provider, req.WorkspaceID), ip)
 
@@ -574,6 +590,7 @@ func ImportProject(c *fiber.Ctx) error {
 
 	imported := []string{}
 	skipped := []string{}
+	failed := []string{}
 
 	for _, name := range repoNames {
 		var existing models.Repository
@@ -589,10 +606,13 @@ func ImportProject(c *fiber.Ctx) error {
 			ArgoApp:     name,
 			ProjectKey:  req.ProjectKey,
 		}
-		if err := db.DB.Create(&repo).Error; err == nil {
-			imported = append(imported, name)
-			TriggerScanBackground(name)
+		if err := db.DB.Create(&repo).Error; err != nil {
+			fmt.Printf("[DB ERROR] import %s: %v\n", name, err)
+			failed = append(failed, name)
+			continue
 		}
+		imported = append(imported, name)
+		TriggerScanBackground(name)
 	}
 
 	if len(imported) > 0 {
@@ -602,6 +622,7 @@ func ImportProject(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"imported": imported,
 		"skipped":  skipped,
+		"failed":   failed,
 		"total":    len(repoNames),
 	})
 }

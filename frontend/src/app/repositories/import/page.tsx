@@ -5,7 +5,7 @@ import { apiFetch } from "@/lib/api";
 
 type Workspace = { id: number; alias: string; workspace_id: string; project_key: string };
 type Project = { id: number; project_key: string; alias: string };
-type ImportResult = { imported: string[]; skipped: string[]; total: number };
+type ImportResult = { imported: string[]; skipped: string[]; failed?: string[]; total: number };
 
 export default function ImportRepository() {
   const [mode, setMode] = useState<"single" | "project">("single");
@@ -273,6 +273,16 @@ export default function ImportRepository() {
                   <div className="flex flex-wrap gap-1.5">
                     {projectResult.skipped.map(r => (
                       <span key={r} className="text-xs font-mono bg-zinc-800 text-zinc-500 border border-zinc-700 px-2 py-0.5 rounded">{r}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(projectResult.failed?.length ?? 0) > 0 && (
+                <div>
+                  <p className="text-xs text-red-400 mb-1">Could not be saved -- try importing these again:</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {projectResult.failed!.map(r => (
+                      <span key={r} className="text-xs font-mono bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded">{r}</span>
                     ))}
                   </div>
                 </div>
