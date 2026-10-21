@@ -7,7 +7,12 @@ export type DeployKey = { public_key: string; private_key: string; fingerprint: 
 /** The key pair generated for one repository. The private half is shown here
  *  once and never again: CommitKube keeps it encrypted to clone and scan, but
  *  there is no endpoint that hands it back out. */
-export default function DeployKeyPanel({ repo, deployKey }: { repo: string; deployKey: DeployKey }) {
+/** addedToRepo and argoRegistered say what actually happened to the key, so
+ *  the panel never claims ArgoCD has it when that step failed -- that is the
+ *  one case where the person needs the private key to finish by hand. */
+export default function DeployKeyPanel({ repo, deployKey, addedToRepo = true, argoRegistered = true }: {
+  repo: string; deployKey: DeployKey; addedToRepo?: boolean; argoRegistered?: boolean;
+}) {
   const [showPrivate, setShowPrivate] = useState(false);
   const [copied, setCopied] = useState<"" | "public" | "private">("");
 
@@ -41,7 +46,11 @@ export default function DeployKeyPanel({ repo, deployKey }: { repo: string; depl
         <span className="font-mono text-[11px] text-zinc-500 break-all">{deployKey.fingerprint}</span>
       </div>
       <p className="text-xs text-amber-700 dark:text-amber-400">
-        Save the private key now — it is not shown again. It was added to the repository as a deploy key and registered in ArgoCD.
+        Save the private key now — it is not shown again.{" "}
+        {addedToRepo ? "It was added to the repository as a deploy key" : "It could not be added to the repository: add the public key under Repository settings › Access keys"}
+        {argoRegistered
+          ? (addedToRepo ? " and registered in ArgoCD." : ", and it is registered in ArgoCD.")
+          : <>{addedToRepo ? ", but " : ". "}<strong>it is not registered in ArgoCD</strong>. To deploy it with ArgoCD, connect the repository there over SSH with this private key (Settings › Repositories › Connect repo), and create the application.</>}
       </p>
 
       <div className="space-y-1">

@@ -788,7 +788,9 @@ export default function NewRepository() {
                   {r.warnings?.map((w, j) => (
                     <p key={j} className="text-xs text-amber-600 dark:text-amber-400 break-words">⚠ {w}</p>
                   ))}
-                  {r.deployKey && <DeployKeyPanel repo={r.name} deployKey={r.deployKey} />}
+                  {r.deployKey && <DeployKeyPanel repo={r.name} deployKey={r.deployKey}
+                    addedToRepo={!r.warnings?.some(w => w.startsWith("add deploy key"))}
+                    argoRegistered={r.argocd === "configured"} />}
                 </div>
               ) : null)}
               {!creating && createResults.every(r => r.status === "done") && (
