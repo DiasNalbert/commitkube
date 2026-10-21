@@ -6,11 +6,16 @@ services:
     ports:
       - "8080:8080"
     environment:
-      JWT_SECRET: ${JWT_SECRET}
+      # Both are required. Without ENCRYPTION_KEY every stored credential --
+      # SCM passwords, tokens, deploy keys -- would be written in plain text.
+      # Generate it with: openssl rand -hex 32
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY to 64 hex characters (openssl rand -hex 32)}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      # The database and the Trivy cache live on the volume.
+      DB_PATH: /app/data/kubecommit.db
     volumes:
       - db_data:/app/data
-    command: sh -c "mkdir -p /app/data && ln -sf /app/data/kubecommit.db /app/kubecommit.db && ./kubecommit-api"
   frontend:
     build:
       context: ./frontend
