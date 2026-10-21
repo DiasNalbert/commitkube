@@ -209,6 +209,11 @@ func ConnectDB() {
 			FROM permission_grants WHERE permission = 'vault.write'`)
 	}
 
+	// The notifications page offered "app.degraded" while the workload poller
+	// sends "workload.degraded", so nobody subscribed ever received it. Carry
+	// existing subscriptions over to the name that is actually sent.
+	DB.Exec(`UPDATE notification_configs SET events = REPLACE(events, '"app.degraded"', '"workload.degraded"') WHERE events LIKE '%"app.degraded"%'`)
+
 	MigratePersonalArgoCDTokens()
 
 	bootstrapAdmin()

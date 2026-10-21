@@ -16,11 +16,9 @@ interface NotificationConfig {
 
 const ALL_EVENTS = [
   { value: "scan.critical", label: "Critical scan findings" },
-  { value: "pipeline.failed", label: "Pipeline failed" },
   { value: "repo.created", label: "Repository created" },
   { value: "repo.deleted", label: "Repository deleted" },
-  { value: "app.degraded", label: "Application degraded / missing" },
-  { value: "pod.restart_spike", label: "Pod restart spike" },
+  { value: "workload.degraded", label: "Workload degraded (no replicas ready)" },
   { value: "node.down", label: "Node down / not ready" },
   { value: "node.high_cpu", label: "Node high CPU (>80%)" },
   { value: "node.high_memory", label: "Node high memory (>85%)" },

@@ -13,6 +13,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
+	"github.com/kubecommit/backend/services"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1021,6 +1022,14 @@ func pollPodMetricsFor(cl *models.Cluster) {
 	// a row nobody can look up.
 	for _, n := range notices {
 		go SendNotifications(n.kind, n.title, n.body, n.workload, "system")
+		// The webhook catalog has always offered pod.problem_opened; nothing
+		// sent it, so a subscriber waited for an event that never came.
+		go DispatchWebhook(services.WebhookEvent{
+			Event: "pod.problem_opened",
+			Payload: map[string]interface{}{
+				"cluster": cl.Name, "kind": n.kind, "title": n.title, "message": n.body, "workload": n.workload,
+			},
+		})
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
+	"github.com/kubecommit/backend/services"
 	"gorm.io/gorm"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -248,6 +249,14 @@ func pollWorkloadsFor(cl *models.Cluster) {
 	for _, n := range notices {
 		go SendNotifications("workload.degraded", "Workload Degraded",
 			n.body, n.workload, "system")
+		// Offered in the webhook catalog as deploy.status_changed and never
+		// sent until now. The transition recorded here is to degraded.
+		go DispatchWebhook(services.WebhookEvent{
+			Event: "deploy.status_changed",
+			Payload: map[string]interface{}{
+				"cluster": cl.Name, "workload": n.workload, "status": "degraded", "message": n.body,
+			},
+		})
 	}
 }
 

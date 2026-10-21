@@ -380,7 +380,7 @@ type NotificationConfig struct {
 	Type      string         `gorm:"not null" json:"type"`    // "teams", "webhook", "email"
 	URL       string         `gorm:"type:text" json:"url"`    // webhook/teams URL
 	Email     string         `json:"email"`                   // for email type
-	Events    string         `gorm:"type:text" json:"events"` // JSON array: ["scan.critical","pipeline.failed","repo.created"]
+	Events    string         `gorm:"type:text" json:"events"` // JSON array: ["scan.critical","workload.degraded","repo.created"]
 	Active    bool           `gorm:"default:true" json:"active"`
 }
 
