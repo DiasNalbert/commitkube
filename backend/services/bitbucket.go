@@ -89,9 +89,12 @@ func (client *BitbucketClient) CreateRepository(repoName, projectKey string) err
 		resBody, _ := io.ReadAll(res.Body)
 		bodyStr := string(resBody)
 
+		// Refused creation used to be logged and skipped, which left nothing to
+		// commit to: the next step failed with a 404 that pointed nowhere near
+		// the credential. Say what was refused, here, where it happened.
 		if res.StatusCode == 401 || res.StatusCode == 403 {
-			fmt.Printf("WARNING: Bitbucket auth error (%d) creating repo %s — skipping creation\n", res.StatusCode, repoName)
-			return nil
+			return fmt.Errorf("Bitbucket refused to create %s/%s (HTTP %d): the configured credential cannot create repositories in this workspace or project -- check its permissions or scopes, and that it has not expired. Bitbucket said: %s",
+				client.Workspace, repoName, res.StatusCode, bodyStr)
 		}
 
 		if strings.Contains(bodyStr, "already exists") || strings.Contains(bodyStr, "slug is already") {
@@ -206,7 +209,9 @@ func (client *BitbucketClient) CommitFiles(repoName, message, branch string, fil
 		req.SetBasicAuth(strings.TrimSpace(client.Username), strings.TrimSpace(client.AppPass))
 		req.Header.Add("Content-Type", writer.FormDataContentType())
 
-		res, err := http.DefaultClient.Do(req)
+		// The same client as every other call, so a redirect keeps the POST
+		// and its body instead of turning into a GET.
+		res, err := bitbucketHTTPClient.Do(req)
 		if err != nil {
 			return err
 		}
@@ -216,6 +221,15 @@ func (client *BitbucketClient) CommitFiles(repoName, message, branch string, fil
 		if res.StatusCode >= 400 {
 			if strings.Contains(string(resBody), "nothing to commit") {
 				continue
+			}
+			// Bitbucket hides a private repository's contents behind a 404
+			// from a credential that may not read or write them. Right after
+			// creating it, that is almost always a credential with the admin
+			// scope -- enough to create -- but not the write scope, which
+			// admin does not include.
+			if res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusForbidden {
+				return fmt.Errorf("HTTP %d: Bitbucket would not let the configured credential write to %s/%s. Creating a repository needs Repositories: Admin, but committing needs Repositories: Write as well -- the admin scope does not include it. Add Read and Write to the credential's repository permissions. Bitbucket said: %s",
+					res.StatusCode, client.Workspace, repoName, string(resBody))
 			}
 			return fmt.Errorf("HTTP %d: %s", res.StatusCode, string(resBody))
 		}
