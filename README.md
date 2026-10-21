@@ -111,7 +111,8 @@ token da própria zona:
   atuais já cobrem. Nada é escrito na Cloudflare: a expressão é para copiar
 - **Exposure**: o que fica exposto por baixo do proxy — origem acessível sem
   passar pela Cloudflare, portas abertas para a internet (via Shodan
-  InternetDB), CVEs, CNAMEs pendurados e risco de *subdomain takeover*,
+  InternetDB, com um teste de conexão direto que fecha o alerta assim que a
+  porta é bloqueada, sem esperar o InternetDB atualizar), CVEs, CNAMEs pendurados e risco de *subdomain takeover*,
   registros DNS-only e SPF/DMARC
 - **Alertas**: DDoS L7, pico de ameaças, taxa de 5xx e pico de tráfego,
   avaliados a cada 5 min com limites por zona; cada exposição vira um alerta
@@ -365,6 +366,7 @@ Os alertas de node rodam a cada 5 min, sem variável.
 | `APP_LOG_LIMIT_BYTES` / `APP_LOG_SCAN_MAX_PODS` | `8MiB` / `120` | Limites da leitura de logs por passada |
 | `INGRESS_CONTROLLER_LABELS` | — | `k=v,k=v` para achar o ingress controller quando os labels não são os padrão |
 | `CLOUDFLARE_EXPOSURE_INTERNETDB` | — | `false` desliga a consulta de portas no Shodan InternetDB |
+| `CLOUDFLARE_EXPOSURE_PROBE` | — | `false` desliga o teste de conexão direto que confirma quando uma porta listada pelo InternetDB já foi fechada |
 
 ## Persistência
 

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -48,11 +49,27 @@ func (f *fakeInternetDB) start(t *testing.T) {
 	t.Cleanup(func() { services.InternetDBURL = prev })
 }
 
+// testClosedPorts lets a test firewall an address:port after setup.
+var testClosedPorts map[string]bool
+
 func setupExposureTest(t *testing.T) (*fakeCloudflare, *fakeInternetDB, *models.CloudflareZone) {
 	fake, z := setupCloudflareTest(t)
 	db.DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cfa_open_key ON cloudflare_alerts (zone_ref_id, alert_type, external_id) WHERE resolved_at IS NULL AND source = 'commitkube'")
 	idb := &fakeInternetDB{hosts: map[string]services.InternetDBHost{}, fail: map[string]bool{}}
 	idb.start(t)
+
+	// Every port answers unless a test closes it: the real network is never
+	// dialled from a test.
+	closed := map[string]bool{}
+	prevDial := cfDial
+	cfDial = func(ctx context.Context, address string) error {
+		if closed[address] {
+			return &net.OpError{Op: "dial", Err: errors.New("connection refused")}
+		}
+		return nil
+	}
+	t.Cleanup(func() { cfDial = prevDial })
+	testClosedPorts = closed
 
 	prevLookup := cfLookupHost
 	cfLookupHost = func(ctx context.Context, host string) ([]string, error) {
@@ -250,5 +267,46 @@ func TestCloudflareExposureKeepsLastResultOnFailure(t *testing.T) {
 	db.DB.Where("zone_ref_id = ?", z.ID).First(&row)
 	if row.Error == "" || !strings.Contains(row.Result, "198.51.100.10") {
 		t.Errorf("want the error and the previous result, got error=%q result=%d bytes", row.Error, len(row.Result))
+	}
+}
+
+func TestCloudflareExposureClosesWhatWasFirewalled(t *testing.T) {
+	_, _, z := setupExposureTest(t)
+	scanCloudflareExposure(z)
+
+	// The ports are firewalled. InternetDB still lists them -- it refreshes
+	// about weekly -- but a direct connection now fails, and that is what
+	// closes the alerts.
+	testClosedPorts["198.51.100.10:6379"] = true
+	testClosedPorts["198.51.100.10:443"] = true
+	testClosedPorts["198.51.100.10:80"] = true
+	scanCloudflareExposure(z)
+
+	var open []models.CloudflareAlert
+	db.DB.Where("zone_ref_id = ? AND resolved_at IS NULL AND source = ?", z.ID, "commitkube").Find(&open)
+	keys := map[string]bool{}
+	for _, a := range open {
+		keys[a.AlertType+"|"+a.ExternalID] = true
+	}
+	if keys["exposed_port|198.51.100.10:6379"] {
+		t.Error("a port that no longer accepts connections is still an open alert")
+	}
+	if keys["origin_exposed|198.51.100.10"] {
+		t.Error("an origin that no longer answers on 80/443 is still reported exposed")
+	}
+	if !keys["exposed_port|203.0.113.5:22"] {
+		t.Error("a port that still answers was closed")
+	}
+
+	var row models.CloudflareExposure
+	db.DB.Where("zone_ref_id = ?", z.ID).First(&row)
+	var res cfExposureResult
+	json.Unmarshal([]byte(row.Result), &res)
+	for _, ip := range res.IPs {
+		for _, p := range ip.Ports {
+			if ip.IP == "198.51.100.10" && p.Port == 6379 && !(p.Probed && p.Closed) {
+				t.Errorf("the port should be shown as checked and closed: %+v", p)
+			}
+		}
 	}
 }

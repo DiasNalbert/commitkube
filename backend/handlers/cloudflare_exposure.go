@@ -54,6 +54,12 @@ type cfExposurePort struct {
 	Port     int    `json:"port"`
 	Service  string `json:"service"`
 	Severity string `json:"severity"`
+	// Probed: CommitKube tried a TCP connection to it on this check.
+	// Closed: that connection failed. InternetDB only refreshes about weekly,
+	// so a port someone just firewalled stays "open" there for days; a
+	// failed connection is what lets the alert close the same day.
+	Probed bool `json:"probed,omitempty"`
+	Closed bool `json:"closed,omitempty"`
 }
 
 type cfExposureIP struct {
@@ -109,17 +115,17 @@ var cfWebPorts = map[int]bool{80: true, 443: true, 8080: true, 8443: true}
 
 func cfPortInfo(port int) cfExposurePort {
 	if s, ok := cfPortServices[port]; ok {
-		return cfExposurePort{port, s.name, s.severity}
+		return cfExposurePort{Port: port, Service: s.name, Severity: s.severity}
 	}
 	switch {
 	case cfWebPorts[port]:
-		return cfExposurePort{port, "HTTP(S)", "info"}
+		return cfExposurePort{Port: port, Service: "HTTP(S)", Severity: "info"}
 	case port >= 30000 && port <= 32767:
 		// The NodePort range: something in the cluster was published on
 		// every node, usually by accident.
-		return cfExposurePort{port, "Kubernetes NodePort", "high"}
+		return cfExposurePort{Port: port, Service: "Kubernetes NodePort", Severity: "high"}
 	default:
-		return cfExposurePort{port, "", "medium"}
+		return cfExposurePort{Port: port, Service: "", Severity: "medium"}
 	}
 }
 
@@ -170,6 +176,60 @@ func cfSeverityRank(s string) int {
 }
 
 var cfLookupHost = net.DefaultResolver.LookupHost
+
+// cfDial is a var so tests can stand in for the network.
+var cfDial = func(ctx context.Context, address string) error {
+	d := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// cfPortNeedsProbe says whether a port would raise a finding -- the only
+// ports worth confirming. Web ports matter only on an origin.
+func cfPortNeedsProbe(ip *cfExposureIP, p cfExposurePort) bool {
+	if cfWebPorts[p.Port] {
+		return ip.Proxied
+	}
+	return p.Severity != "info"
+}
+
+// probeExposedPorts re-checks, with a TCP connection from CommitKube, the
+// ports InternetDB reports open. It can only ever close a finding, never
+// open one: CommitKube may sit inside the network it is checking, so a port
+// it reaches might still be firewalled from the internet -- but a port it
+// cannot reach is not reachable from the internet either. And it only dials
+// addresses that are in the zone's own DNS and that InternetDB already
+// lists, so it is never a scanner of anything else.
+func probeExposedPorts(ctx context.Context, ips []*cfExposureIP) {
+	const maxProbes = 300
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 16)
+	n := 0
+	for _, ip := range ips {
+		if !ip.Checked || ip.Private {
+			continue
+		}
+		for i := range ip.Ports {
+			if !cfPortNeedsProbe(ip, ip.Ports[i]) || n >= maxProbes {
+				continue
+			}
+			n++
+			wg.Add(1)
+			go func(ip *cfExposureIP, p *cfExposurePort) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				err := cfDial(ctx, net.JoinHostPort(ip.IP, fmt.Sprint(p.Port)))
+				p.Probed = true
+				p.Closed = err != nil
+			}(ip, &ip.Ports[i])
+		}
+	}
+	wg.Wait()
+}
 
 // buildCloudflareExposure runs the whole check for one zone. A failure to
 // reach one IP's data is kept on that IP; only a failure to read the DNS
@@ -282,6 +342,16 @@ func buildCloudflareExposure(ctx context.Context, z *models.CloudflareZone) (*cf
 	}
 	wg.Wait()
 
+	if os.Getenv("CLOUDFLARE_EXPOSURE_PROBE") == "false" {
+		res.Notes = append(res.Notes, "Ports are not re-checked directly (CLOUDFLARE_EXPOSURE_PROBE=false), so a port closed since InternetDB last looked stays open here until it refreshes.")
+	} else {
+		probeList := make([]*cfExposureIP, 0, len(order))
+		for _, addr := range order {
+			probeList = append(probeList, byIP[addr])
+		}
+		probeExposedPorts(ctx, probeList)
+	}
+
 	for _, addr := range order {
 		ip := byIP[addr]
 		res.IPs = append(res.IPs, *ip)
@@ -296,7 +366,7 @@ func buildCloudflareExposure(ctx context.Context, z *models.CloudflareZone) (*cf
 
 		var web []string
 		for _, p := range ip.Ports {
-			if cfWebPorts[p.Port] {
+			if cfWebPorts[p.Port] && !p.Closed {
 				web = append(web, fmt.Sprint(p.Port))
 			}
 		}
@@ -309,7 +379,7 @@ func buildCloudflareExposure(ctx context.Context, z *models.CloudflareZone) (*cf
 			})
 		}
 		for _, p := range ip.Ports {
-			if cfWebPorts[p.Port] || p.Severity == "info" {
+			if cfWebPorts[p.Port] || p.Severity == "info" || p.Closed {
 				continue
 			}
 			svc := p.Service

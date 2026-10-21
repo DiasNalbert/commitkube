@@ -5,7 +5,7 @@ import { apiFetch } from "@/lib/api";
 import { Card, SeverityBadge, Stat, relativeTime } from "./shared";
 
 interface Finding { severity: string; type: string; key: string; title: string; detail: string; target: string }
-interface Port { port: number; service: string; severity: string }
+interface Port { port: number; service: string; severity: string; probed?: boolean; closed?: boolean }
 interface ExposedIP {
   ip: string; records: string[]; proxied: boolean; dns_only: boolean; private: boolean; checked: boolean; seen: boolean;
   ports: Port[] | null; vulns: string[] | null; cpes: string[] | null; tags: string[] | null; hostnames: number; error?: string;
@@ -27,6 +27,14 @@ const PORT_CHIP: Record<string, string> = {
 };
 
 function PortChip({ p }: { p: Port }) {
+  if (p.closed) {
+    return (
+      <span title="InternetDB still lists this port, but a direct connection from CommitKube failed: it is closed now. InternetDB will catch up on its next pass."
+        className="inline-block font-mono text-[11px] px-1.5 py-px rounded border border-zinc-500/30 text-zinc-500 line-through">
+        {p.port}<span className="font-sans no-underline"> closed now</span>
+      </span>
+    );
+  }
   return (
     <span title={`${p.service || "unidentified service"} · ${p.severity}`}
       className={`inline-block font-mono text-[11px] px-1.5 py-px rounded border ${PORT_CHIP[p.severity] ?? PORT_CHIP.info}`}>
@@ -86,7 +94,8 @@ export default function ExposureTab({ zoneRefId, canScan }: { zoneRefId: number;
         <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-3xl">
           What the zone exposes underneath Cloudflare: origin IPs reachable directly, open ports, records pointing at nothing.
           Ports are the internet&apos;s view, from Shodan&apos;s InternetDB (passive, refreshed about weekly) — a scan from inside
-          the cluster would only see the cluster&apos;s own network. Checked every 6 hours.
+          the cluster would only see the cluster&apos;s own network. Each port it reports is then tried directly: one that no longer
+          accepts a connection counts as closed, so firewalling a port closes its alert on the next check. Checked every 6 hours.
           {data?.scanned_at && <> Last check {relativeTime(data.scanned_at)}.</>}
         </p>
         {canScan && (
