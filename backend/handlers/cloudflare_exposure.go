@@ -440,12 +440,17 @@ var cfExposureAlertTypes = map[string]bool{
 }
 
 // reconcileExposureAlerts opens an alert for each new finding, keeps the ones
-// still present open, and resolves those that are gone -- but only where the
-// thing was actually re-checked. An IP InternetDB could not answer for this
-// time keeps its alerts as they were: no answer is not the same as closed.
+// still present open, and resolves those that are gone. Gone means one of two
+// things: the IP was looked up again and the finding is not there, or no
+// record in the zone points at the IP any more -- someone removed it, and the
+// zone no longer exposes it whatever InternetDB still remembers. An IP that is
+// still in DNS but could not be looked up this time keeps its alerts as they
+// were: no answer is not the same as closed.
 func reconcileExposureAlerts(z *models.CloudflareZone, res *cfExposureResult) {
 	checkedIP := map[string]bool{}
+	inDNS := map[string]bool{}
 	for _, ip := range res.IPs {
+		inDNS[ip.IP] = true
 		if ip.Checked {
 			checkedIP[ip.IP] = true
 		}
@@ -480,7 +485,7 @@ func reconcileExposureAlerts(z *models.CloudflareZone, res *cfExposureResult) {
 				ipOf = host
 			}
 		}
-		if a.AlertType == "dangling_cname" || checkedIP[ipOf] {
+		if a.AlertType == "dangling_cname" || checkedIP[ipOf] || !inDNS[ipOf] {
 			db.DB.Model(&models.CloudflareAlert{}).Where("id = ?", a.ID).Update("resolved_at", now)
 		}
 	}

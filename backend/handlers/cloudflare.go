@@ -361,14 +361,19 @@ func DeleteCloudflareZone(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// PollCloudflareZoneNow runs the alert checks for one zone immediately and
-// returns the zone as it stands afterwards.
+// PollCloudflareZoneNow runs every check behind the alert log for one zone --
+// the traffic thresholds and the exposure check -- and returns the zone as it
+// stands afterwards. Someone pressing it after fixing something expects the
+// alert they fixed to close, whichever check opened it.
 func PollCloudflareZoneNow(c *fiber.Ctx) error {
 	zone, err := cloudflareZoneParam(c)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "zone not found"})
 	}
 	pollCloudflareZone(zone.ID)
+	cfExposureMu.Lock()
+	scanCloudflareExposure(zone)
+	cfExposureMu.Unlock()
 	db.DB.First(zone, zone.ID)
 	return c.JSON(zone)
 }

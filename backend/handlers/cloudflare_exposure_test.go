@@ -162,7 +162,7 @@ func TestCloudflareExposureFindings(t *testing.T) {
 }
 
 func TestCloudflareExposureAlertLifecycle(t *testing.T) {
-	_, idb, z := setupExposureTest(t)
+	fake, idb, z := setupExposureTest(t)
 	scanCloudflareExposure(z)
 
 	openKeys := func() map[string]bool {
@@ -208,6 +208,26 @@ func TestCloudflareExposureAlertLifecycle(t *testing.T) {
 	}
 	if !open["exposed_port|203.0.113.5:22"] || !open["exposed_port|203.0.113.5:31080"] {
 		t.Error("a failed lookup resolved alerts it could not re-check")
+	}
+
+	// The record behind 203.0.113.5 is deleted. Its IP is no longer looked
+	// up at all -- and InternetDB would still remember its ports -- but the
+	// zone no longer exposes it, so its alerts close.
+	idb.fail["203.0.113.5"] = false
+	var kept []services.CloudflareDNSRecord
+	for _, r := range fake.dns {
+		if r.Content != "203.0.113.5" {
+			kept = append(kept, r)
+		}
+	}
+	fake.dns = kept
+	scanCloudflareExposure(z)
+	open = openKeys()
+	if open["exposed_port|203.0.113.5:22"] || open["exposed_port|203.0.113.5:31080"] {
+		t.Errorf("alerts for an IP no record points at any more are still open: %v", open)
+	}
+	if !open["origin_exposed|198.51.100.10"] {
+		t.Error("removing one record resolved alerts for another IP")
 	}
 
 	var row models.CloudflareExposure
