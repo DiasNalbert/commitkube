@@ -4,7 +4,6 @@ import { useState, useEffect, useMemo } from "react";
 import { searchSecrets } from "@/lib/secret-search";
 import { apiFetch } from "@/lib/api";
 import { loadPermissions, PERMISSIONS } from "@/lib/permissions";
-import { useSidebarWidth } from "@/app/components/Sidebar";
 
 interface ExternalSecretItem {
   name: string;
@@ -63,7 +62,6 @@ const IconSearch = () => (
 );
 
 export default function SecretsPage() {
-  const ml = useSidebarWidth();
   const [unlocked, setUnlocked] = useState(false);
   const [password, setPassword] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
@@ -287,7 +285,7 @@ export default function SecretsPage() {
   }
 
   return (
-    <main className={`${ml} min-h-screen p-6`}>
+    <div className="min-h-screen">
       <div className="max-w-6xl mx-auto space-y-6">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3">
@@ -565,7 +563,7 @@ export default function SecretsPage() {
           {note}
         </p>
       )}
-    </main>
+    </div>
   );
 }
 

@@ -25,7 +25,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   const isSidebarHidden = HIDDEN_ROUTES.includes(pathname);
-  const marginClass = isSidebarHidden ? "" : collapsed ? "ml-14" : "ml-56";
+  // Below md the nav is a drawer over the page, so there is no margin to
+  // leave -- only room for the menu bar along the top.
+  const marginClass = isSidebarHidden ? "" : `pt-12 md:pt-0 ${collapsed ? "md:ml-14" : "md:ml-56"}`;
 
   return (
     <div className={`flex-1 flex flex-col min-w-0 transition-all duration-200 ${marginClass}`}>

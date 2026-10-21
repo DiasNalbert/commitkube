@@ -263,15 +263,15 @@ export default function Dashboard() {
       <div className="space-y-4">
         <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
           <h2 className="text-xl font-bold">All Managed Repositories</h2>
-          <div className="flex items-center gap-2">
-            <div className="relative">
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+            <div className="relative w-full sm:w-auto">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm">🔍</span>
               <input
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Search repository..."
-                className="input-tech text-sm pl-8 pr-4 py-1.5 w-56"
+                className="input-tech text-sm pl-8 pr-4 py-1.5 w-full sm:w-56"
               />
             </div>
             <span className="text-sm text-zinc-500 whitespace-nowrap">{repoPage.total} repositories · page {repoPage.page} of {repoPage.pages}</span>
