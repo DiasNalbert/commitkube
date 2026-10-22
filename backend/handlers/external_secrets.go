@@ -8,8 +8,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
-	"github.com/kubecommit/backend/models"
-	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -57,30 +55,14 @@ func buildK8sClients() (kubernetes.Interface, dynamic.Interface, error) {
 	return clientsFor(cl)
 }
 
-func verifyCurrentUserPassword(c *fiber.Ctx, password string) (*models.User, error) {
-	userID := uint(c.Locals("user_id").(float64))
-	var user models.User
-	if err := db.DB.First(&user, userID).Error; err != nil {
-		return nil, err
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return nil, fiber.NewError(fiber.StatusUnauthorized, "invalid password")
-	}
-	return &user, nil
-}
-
 func ListSecrets(c *fiber.Ctx) error {
 	var req struct {
-		Password  string `json:"password"`
 		Namespace string `json:"namespace"`
 	}
-	if err := c.BodyParser(&req); err != nil || req.Password == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "password required"})
+	if why := secretsTicketProblem(c); why != "" {
+		return secretsRefusal(c, why)
 	}
-
-	if _, err := verifyCurrentUserPassword(c, req.Password); err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid password"})
-	}
+	_ = c.BodyParser(&req)
 
 	typed, dyn, err := requestClients(c)
 	if err != nil {
@@ -191,17 +173,15 @@ func RevealSecretValue(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Password  string `json:"password"`
 		Namespace string `json:"namespace"`
 		Name      string `json:"name"`
 		Key       string `json:"key"`
 	}
-	if err := c.BodyParser(&req); err != nil || req.Password == "" || req.Namespace == "" || req.Name == "" || req.Key == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "password, namespace, name and key required"})
+	if why := secretsTicketProblem(c); why != "" {
+		return secretsRefusal(c, why)
 	}
-
-	if _, err := verifyCurrentUserPassword(c, req.Password); err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid password"})
+	if err := c.BodyParser(&req); err != nil || req.Namespace == "" || req.Name == "" || req.Key == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "namespace, name and key required"})
 	}
 
 	if !namespaceAllowed(c, req.Namespace) {
@@ -266,7 +246,6 @@ func externalSecretOwner(secret *corev1.Secret) string {
 // changes what runs, this changes what it can reach.
 func UpdateSecretValue(c *fiber.Ctx) error {
 	var req struct {
-		Password  string `json:"password"`
 		Namespace string `json:"namespace"`
 		Name      string `json:"name"`
 		Key       string `json:"key"`
@@ -279,15 +258,14 @@ func UpdateSecretValue(c *fiber.Ctx) error {
 		// read by nothing.
 		AllowNewKey bool `json:"allow_new_key"`
 	}
-	if err := c.BodyParser(&req); err != nil ||
-		req.Password == "" || req.Namespace == "" || req.Name == "" || req.Key == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "password, namespace, name and key are required",
-		})
+	if why := secretsTicketProblem(c); why != "" {
+		return secretsRefusal(c, why)
 	}
-
-	if _, err := verifyCurrentUserPassword(c, req.Password); err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid password"})
+	if err := c.BodyParser(&req); err != nil ||
+		req.Namespace == "" || req.Name == "" || req.Key == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "namespace, name and key are required",
+		})
 	}
 	if !namespaceAllowed(c, req.Namespace) {
 		return forbidNamespace(c)
@@ -366,18 +344,16 @@ func UpdateSecretValue(c *fiber.Ctx) error {
 // number is what makes an access review readable later.
 func RevealSecretBundle(c *fiber.Ctx) error {
 	var req struct {
-		Password  string `json:"password"`
 		Namespace string `json:"namespace"`
 		Name      string `json:"name"`
 	}
-	if err := c.BodyParser(&req); err != nil || req.Password == "" || req.Namespace == "" || req.Name == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "password, namespace and name are required",
-		})
+	if why := secretsTicketProblem(c); why != "" {
+		return secretsRefusal(c, why)
 	}
-
-	if _, err := verifyCurrentUserPassword(c, req.Password); err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid password"})
+	if err := c.BodyParser(&req); err != nil || req.Namespace == "" || req.Name == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "namespace and name are required",
+		})
 	}
 	if !namespaceAllowed(c, req.Namespace) {
 		return forbidNamespace(c)

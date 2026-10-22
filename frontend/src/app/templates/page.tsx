@@ -8,6 +8,64 @@ type GlobalVar = { id: number; key: string; value: string; secured: boolean };
 type Workspace = { id: number; alias: string; workspace_id: string; project_key: string };
 type Project = { id: number; project_key: string; alias: string };
 
+/* These live outside the page on purpose. Declared inside it, each render
+   made them new component types, so React remounted their inputs on every
+   keystroke: the textarea lost focus after each edit, and select-all then
+   delete took a click per deletion. */
+const VarRow = ({ v, onDelete }: { v: GlobalVar; onDelete: () => void }) => (
+  <div className="flex items-center gap-2 p-2 rounded text-sm" style={{ background: "var(--color-surface)", border: "1px solid var(--card-border)" }}>
+    <span className="font-mono text-brand-green flex-1">{v.key}</span>
+    <span className="flex-1" style={{ color: "var(--color-fg)", opacity: 0.6 }}>{v.secured ? "●●●●●●●" : v.value}</span>
+    {v.secured && <span className="text-xs text-yellow-500 bg-yellow-500/10 px-1.5 py-0.5 rounded">secured</span>}
+    <button onClick={onDelete} className="text-red-400 hover:text-red-300 px-1">✕</button>
+  </div>
+);
+
+const VarForm = ({ form, onChange, onAdd }: { form: { key: string; value: string; secured: boolean }; onChange: (f: typeof form) => void; onAdd: () => void }) => (
+  <div className="flex gap-2 flex-wrap pt-1">
+    <input className="input-tech flex-1 min-w-28 text-sm" placeholder="KEY" value={form.key} onChange={e => onChange({ ...form, key: e.target.value })} />
+    <input className="input-tech flex-1 min-w-36 text-sm" placeholder="value" type={form.secured ? "password" : "text"} value={form.value} onChange={e => onChange({ ...form, value: e.target.value })} />
+    <label className="flex items-center gap-1.5 text-sm cursor-pointer" style={{ color: "var(--color-fg)", opacity: 0.7 }}>
+      <input type="checkbox" checked={form.secured} onChange={e => onChange({ ...form, secured: e.target.checked })} className="accent-brand-green" /> Secured
+    </label>
+    <button onClick={onAdd} className="btn-primary px-3 py-1.5 text-sm">+ Add</button>
+  </div>
+);
+
+const TmplRow = ({ t, editing, onToggleEdit, onDelete, onSave, onCancel, onChange }: {
+  t: Template; editing: Template | null;
+  onToggleEdit: () => void; onDelete: () => void; onSave: () => void; onCancel: () => void;
+  onChange: (content: string) => void;
+}) => (
+  <div className="rounded mb-1" style={{ border: "1px solid var(--card-border)" }}>
+    <div className="flex items-center gap-2 px-3 py-2 text-sm" style={{ background: "var(--color-surface)" }}>
+      <span className="font-mono text-brand-green flex-1 text-xs">{t.path ? `${t.path}/` : ""}<strong>{t.name}</strong></span>
+      <button onClick={onToggleEdit} className="text-xs px-2 py-0.5 rounded btn-secondary">
+        {editing !== null && editing.id === t.id ? "Close" : "✏️ Edit"}
+      </button>
+      <button onClick={onDelete} className="text-red-400 hover:text-red-300 text-xs px-1">✕</button>
+    </div>
+    {editing !== null && editing.id === t.id && (
+      <div className="p-3 border-t" style={{ borderColor: "var(--card-border)", background: "var(--color-surface)" }}>
+        <p className="text-xs text-zinc-500 mb-1.5">
+          Use <code className="font-mono text-brand-green">{"<your_application>"}</code> wherever you want the repository name (name, namespace, labels, etc.)
+        </p>
+        <textarea
+          className="w-full font-mono text-xs p-2 rounded mb-2 focus:outline-none focus:border-brand-green"
+          style={{ background: "var(--input-bg)", color: "var(--input-fg)", border: "1px solid var(--input-border)" }}
+          rows={10}
+          value={editing.content}
+          onChange={e => onChange(e.target.value)}
+        />
+        <div className="flex gap-2 justify-end">
+          <button onClick={onCancel} className="btn-secondary text-xs px-2 py-1">Cancel</button>
+          <button onClick={onSave} className="btn-primary text-xs px-3 py-1">💾 Save</button>
+        </div>
+      </div>
+    )}
+  </div>
+);
+
 export default function TemplatesPage() {
   const [message, setMessage] = useState("");
 
@@ -192,60 +250,6 @@ export default function TemplatesPage() {
     if (ws.project_key) keys.add(ws.project_key);
     return Array.from(keys).sort();
   };
-
-  const VarRow = ({ v, onDelete }: { v: GlobalVar; onDelete: () => void }) => (
-    <div className="flex items-center gap-2 p-2 rounded text-sm" style={{ background: "var(--color-surface)", border: "1px solid var(--card-border)" }}>
-      <span className="font-mono text-brand-green flex-1">{v.key}</span>
-      <span className="flex-1" style={{ color: "var(--color-fg)", opacity: 0.6 }}>{v.secured ? "●●●●●●●" : v.value}</span>
-      {v.secured && <span className="text-xs text-yellow-500 bg-yellow-500/10 px-1.5 py-0.5 rounded">secured</span>}
-      <button onClick={onDelete} className="text-red-400 hover:text-red-300 px-1">✕</button>
-    </div>
-  );
-
-  const VarForm = ({ form, onChange, onAdd }: { form: { key: string; value: string; secured: boolean }; onChange: (f: typeof form) => void; onAdd: () => void }) => (
-    <div className="flex gap-2 flex-wrap pt-1">
-      <input className="input-tech flex-1 min-w-28 text-sm" placeholder="KEY" value={form.key} onChange={e => onChange({ ...form, key: e.target.value })} />
-      <input className="input-tech flex-1 min-w-36 text-sm" placeholder="value" type={form.secured ? "password" : "text"} value={form.value} onChange={e => onChange({ ...form, value: e.target.value })} />
-      <label className="flex items-center gap-1.5 text-sm cursor-pointer" style={{ color: "var(--color-fg)", opacity: 0.7 }}>
-        <input type="checkbox" checked={form.secured} onChange={e => onChange({ ...form, secured: e.target.checked })} className="accent-brand-green" /> Secured
-      </label>
-      <button onClick={onAdd} className="btn-primary px-3 py-1.5 text-sm">+ Add</button>
-    </div>
-  );
-
-  const TmplRow = ({ t, editing, onToggleEdit, onDelete, onSave, onCancel, onChange }: {
-    t: Template; editing: Template | null;
-    onToggleEdit: () => void; onDelete: () => void; onSave: () => void; onCancel: () => void;
-    onChange: (content: string) => void;
-  }) => (
-    <div className="rounded mb-1" style={{ border: "1px solid var(--card-border)" }}>
-      <div className="flex items-center gap-2 px-3 py-2 text-sm" style={{ background: "var(--color-surface)" }}>
-        <span className="font-mono text-brand-green flex-1 text-xs">{t.path ? `${t.path}/` : ""}<strong>{t.name}</strong></span>
-        <button onClick={onToggleEdit} className="text-xs px-2 py-0.5 rounded btn-secondary">
-          {editing !== null && editing.id === t.id ? "Close" : "✏️ Edit"}
-        </button>
-        <button onClick={onDelete} className="text-red-400 hover:text-red-300 text-xs px-1">✕</button>
-      </div>
-      {editing !== null && editing.id === t.id && (
-        <div className="p-3 border-t" style={{ borderColor: "var(--card-border)", background: "var(--color-surface)" }}>
-          <p className="text-xs text-zinc-500 mb-1.5">
-            Use <code className="font-mono text-brand-green">{"<your_application>"}</code> wherever you want the repository name (name, namespace, labels, etc.)
-          </p>
-          <textarea
-            className="w-full font-mono text-xs p-2 rounded mb-2 focus:outline-none focus:border-brand-green"
-            style={{ background: "var(--input-bg)", color: "var(--input-fg)", border: "1px solid var(--input-border)" }}
-            rows={10}
-            value={editing.content}
-            onChange={e => onChange(e.target.value)}
-          />
-          <div className="flex gap-2 justify-end">
-            <button onClick={onCancel} className="btn-secondary text-xs px-2 py-1">Cancel</button>
-            <button onClick={onSave} className="btn-primary text-xs px-3 py-1">💾 Save</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
 
   return (
     <div className="max-w-5xl mx-auto space-y-8">

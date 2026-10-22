@@ -64,8 +64,11 @@ const IconSearch = () => (
 
 export default function SecretsPage() {
   const [unlocked, setUnlocked] = useState(false);
-  const [password, setPassword] = useState("");
+  // The unlock ticket, in memory only: fifteen minutes, this sign-in.
+  // The password is sent once, to get it, and kept nowhere.
+  const [ticket, setTicket] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
+  const [codeInput, setCodeInput] = useState("");
   const [unlockError, setUnlockError] = useState("");
   const [unlockLoading, setUnlockLoading] = useState(false);
 
@@ -99,23 +102,55 @@ export default function SecretsPage() {
 
   const isAdmin = role === "root" || role === "admin";
 
+  /** A secrets call with the unlock ticket. When the server says the
+   *  unlock is over -- expired, or from an earlier sign-in -- the page locks
+   *  and asks again, rather than failing call by call. */
+  async function secretsFetch(path: string, init: RequestInit, t = ticket): Promise<Response> {
+    const res = await apiFetch(path, {
+      ...init,
+      headers: { ...((init.headers as Record<string, string>) || {}), "X-Secrets-Ticket": t },
+    });
+    if (res.status === 403) {
+      const body = await res.clone().json().catch(() => ({}));
+      if (body.secrets_unlock_required) {
+        setTicket("");
+        setUnlocked(false);
+        setRevealedKeys({});
+        setUnlockError(body.error ?? "unlock again");
+      }
+    }
+    return res;
+  }
+
   async function handleUnlock(e: React.FormEvent) {
     e.preventDefault();
     setUnlockLoading(true);
     setUnlockError("");
-    const res = await apiFetch("/secrets/list", {
+    const res = await apiFetch("/secrets/unlock", {
       method: "POST",
-      body: JSON.stringify({ password: passwordInput, namespace: nsFilter }),
+      body: JSON.stringify({ password: passwordInput, code: codeInput }),
     });
-    setUnlockLoading(false);
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({}));
-      setUnlockError(j.error || "invalid password");
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ticket) {
+      setUnlockLoading(false);
+      setUnlockError(body.error || "wrong password or code");
+      setCodeInput("");
       return;
     }
-    const json: SecretsListResponse = await res.json();
-    setPassword(passwordInput);
-    setData(json);
+    const list = await secretsFetch("/secrets/list", {
+      method: "POST",
+      body: JSON.stringify({ namespace: nsFilter }),
+    }, body.ticket);
+    setUnlockLoading(false);
+    if (!list.ok) {
+      const j = await list.json().catch(() => ({}));
+      setUnlockError(j.error || "could not list secrets");
+      return;
+    }
+    setPasswordInput("");
+    setCodeInput("");
+    setTicket(body.ticket);
+    setData(await list.json());
     setUnlocked(true);
   }
 
@@ -123,9 +158,9 @@ export default function SecretsPage() {
     if (!unlocked) return;
     setLoading(true);
     setError("");
-    const res = await apiFetch("/secrets/list", {
+    const res = await secretsFetch("/secrets/list", {
       method: "POST",
-      body: JSON.stringify({ password, namespace: nsFilter }),
+      body: JSON.stringify({ namespace: nsFilter }),
     });
     setLoading(false);
     if (!res.ok) {
@@ -141,9 +176,9 @@ export default function SecretsPage() {
   async function revealKey(secretName: string, secretNamespace: string, key: string): Promise<string | undefined> {
     const mapKey = `${secretNamespace}/${secretName}/${key}`;
     setRevealLoading(prev => ({ ...prev, [mapKey]: true }));
-    const res = await apiFetch("/secrets/reveal", {
+    const res = await secretsFetch("/secrets/reveal", {
       method: "POST",
-      body: JSON.stringify({ password, namespace: secretNamespace, name: secretName, key }),
+      body: JSON.stringify({ namespace: secretNamespace, name: secretName, key }),
     });
     setRevealLoading(prev => ({ ...prev, [mapKey]: false }));
     if (!res.ok) return undefined;
@@ -161,10 +196,10 @@ export default function SecretsPage() {
     setSaveError(prev => ({ ...prev, [mapKey]: "" }));
     setSaving(prev => ({ ...prev, [mapKey]: true }));
 
-    const res = await apiFetch("/secrets/value", {
+    const res = await secretsFetch("/secrets/value", {
       method: "PUT",
       body: JSON.stringify({
-        password, namespace: secretNamespace, name: secretName, key,
+        namespace: secretNamespace, name: secretName, key,
         value: draft[mapKey] ?? "", acknowledge_managed: acknowledge, allow_new_key: allowNew,
       }),
     });
@@ -196,9 +231,9 @@ export default function SecretsPage() {
     const mapKey = `${secretNamespace}/${secretName}`;
     setSaveError(prev => ({ ...prev, [mapKey]: "" }));
 
-    const res = await apiFetch("/secrets/reveal-bundle", {
+    const res = await secretsFetch("/secrets/reveal-bundle", {
       method: "POST",
-      body: JSON.stringify({ password, namespace: secretNamespace, name: secretName }),
+      body: JSON.stringify({ namespace: secretNamespace, name: secretName }),
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -247,7 +282,7 @@ export default function SecretsPage() {
               <IconLock />
             </div>
             <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Secrets</h1>
-            <p className="text-sm text-zinc-600 dark:text-zinc-400 text-center">Enter your KubeCommit password to view cluster secrets</p>
+            <p className="text-sm text-zinc-600 dark:text-zinc-400 text-center">Enter your password and a code from your authenticator app to view cluster secrets</p>
           </div>
           <form onSubmit={handleUnlock} className="flex flex-col gap-4">
             <div>
@@ -266,15 +301,29 @@ export default function SecretsPage() {
                 type="password"
                 value={passwordInput}
                 onChange={e => setPasswordInput(e.target.value)}
-                placeholder="your KubeCommit password"
+                placeholder="your CommitKube password"
+                autoComplete="current-password"
                 autoFocus
                 className="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:border-brand-green/50"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400 mb-1.5">Authenticator code</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={codeInput}
+                onChange={e => setCodeInput(e.target.value.replace(/\D/g, ""))}
+                placeholder="000000"
+                className="w-full bg-[var(--input-bg)] border border-[var(--input-border)] rounded-lg px-3 py-2 text-sm font-mono tracking-widest text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:border-brand-green/50"
               />
             </div>
             {unlockError && <p className="text-xs text-red-400">{unlockError}</p>}
             <button
               type="submit"
-              disabled={unlockLoading || !passwordInput}
+              disabled={unlockLoading || !passwordInput || codeInput.length !== 6}
               className="w-full py-2.5 rounded-lg bg-brand-green text-black font-semibold text-sm hover:bg-brand-green/90 transition disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {unlockLoading ? "Verifying..." : "Unlock"}
@@ -325,7 +374,7 @@ export default function SecretsPage() {
               {loading ? "Loading..." : "Refresh"}
             </button>
             <button
-              onClick={() => { setUnlocked(false); setPassword(""); setPasswordInput(""); setData(null); setRevealedKeys({}); setSearch(""); }}
+              onClick={() => { setUnlocked(false); setTicket(""); setPasswordInput(""); setCodeInput(""); setData(null); setRevealedKeys({}); setSearch(""); }}
               className="px-4 py-1.5 rounded-lg bg-zinc-100 dark:bg-zinc-800 border border-[var(--input-border)] text-zinc-600 dark:text-zinc-400 text-sm font-medium hover:text-zinc-800 dark:hover:text-zinc-200 transition"
             >
               Lock

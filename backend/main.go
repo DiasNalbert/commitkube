@@ -302,7 +302,7 @@ func main() {
 	}
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: allowOrigins,
-		AllowHeaders: "Origin, Content-Type, Accept, Authorization, X-Vault-Session",
+		AllowHeaders: "Origin, Content-Type, Accept, Authorization, X-Vault-Session, X-Secrets-Ticket",
 		// A vault session is reissued in a response header while somebody is
 		// working; the browser can only read it back if it is exposed.
 		ExposeHeaders:    "X-Vault-Session",
@@ -514,6 +514,21 @@ func main() {
 	del(api, "/golden-paths/:id", handlers.PermTemplateWrite, handlers.DeleteGoldenPath)
 	post(api, "/repositories/:name/approve", handlers.PermSCMApprove, handlers.ApproveRepository)
 
+	// Unlocking takes the password and a code from the sign-in authenticator;
+	// limited per person, since a password guessed here is a password.
+	secretsUnlockLimit := limiter.New(limiter.Config{
+		Max:        5,
+		Expiration: time.Minute,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return fmt.Sprintf("secrets|%v", c.Locals("user_id"))
+		},
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"error": "too many attempts; wait a minute and try again",
+			})
+		},
+	})
+	post(api, "/secrets/unlock", handlers.PermK8sSecretsRead, secretsUnlockLimit, handlers.UnlockSecrets)
 	post(api, "/secrets/list", handlers.PermK8sSecretsRead, handlers.ListSecrets)
 	post(api, "/secrets/reveal", handlers.PermK8sSecretsShow, handlers.RevealSecretValue)
 	post(api, "/secrets/reveal-bundle", handlers.PermK8sSecretsShow, handlers.RevealSecretBundle)
