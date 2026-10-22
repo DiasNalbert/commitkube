@@ -89,6 +89,17 @@ func main() {
 	}()
 
 	go func() {
+		// Session rows past their deadline are dead weight; an hourly sweep
+		// keeps the table the size of the people actually signed in.
+		handlers.PruneRefreshTokens()
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			handlers.PruneRefreshTokens()
+		}
+	}()
+
+	go func() {
 		// Findings go stale on their own: a CVE published today applies to an
 		// image nobody has touched. The pass only enqueues -- the worker pool
 		// decides how fast the queue actually drains.
@@ -280,9 +291,13 @@ func main() {
 	})
 
 	app.Use(logger.New())
+	// The session is a cookie, and a browser only sends a cookie across
+	// origins to a server that names the origin -- "*" is refused with
+	// credentials. The image serves page and API from one origin, where none
+	// of this applies; the default is the Next dev server.
 	allowOrigins := os.Getenv("CORS_ORIGIN")
 	if allowOrigins == "" {
-		allowOrigins = "*"
+		allowOrigins = "http://localhost:3000"
 	}
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: allowOrigins,
@@ -334,6 +349,7 @@ func main() {
 	app.Post("/api/auth/login", authLimit, handlers.Login)
 	app.Post("/api/auth/verify-mfa", authLimit, handlers.VerifyMFA)
 	app.Post("/api/auth/refresh", authLimit, handlers.RefreshTokenHandler)
+	app.Post("/api/auth/logout", handlers.Logout)
 	app.Post("/api/auth/setup-init", authLimit, handlers.SetupInit)
 	app.Post("/api/auth/setup-confirm", authLimit, handlers.SetupConfirm)
 
@@ -362,6 +378,9 @@ func main() {
 	get(api, "/scan-timeline", handlers.PermSecurityRead, handlers.GetScanTimeline)
 	get(api, "/scan-status", handlers.PermSecurityRead, handlers.GetScanStatus)
 	get(api, "/scan-dashboard/:name", handlers.PermSecurityRead, handlers.GetRepoScanDetail)
+	get(api, "/scan-suppressions", handlers.PermSecurityRead, handlers.ListScanSuppressions)
+	post(api, "/scan-suppressions", handlers.PermSecurityTriage, handlers.CreateScanSuppression)
+	del(api, "/scan-suppressions/:id", handlers.PermSecurityTriage, handlers.DeleteScanSuppression)
 
 	get(api, "/settings", handlers.PermSettingsRead, handlers.GetSettings)
 	put(api, "/settings", handlers.PermSettingsWrite, handlers.UpdateSettings)
@@ -378,9 +397,6 @@ func main() {
 	post(api, "/global-vars", handlers.PermSettingsWrite, handlers.CreateGlobalVar)
 	put(api, "/global-vars/:id", handlers.PermSettingsWrite, handlers.UpdateGlobalVar)
 	del(api, "/global-vars/:id", handlers.PermSettingsWrite, handlers.DeleteGlobalVar)
-	get(api, "/scan-suppressions", handlers.PermSecurityRead, handlers.ListScanSuppressions)
-	post(api, "/scan-suppressions", handlers.PermSecurityTriage, handlers.CreateScanSuppression)
-	del(api, "/scan-suppressions/:id", handlers.PermSecurityTriage, handlers.DeleteScanSuppression)
 
 	get(api, "/workspaces", handlers.PermSCMRead, handlers.ListWorkspaces)
 	post(api, "/workspaces", handlers.PermSCMWrite, handlers.CreateWorkspace)
@@ -592,6 +608,7 @@ func main() {
 		"/api/auth/login":         true,
 		"/api/auth/verify-mfa":    true,
 		"/api/auth/refresh":       true,
+		"/api/auth/logout":        true,
 		"/api/auth/setup-init":    true,
 		"/api/auth/setup-confirm": true,
 	}); err != nil {

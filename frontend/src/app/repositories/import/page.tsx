@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { getSessionUser } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
 
 type Workspace = { id: number; alias: string; workspace_id: string; project_key: string };
@@ -20,9 +21,7 @@ export default function ImportRepository() {
   const [projectResult, setProjectResult] = useState<ImportResult | null>(null);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) { window.location.href = "/login"; return; }
-    const role = localStorage.getItem("role") || "";
+    const role = getSessionUser()?.role ?? "";
     if (role !== "root" && role !== "admin") { window.location.href = "/"; return; }
     apiFetch("/workspaces").then(r => r.json()).then(data => {
       if (Array.isArray(data)) {

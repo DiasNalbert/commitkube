@@ -110,12 +110,30 @@ type BitbucketWorkspace struct {
 	SSHPubKey   string         `json:"ssh_pub_key"`
 }
 
+// RefreshToken is one link in a sign-in session. Each refresh replaces the
+// token it was given with a new one in the same session, so a token is good
+// exactly once; a second use of a spent token means two parties hold it, and
+// the whole session is ended.
+//
+// Token holds a SHA-256 of what the browser has, never the value itself: a
+// copy of the database must not be a set of live sessions.
 type RefreshToken struct {
 	gorm.Model
-	UserID    uint   `gorm:"index"`
-	Token     string `gorm:"uniqueIndex;not null"`
-	ExpiresAt time.Time
-	Revoked   bool `gorm:"default:false"`
+	UserID uint   `gorm:"index"`
+	Token  string `gorm:"uniqueIndex;not null"`
+	// SessionID ties every rotation of one sign-in together, so ending the
+	// session ends all of them.
+	SessionID        string `gorm:"index"`
+	SessionStartedAt time.Time
+	// ExpiresAt is the idle deadline: it moves forward with every refresh,
+	// and never past SessionStartedAt plus the maximum session length.
+	ExpiresAt  time.Time
+	LastUsedAt time.Time
+	Revoked    bool `gorm:"default:false"`
+	// RotatedAt is when this token was spent on a refresh. Set only by
+	// rotation, never by a logout, which is how a late request racing a
+	// rotation is told apart from a stolen token being replayed.
+	RotatedAt *time.Time
 }
 
 type BitbucketProject struct {

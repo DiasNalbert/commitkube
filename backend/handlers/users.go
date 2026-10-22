@@ -177,6 +177,9 @@ func UpdateUserRole(c *fiber.Ctx) error {
 	}
 
 	db.DB.Model(&target).Update("role", req.Role)
+	// A session carries the role it was signed with; the next refresh would
+	// pick up the new one, but a demotion should not wait for it.
+	revokeUserSessions(target.ID)
 	db.LogAudit(caller.ID, "update_user_role", "user", target.Email,
 		`{"from":"`+target.Role+`","to":"`+req.Role+`"}`, c.IP())
 	return c.JSON(fiber.Map{"message": "Role updated"})
@@ -259,6 +262,9 @@ func ResetUserMFA(c *fiber.Ctx) error {
 		"mfa_secret":  "",
 		"mfa_enabled": false,
 	})
+	// A reset second factor usually means a lost or stolen device: whatever
+	// is signed in with the old one is signed out.
+	revokeUserSessions(target.ID)
 	return c.JSON(fiber.Map{"message": "MFA reset. User must re-enroll on next login."})
 }
 
@@ -306,5 +312,15 @@ func ChangePassword(c *fiber.Ctx) error {
 		"password_hash":         string(hash),
 		"force_password_change": false,
 	})
+	// A new password ends every other session on the account -- changing it
+	// is what people do when they think someone else is in. The one making
+	// the change stays signed in.
+	if sid, _ := c.Locals("session_id").(string); target.ID == caller.ID && sid != "" {
+		db.DB.Model(&models.RefreshToken{}).
+			Where("user_id = ? AND session_id != ? AND revoked = false", target.ID, sid).
+			Update("revoked", true)
+	} else {
+		revokeUserSessions(target.ID)
+	}
 	return c.JSON(fiber.Map{"message": "Password updated"})
 }

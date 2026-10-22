@@ -80,8 +80,6 @@ export default function AuditLogsPage() {
   }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) { window.location.href = "/login"; return; }
     load(1, "", "");
   }, [load]);
 

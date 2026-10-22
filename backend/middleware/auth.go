@@ -61,6 +61,9 @@ func AuthRequired() fiber.Handler {
 
 		c.Locals("user_id", claims["user_id"])
 		c.Locals("role", claims["role"])
+		if sid, ok := claims["sid"].(string); ok {
+			c.Locals("session_id", sid)
+		}
 		return c.Next()
 	}
 }

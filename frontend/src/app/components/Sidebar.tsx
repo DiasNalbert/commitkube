@@ -8,6 +8,7 @@ import LogoutButton from "./LogoutButton";
 import ClusterSelector from "./k8s/ClusterSelector";
 import { usePermissions } from "./usePermissions";
 import { PERMISSIONS as P } from "@/lib/permissions";
+import { getSessionUser } from "@/lib/auth";
 
 const HIDDEN_ROUTES = ["/login", "/register", "/setup"];
 
@@ -309,7 +310,7 @@ export default function Sidebar() {
   const { can } = usePermissions();
 
   useLayoutEffect(() => {
-    setRole(localStorage.getItem("role") || "");
+    setRole(getSessionUser()?.role ?? "");
     const saved = localStorage.getItem("sidebar_collapsed");
     if (saved === "1") setCollapsed(true);
     setOpen({

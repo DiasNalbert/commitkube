@@ -140,7 +140,13 @@ e de time, com membros, papéis e acesso por grupo.
 
 ### Acesso e auditoria
 
-- **MFA obrigatório** (TOTP) desde o primeiro acesso; sessão de 1 h com refresh
+- **MFA obrigatório** (TOTP) desde o primeiro acesso
+- **Sessão que morre com o navegador**: o refresh token é um cookie httpOnly
+  de sessão, guardado como hash no servidor, e o access token só existe na
+  memória da página. Cada página valida a sessão no servidor antes de
+  renderizar. A sessão expira por inatividade e por duração máxima, gira a
+  cada uso (reuso de um token gasto encerra a sessão inteira) e é revogada no
+  logout, na troca de senha, de papel ou de MFA
 - **Permissões granulares** (26 concedíveis, de `k8s.read` a `audit.read`),
   liberadas ou negadas por usuário ou grupo, em cima dos papéis root, admin e
   user. `iam.manage` é exclusiva de root e há no máximo 2 contas root
@@ -312,7 +318,11 @@ O botão *Test connection* diz qual delas está faltando.
 | Variável | Padrão | Descrição |
 |---|---|---|
 | `DB_PATH` | `kubecommit.db` (o container usa `/app/data/kubecommit.db`) | Caminho do SQLite; o cache do Trivy fica ao lado |
-| `CORS_ORIGIN` | `*` | Origem permitida no CORS |
+| `CORS_ORIGIN` | `http://localhost:3000` | Origem permitida no CORS. Precisa ser explícita: a sessão é um cookie, e `*` não aceita credenciais |
+| `ACCESS_TOKEN_TTL` | `10m` | Vida do access token |
+| `SESSION_IDLE_TIMEOUT` | `20m` | Sessão sem uso por esse tempo exige login de novo |
+| `SESSION_MAX_AGE` | `12h` | Duração máxima de uma sessão, mesmo em uso |
+| `COOKIE_SECURE` | automático | Força o atributo `Secure` do cookie; por padrão segue o esquema da requisição (`X-Forwarded-Proto` atrás do nginx) |
 | `KUBECONFIG` | `~/.kube/config` | Só usado fora do cluster |
 | `DEFAULT_CLUSTER_NAME` | `in-cluster` | Nome do cluster onde o CommitKube roda |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin@commitkube.local` / `admin123` | Root do primeiro boot. **Defina em qualquer deploy real** |

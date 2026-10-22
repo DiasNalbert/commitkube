@@ -81,6 +81,7 @@ export default function SetupPage() {
     try {
       const res = await fetch(`${API}/auth/setup-confirm`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ setup_token: setupToken, totp_code: totpCode }),
       });
@@ -89,9 +90,6 @@ export default function SetupPage() {
 
       localStorage.removeItem("setup_token");
       localStorage.removeItem("setup_is_bootstrap");
-      localStorage.setItem("token", data.token);
-      if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
-      if (data.user?.role) localStorage.setItem("role", data.user.role);
       window.location.href = "/";
     } catch (err) {
       setError((err instanceof Error ? err.message : String(err)));

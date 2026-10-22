@@ -4,6 +4,7 @@ import "./globals.css";
 import Sidebar from "./components/Sidebar";
 import AppShell from "./components/AppShell";
 import ThemeProvider from "./components/ThemeProvider";
+import SessionGate from "./components/SessionGate";
 
 export const metadata: Metadata = {
   title: "CommitKube | DevOps Automation",
@@ -25,6 +26,7 @@ export default function RootLayout({
       </head>
       <body className="antialiased min-h-screen font-sans flex">
         <ThemeProvider />
+        <SessionGate>
         <Sidebar />
         <AppShell>
           <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 w-full flex-1">
@@ -34,6 +36,7 @@ export default function RootLayout({
             <span className="text-zinc-400">CommitKube &copy; {new Date().getFullYear()}</span>
           </footer>
         </AppShell>
+        </SessionGate>
       </body>
     </html>
   );

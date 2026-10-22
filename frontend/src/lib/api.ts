@@ -1,4 +1,5 @@
 import { isClusterScoped, selectedCluster } from "./cluster";
+import { ensureSession, goToLogin, refreshSession } from "./auth";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
@@ -10,55 +11,44 @@ function withCluster(path: string): string {
   return path + (path.includes("?") ? "&" : "?") + "cluster=" + encodeURIComponent(cluster);
 }
 
-async function refreshAccessToken(): Promise<string | null> {
-  const refreshToken = localStorage.getItem("refresh_token");
-  if (!refreshToken) return null;
-
-  const res = await fetch(`${API}/auth/refresh`, {
-    method: "POST",
+const unauthorized = () =>
+  new Response(JSON.stringify({ error: "not signed in" }), {
+    status: 401,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
   });
 
-  if (!res.ok) {
-    localStorage.removeItem("token");
-    localStorage.removeItem("refresh_token");
-    window.location.href = "/login";
-    return null;
-  }
-
-  const data = await res.json();
-  localStorage.setItem("token", data.token);
-  return data.token;
-}
-
+/** Every call to the API goes through here, with the session's access token.
+ *  No session means no request: the page is sent to sign in instead. */
 export async function apiFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const token = localStorage.getItem("token");
-
-  const makeHeaders = (t: string | null) => ({
+  const makeHeaders = (t: string) => ({
     "Content-Type": "application/json",
     ...((options.headers as Record<string, string>) || {}),
-    ...(t ? { Authorization: `Bearer ${t}` } : {}),
+    Authorization: `Bearer ${t}`,
   });
 
   const url = `${API}${withCluster(path)}`;
 
-  let res = await fetch(url, {
-    ...options,
-    headers: makeHeaders(token),
-  });
+  const token = await ensureSession();
+  if (!token) {
+    goToLogin();
+    return unauthorized();
+  }
+
+  let res = await fetch(url, { ...options, headers: makeHeaders(token) });
 
   if (res.status === 401) {
-    const newToken = await refreshAccessToken();
-    if (newToken) {
-      res = await fetch(url, {
-        ...options,
-        headers: makeHeaders(newToken),
-      });
+    // The access token may have been signed before a change on the server
+    // (a revoked session, a new role). One refresh decides: a new token
+    // retries the call, none ends the visit.
+    const fresh = await refreshSession();
+    if (!fresh) {
+      goToLogin();
+      return res;
     }
+    res = await fetch(url, { ...options, headers: makeHeaders(fresh) });
   }
 
   return res;

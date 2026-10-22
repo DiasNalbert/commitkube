@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -26,31 +24,6 @@ type MFARequest struct {
 	// factor: a stolen code alone would be enough to sign in.
 	MFAToken string `json:"mfa_token"`
 	Code     string `json:"code"`
-}
-
-func issueTokens(user models.User) (string, string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"typ":     middleware.AccessTokenType,
-		"user_id": user.ID,
-		"role":    user.Role,
-		"exp":     time.Now().Add(time.Hour).Unix(),
-	})
-	tokenString, err := token.SignedString(middleware.JWTSecret)
-	if err != nil {
-		return "", "", err
-	}
-
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", "", err
-	}
-	refreshTokenStr := hex.EncodeToString(b)
-	db.DB.Create(&models.RefreshToken{
-		UserID:    user.ID,
-		Token:     refreshTokenStr,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
-	})
-	return tokenString, refreshTokenStr, nil
 }
 
 func Login(c *fiber.Ctx) error {
@@ -114,57 +87,8 @@ func VerifyMFA(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid MFA code"})
 	}
 
-	tokenString, refreshTokenStr, err := issueTokens(user)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not generate token"})
-	}
-
 	db.LogAudit(user.ID, "login", "user", user.Email, "", c.IP())
-
-	return c.JSON(fiber.Map{
-		"token":         tokenString,
-		"refresh_token": refreshTokenStr,
-		"user": fiber.Map{
-			"id":    user.ID,
-			"email": user.Email,
-			"role":  user.Role,
-		},
-	})
-}
-
-func RefreshTokenHandler(c *fiber.Ctx) error {
-	var req struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	if err := c.BodyParser(&req); err != nil || req.RefreshToken == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "refresh_token required"})
-	}
-
-	var rt models.RefreshToken
-	if err := db.DB.Where("token = ? AND revoked = false", req.RefreshToken).First(&rt).Error; err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid refresh token"})
-	}
-	if time.Now().After(rt.ExpiresAt) {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "refresh token expired"})
-	}
-
-	var user models.User
-	if err := db.DB.First(&user, rt.UserID).Error; err != nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "user not found"})
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"typ":     middleware.AccessTokenType,
-		"user_id": user.ID,
-		"role":    user.Role,
-		"exp":     time.Now().Add(time.Hour).Unix(),
-	})
-	tokenString, err := token.SignedString(middleware.JWTSecret)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "could not generate token"})
-	}
-
-	return c.JSON(fiber.Map{"token": tokenString})
+	return signedIn(c, user)
 }
 
 func SetupInit(c *fiber.Ctx) error {
@@ -282,20 +206,8 @@ func SetupConfirm(c *fiber.Ctx) error {
 		finalUser.ForcePasswordChange = false
 	}
 
-	tokenString, refreshTokenStr, err := issueTokens(finalUser)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not generate token"})
-	}
-
-	return c.JSON(fiber.Map{
-		"token":         tokenString,
-		"refresh_token": refreshTokenStr,
-		"user": fiber.Map{
-			"id":    finalUser.ID,
-			"email": finalUser.Email,
-			"role":  finalUser.Role,
-		},
-	})
+	db.LogAudit(finalUser.ID, "login", "user", finalUser.Email, `{"via":"setup"}`, c.IP())
+	return signedIn(c, finalUser)
 }
 
 // The setup and MFA steps used to be addressed by a user id taken from the

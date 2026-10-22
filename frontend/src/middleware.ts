@@ -47,7 +47,25 @@ function policy(nonce: string): string {
   ].join("; ");
 }
 
+/** Pages that render without a session. */
+const PUBLIC_PATHS = ["/login", "/setup"];
+
+/** The session cookie the API sets at sign-in (httpOnly; its value means
+ *  nothing here). Its absence is enough to know there is no session, so the
+ *  page is never served at all; its presence is checked properly by the
+ *  page, which asks the API for a token before it renders. */
+const SESSION_COOKIE = "ck_session";
+
 export function middleware(request: NextRequest) {
+  const { pathname, search } = request.nextUrl;
+  const isPublic = PUBLIC_PATHS.some(p => pathname === p || pathname.startsWith(p + "/"));
+  if (!isPublic && !request.cookies.get(SESSION_COOKIE)?.value) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    url.search = `?next=${encodeURIComponent(pathname + search)}`;
+    return NextResponse.redirect(url);
+  }
+
   const nonce = btoa(crypto.randomUUID());
   const csp = policy(nonce);
 

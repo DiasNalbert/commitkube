@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { getSessionUser } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
 import ClusterRBAC from "./ClusterRBAC";
 import AddCluster from "./AddCluster";
@@ -75,7 +76,7 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [myRole, setMyRole] = useState("");
 
-  useEffect(() => { setMyRole(localStorage.getItem("role") ?? ""); }, []);
+  useEffect(() => { setMyRole(getSessionUser()?.role ?? ""); }, []);
 
   const load = useCallback(async () => {
     const [u, g, cl, cat, gr, sc] = await Promise.all([

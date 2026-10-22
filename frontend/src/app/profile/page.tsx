@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getSessionUser } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
 
 interface UserProfile {
@@ -65,13 +66,7 @@ export default function ProfilePage() {
   };
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) { window.location.href = "/login"; return; }
-
-    try {
-      const tokenData = JSON.parse(atob(token.split(".")[1]));
-      setUserRole(tokenData.role || "");
-    } catch {}
+    setUserRole(getSessionUser()?.role ?? "");
 
     apiFetch("/users/me").then(async (res) => {
       if (res.status === 401) { window.location.href = "/login"; return; }

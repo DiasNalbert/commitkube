@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getSessionUser } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
 import WorkspaceFilter, { WorkspaceSelection } from "@/app/components/WorkspaceFilter";
 
@@ -46,18 +47,10 @@ export default function Dashboard() {
   };
 
   const fetchRepos = async (p: number, sel: WorkspaceSelection | null = null, q = "") => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      window.location.href = "/login";
-      return;
-    }
     try {
       const searchParam = q ? `&search=${encodeURIComponent(q)}` : "";
       const res = await apiFetch(`/repositories?page=${p}&limit=12${buildWsParams(sel)}${searchParam}`);
-      if (res.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
+      if (res.status === 401) return; // apiFetch has already sent the page to sign in
       const data = await res.json();
       setRepoPage(data);
     } catch (err) {
@@ -110,7 +103,7 @@ export default function Dashboard() {
 
   if (loading) return <div className="text-center mt-20 text-brand-green">Loading Dashboard...</div>;
 
-  const role = typeof window !== "undefined" ? localStorage.getItem("role") || "" : "";
+  const role = getSessionUser()?.role ?? "";
   const isAdmin = role === "root" || role === "admin";
 
   return (

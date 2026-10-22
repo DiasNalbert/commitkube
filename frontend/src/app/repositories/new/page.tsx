@@ -110,8 +110,6 @@ export default function NewRepository() {
   };
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) { window.location.href = "/login"; return; }
 
     apiFetch("/registry-credentials").then(r => r.json()).then(list => {
       if (Array.isArray(list)) setRegistryCreds(list);

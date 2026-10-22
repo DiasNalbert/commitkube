@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getSessionUser } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
 
 type SMTPConfig = { host: string; port: string; user: string; from: string };
@@ -51,11 +52,7 @@ export default function Settings() {
   };
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) { window.location.href = "/login"; return; }
-
-    const tokenData = JSON.parse(atob(token.split(".")[1]));
-    setUserRole(tokenData.role || "");
+    setUserRole(getSessionUser()?.role ?? "");
 
     apiFetch("/smtp").then(r => r.json()).then(smtpData => {
       if (smtpData?.host !== undefined) setSmtp({ host: smtpData.host || "", port: smtpData.port || "587", user: smtpData.user || "", from: smtpData.from || "" });

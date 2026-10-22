@@ -227,8 +227,6 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
   }, [buildParams, isCode]);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) { window.location.href = "/login"; return; }
 
     apiFetch("/workspaces").then(r => r.json()).then((wsList: Workspace[]) => {
       if (!Array.isArray(wsList)) return;

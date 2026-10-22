@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import { getSessionUser } from "@/lib/auth";
 import { searchSecrets } from "@/lib/secret-search";
 import { apiFetch } from "@/lib/api";
 import { loadPermissions, PERMISSIONS } from "@/lib/permissions";
@@ -94,7 +95,7 @@ export default function SecretsPage() {
   }, []);
 
   const [role, setRole] = useState("");
-  useEffect(() => { setRole(localStorage.getItem("role") || ""); }, []);
+  useEffect(() => { setRole(getSessionUser()?.role ?? ""); }, []);
 
   const isAdmin = role === "root" || role === "admin";
 

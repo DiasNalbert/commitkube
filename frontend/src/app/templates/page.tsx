@@ -47,8 +47,6 @@ export default function TemplatesPage() {
   };
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) { window.location.href = "/login"; return; }
 
     Promise.all([
       apiFetch("/workspaces").then(r => r.json()),

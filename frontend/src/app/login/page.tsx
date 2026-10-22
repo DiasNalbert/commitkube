@@ -4,6 +4,7 @@ import { useState } from "react";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import KubeLogo from "@/app/components/KubeLogo";
 import { API } from "@/lib/api";
+import { safeNext } from "@/lib/auth";
 
 /** A proxy or the server itself can answer in plain text (a 431 or a 502,
  *  say). Surface that text instead of a JSON parse error. */
@@ -15,7 +16,6 @@ interface AuthResponse {
   is_bootstrap?: boolean;
   mfa_token?: string;
   token?: string;
-  refresh_token?: string;
   user?: { role?: string };
 }
 
@@ -69,16 +69,18 @@ export default function LoginPage() {
       try {
         const res = await fetch(`${API}/auth/verify-mfa`, {
           method: "POST",
+          // The answer sets the session cookie; without this a cross-origin
+          // API (development) would have the browser discard it.
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ mfa_token: mfaToken, code: mfaCode }),
         });
         const data = await readJSON(res);
         if (!res.ok) throw new Error(data.error || "MFA validation failed");
 
-        localStorage.setItem("token", data.token ?? "");
-        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
-        if (data.user?.role) localStorage.setItem("role", data.user.role);
-        window.location.href = "/";
+        // Nothing is stored: the session is the cookie the server just set,
+        // and the next page asks it for an access token.
+        window.location.href = safeNext(new URLSearchParams(window.location.search).get("next"));
       } catch (err) {
         setError((err instanceof Error ? err.message : String(err)));
       }
