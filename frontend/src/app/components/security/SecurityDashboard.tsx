@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { apiFetch } from "@/lib/api";
 import SecurityTimeline from "./SecurityTimeline";
+import SuppressForm, { describeSuppression, type Suppression } from "./FindingTriage";
 import { exportFindingsCSV, exportFindingsPDF, type ExportContext } from "@/lib/findings-export";
+import { usePermissions } from "@/app/components/usePermissions";
+import { PERMISSIONS } from "@/lib/permissions";
 
 interface ScanHistoryEntry {
   id: number;
@@ -33,17 +36,27 @@ interface RepoResult {
   image_medium: number;
   image_low: number;
   image_error: string;
+  secrets: number;
+  suppressed: number;
 }
 
 interface Finding {
   target: string;
-  type: string;
+  type: string; // vulnerability | misconfiguration | secret
   vuln_id: string;
   pkg: string;
+  line?: number;
   version: string;
   fixed: string;
   severity: string;
   title: string;
+  /** From the findings table: when this exact finding was first and last
+   *  reported, and whether the latest scan is the only one to have seen it. */
+  first_seen: string;
+  last_seen: string;
+  is_new: boolean;
+  suppressed: boolean;
+  suppression?: Suppression;
 }
 
 interface RepoDetail {
@@ -53,6 +66,10 @@ interface RepoDetail {
   high: number;
   medium: number;
   low: number;
+  secrets: number;
+  suppressed: number;
+  new_findings: number;
+  resolved_30d: number;
   findings: Finding[];
   scanned_image: string;
   image_source: string;
@@ -102,6 +119,21 @@ const ImageSourceTag = ({ source }: { source: string }) => {
   }
   return null;
 };
+
+const KIND_LABEL: Record<string, string> = {
+  vulnerability: "vuln", misconfiguration: "misconfig", secret: "secret",
+};
+
+const SecretsBadge = ({ count }: { count: number }) =>
+  count > 0 ? (
+    <span
+      className="inline-flex flex-col items-center px-3 py-1.5 rounded text-sm font-semibold min-w-[56px] bg-fuchsia-100 text-fuchsia-700 border border-fuchsia-300 dark:bg-fuchsia-900/40 dark:text-fuchsia-300 dark:border-fuchsia-500/40"
+      title="Credentials committed to the repository. A leaked key is a different kind of problem from an old library."
+    >
+      <span className="text-sm font-bold tabular-nums">{count}</span>
+      <span className="text-[9px] font-medium opacity-80">SECRETS</span>
+    </span>
+  ) : null;
 
 const SevBadge = ({ label, count }: { label: string; count: number }) => {
   const styles: Record<string, string> = {
@@ -156,6 +188,13 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
   const [scanHistory, setScanHistory] = useState<ScanHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [repoSevFilter, setRepoSevFilter] = useState<string | null>(null);
+  const [kindFilter, setKindFilter] = useState("ALL");
+  const [showSuppressed, setShowSuppressed] = useState(false);
+  // Which finding has the suppress form open, by its position in the list.
+  const [triaging, setTriaging] = useState<string | null>(null);
+  const [triageError, setTriageError] = useState("");
+  const { can } = usePermissions();
+  const canTriage = can(PERMISSIONS.securityTriage);
 
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [projects, setProjects] = useState<Record<number, Project[]>>({});
@@ -297,13 +336,42 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
     setDetail(null);
     setDetailLoading(true);
     setSeverityFilter("ALL");
+    setKindFilter("ALL");
     setSearch("");
+    setTriaging(null);
     setScanTab(isCode ? "code" : "image");
     setScanHistory([]);
     const res = await apiFetch(`/scan-dashboard/${repoName}`);
     setDetail(await res.json());
     setDetailLoading(false);
   };
+
+  // After a triage decision the counts on the cards, the totals and the
+  // open detail all moved; refetch them without the loading flash.
+  const afterTriage = async () => {
+    setTriaging(null);
+    setTriageError("");
+    const st = liveState.current;
+    load(st.selectedWsId, st.selectedProjectKey, st.page, st.repoSearch, true);
+    setRefreshKey(k => k + 1);
+    if (st.selected) {
+      const d = await apiFetch(`/scan-dashboard/${st.selected}`).then(r => r.json()).catch(() => null);
+      if (d && liveState.current.selected === st.selected) setDetail(d);
+    }
+  };
+
+  const unsuppress = async (s: Suppression) => {
+    setTriageError("");
+    const res = await apiFetch(`/scan-suppressions/${s.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setTriageError(body.error || `Request failed (${res.status})`);
+      return;
+    }
+    afterTriage();
+  };
+
+  const findingKey = (f: Finding) => `${f.type}|${f.target}|${f.vuln_id}|${f.pkg}|${f.line ?? 0}`;
 
   const sevCount = (r: RepoResult, sev: string) => {
     const k = sev.toLowerCase() as "critical" | "high" | "medium" | "low";
@@ -319,9 +387,14 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
     return true;
   });
 
-  const activeFindings = scanTab === "code" ? (detail?.findings || []) : scanTab === "image" ? (detail?.image_findings || []) : [];
+  const allTabFindings = scanTab === "code" ? (detail?.findings || []) : scanTab === "image" ? (detail?.image_findings || []) : [];
+  const suppressedCount = allTabFindings.filter(f => f.suppressed).length;
+  // Suppressed findings are out of the list by default, the way they are out
+  // of the counts; a toggle brings them back, dimmed, with the reason.
+  const activeFindings = showSuppressed ? allTabFindings : allTabFindings.filter(f => !f.suppressed);
   const filteredFindings = activeFindings.filter(f => {
     const matchSev = severityFilter === "ALL" || f.severity?.toUpperCase() === severityFilter;
+    if (kindFilter !== "ALL" && f.type !== kindFilter) return false;
     const matchSearch = !search || f.title?.toLowerCase().includes(search.toLowerCase()) ||
       f.vuln_id?.toLowerCase().includes(search.toLowerCase()) ||
       f.pkg?.toLowerCase().includes(search.toLowerCase()) ||
@@ -466,6 +539,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                                 <SevBadge label="HIGH"     count={r.high} />
                                 <SevBadge label="MEDIUM"   count={r.medium} />
                                 <SevBadge label="LOW"      count={r.low} />
+                                <SecretsBadge count={r.secrets ?? 0} />
                               </div>
                             ) : r.image_error ? (
                               <span className="text-xs text-amber-500/80 italic max-w-[260px] text-right" title={r.image_error}>
@@ -483,6 +557,11 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                         </div>
                         <p className="text-xs text-brand-green/60 mt-3">
                           {selected === r.repo_name ? "Click to close ↑" : "Click to view findings →"}
+                          {(r.suppressed ?? 0) > 0 && (
+                            <span className="text-zinc-500 ml-2" title="Findings a person has triaged away. They are not in the counts.">
+                              · {r.suppressed} suppressed
+                            </span>
+                          )}
                         </p>
                       </div>
                     ))}
@@ -500,7 +579,17 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                           </button>
                           {detail && (
                             <p className="text-xs text-zinc-500 mt-1">
-                              scanned {new Date(detail.scanned_at).toLocaleString("en-US")} · click name to close
+                              scanned {new Date(detail.scanned_at).toLocaleString("en-US")}
+                              {detail.new_findings > 0 && (
+                                <span className="text-amber-400 ml-2" title="Seen for the first time by the latest scan">· {detail.new_findings} new</span>
+                              )}
+                              {detail.resolved_30d > 0 && (
+                                <span className="text-green-500 ml-2" title="Findings that stopped being reported in the last 30 days">· {detail.resolved_30d} resolved in 30 days</span>
+                              )}
+                              {detail.suppressed > 0 && (
+                                <span className="ml-2">· {detail.suppressed} suppressed</span>
+                              )}
+                              <span className="ml-2">· click name to close</span>
                             </p>
                           )}
                         </div>
@@ -522,7 +611,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                               className={`px-4 py-2 text-sm font-medium border-b-2 transition -mb-px ${scanTab === "code" ? "border-brand-green text-brand-green" : "border-transparent text-zinc-400 hover:text-zinc-200"}`}
                             >
                               Code Scan
-                              <span className="ml-2 text-xs opacity-70">C:{detail.critical} H:{detail.high} M:{detail.medium} L:{detail.low}</span>
+                              <span className="ml-2 text-xs opacity-70">C:{detail.critical} H:{detail.high} M:{detail.medium} L:{detail.low}{detail.secrets > 0 ? ` · ${detail.secrets} secrets` : ""}</span>
                             </button>
                             <button
                               onClick={() => { setScanTab("image"); setSeverityFilter("ALL"); setSearch(""); }}
@@ -620,6 +709,19 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                                 </button>
                               ))}
                             </div>
+                            {scanTab === "code" && (
+                              <select
+                                value={kindFilter}
+                                onChange={e => setKindFilter(e.target.value)}
+                                className="input-tech text-xs py-1"
+                                title="Kind of finding"
+                              >
+                                <option value="ALL">All kinds</option>
+                                <option value="vulnerability">Vulnerabilities</option>
+                                <option value="misconfiguration">Misconfigurations</option>
+                                <option value="secret">Secrets</option>
+                              </select>
+                            )}
                             <input
                               type="text"
                               placeholder="Search CVE, package, file..."
@@ -627,6 +729,12 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                               onChange={e => setSearch(e.target.value)}
                               className="input-tech text-sm py-1 flex-1 min-w-48"
                             />
+                            {suppressedCount > 0 && (
+                              <label className="flex items-center gap-1.5 text-xs text-zinc-400 whitespace-nowrap">
+                                <input type="checkbox" checked={showSuppressed} onChange={e => setShowSuppressed(e.target.checked)} />
+                                show {suppressedCount} suppressed
+                              </label>
+                            )}
                             {(() => {
                               const ctx: ExportContext = {
                                 repo: detail.repo_name, kind: scanTab === "image" ? "image" : "code",
@@ -648,6 +756,8 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                             })()}
                           </div>
 
+                          {triageError && <p className="text-xs text-red-400">{triageError}</p>}
+
                           {filteredFindings.length === 0 ? (
                             <p className="text-zinc-500 text-sm italic py-4">No findings match the current filter.</p>
                           ) : (
@@ -661,27 +771,79 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                                     <th className="text-left py-2 px-3 text-zinc-400 font-medium">File / Target</th>
                                     <th className="text-left py-2 px-3 text-zinc-400 font-medium">Package</th>
                                     <th className="text-left py-2 px-3 text-zinc-400 font-medium">Fixed in</th>
+                                    <th className="text-left py-2 px-3 text-zinc-400 font-medium whitespace-nowrap" title="When this finding was first reported">Since</th>
+                                    {canTriage && <th className="py-2 px-3" />}
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {filteredFindings.map((f, i) => (
-                                    <tr key={i} className="border-b border-zinc-800 hover:bg-zinc-800/30">
-                                      <td className={`py-2 px-3 font-mono text-xs ${sevColor(f.severity)}`}>{f.severity}</td>
+                                  {filteredFindings.map(f => {
+                                    const key = findingKey(f);
+                                    const where = f.type === "secret" && f.line ? `${f.target}:${f.line}` : f.target;
+                                    return (
+                                    <React.Fragment key={key}>
+                                    <tr className={`border-b border-zinc-800 hover:bg-zinc-800/30 ${f.suppressed ? "opacity-50" : ""}`}>
+                                      <td className={`py-2 px-3 font-mono text-xs ${sevColor(f.severity)}`}>
+                                        {f.severity}
+                                        {f.is_new && !f.suppressed && (
+                                          <span className="ml-1.5 px-1 rounded text-[9px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/40" title="First reported by the latest scan">NEW</span>
+                                        )}
+                                      </td>
                                       <td className="py-2 px-3 font-mono text-xs">
-                                        {f.type === "vulnerability" && f.vuln_id ? (
-                                          <a href={`https://nvd.nist.gov/vuln/detail/${f.vuln_id}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">
+                                        {f.type === "vulnerability" && /^(CVE|GHSA)-/i.test(f.vuln_id) ? (
+                                          <a href={f.vuln_id.toUpperCase().startsWith("GHSA") ? `https://github.com/advisories/${f.vuln_id}` : `https://nvd.nist.gov/vuln/detail/${f.vuln_id}`} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">
                                             {f.vuln_id}
                                           </a>
                                         ) : (
                                           <span className="text-zinc-300">{f.vuln_id}</span>
                                         )}
+                                        {f.type !== "vulnerability" && (
+                                          <span className={`ml-1.5 px-1 rounded text-[9px] uppercase border ${f.type === "secret" ? "border-fuchsia-500/40 text-fuchsia-300" : "border-zinc-600 text-zinc-500"}`}>
+                                            {KIND_LABEL[f.type] ?? f.type}
+                                          </span>
+                                        )}
                                       </td>
-                                      <td className="py-2 px-3 text-zinc-300 max-w-xs truncate" title={f.title}>{f.title}</td>
-                                      <td className="py-2 px-3 font-mono text-xs text-zinc-500 max-w-[180px] truncate" title={f.target}>{f.target}</td>
+                                      <td className="py-2 px-3 text-zinc-300 max-w-xs truncate" title={f.suppressed && f.suppression ? describeSuppression(f.suppression) : f.title}>
+                                        {f.title}
+                                        {f.suppressed && f.suppression && (
+                                          <span className="block text-[10px] text-zinc-500 truncate">{describeSuppression(f.suppression)}</span>
+                                        )}
+                                      </td>
+                                      <td className="py-2 px-3 font-mono text-xs text-zinc-500 max-w-[180px] truncate" title={where}>{where}</td>
                                       <td className="py-2 px-3 font-mono text-xs text-zinc-400">{f.pkg || "—"}</td>
                                       <td className="py-2 px-3 font-mono text-xs text-brand-green">{f.fixed || "—"}</td>
+                                      <td className="py-2 px-3 text-xs text-zinc-500 whitespace-nowrap" title={`First seen ${new Date(f.first_seen).toLocaleString("en-US")}`}>
+                                        {new Date(f.first_seen).toLocaleDateString("en-US")}
+                                      </td>
+                                      {canTriage && (
+                                        <td className="py-2 px-3 text-xs whitespace-nowrap text-right">
+                                          {f.suppressed && f.suppression ? (
+                                            <button type="button" onClick={() => unsuppress(f.suppression!)} className="text-zinc-400 hover:text-white underline-offset-2 hover:underline">
+                                              Unsuppress
+                                            </button>
+                                          ) : (
+                                            <button type="button" onClick={() => { setTriaging(triaging === key ? null : key); setTriageError(""); }} className="text-zinc-400 hover:text-white underline-offset-2 hover:underline">
+                                              Suppress
+                                            </button>
+                                          )}
+                                        </td>
+                                      )}
                                     </tr>
-                                  ))}
+                                    {triaging === key && detail && (
+                                      <tr className="border-b border-zinc-800">
+                                        <td colSpan={canTriage ? 8 : 7} className="py-2 px-3">
+                                          <SuppressForm
+                                            repo={detail.repo_name}
+                                            vulnId={f.vuln_id}
+                                            pkg={f.pkg}
+                                            onDone={afterTriage}
+                                            onCancel={() => setTriaging(null)}
+                                          />
+                                        </td>
+                                      </tr>
+                                    )}
+                                    </React.Fragment>
+                                    );
+                                  })}
                                 </tbody>
                               </table>
                             </div>

@@ -152,6 +152,63 @@ type ScanResult struct {
 	ImageLow      int    `json:"image_low"`
 	ImageReport   string `gorm:"type:text" json:"-"`
 	ImageError    string `json:"image_error,omitempty"`
+
+	// Secrets is how many of the code findings are leaked credentials. They
+	// are counted in the severity columns like everything else; this is so a
+	// card can say "3 secrets" without re-reading the report, because a leaked
+	// key is a different kind of problem from an old library.
+	Secrets int `json:"secrets"`
+	// Suppressed is how many findings, across both halves, a person has
+	// triaged away. They are left out of every severity count above.
+	Suppressed int `json:"suppressed"`
+}
+
+// ScanFinding is one finding with an identity that survives rescans. The
+// stored report is rewritten whole by every scan, so without this a CVE has no
+// first-seen date, no time-to-fix, and no way to say "new since yesterday".
+// Identity is the domain, the kind, the target file or layer, the rule or CVE
+// and the package; for a secret the line stands in for the package, so two
+// leaks of the same kind in one file are two findings.
+type ScanFinding struct {
+	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	RepoName  string    `gorm:"uniqueIndex:idx_finding_ident;index;not null" json:"repo_name"`
+	Domain    string    `gorm:"uniqueIndex:idx_finding_ident;not null" json:"domain"` // code | image
+	Kind      string    `gorm:"uniqueIndex:idx_finding_ident;not null" json:"type"`   // vulnerability | misconfiguration | secret
+	Target    string    `gorm:"uniqueIndex:idx_finding_ident" json:"target"`
+	VulnID    string    `gorm:"uniqueIndex:idx_finding_ident;index" json:"vuln_id"`
+	Pkg       string    `gorm:"uniqueIndex:idx_finding_ident" json:"pkg"`
+	Line      int       `gorm:"uniqueIndex:idx_finding_ident" json:"line,omitempty"`
+	Version   string    `json:"version"`
+	Fixed     string    `json:"fixed"`
+	Severity  string    `gorm:"index" json:"severity"`
+	Title     string    `json:"title"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+	// ResolvedAt is set when a scan no longer reports the finding. The row is
+	// kept: it is the record of how long the problem was open.
+	ResolvedAt *time.Time `gorm:"index" json:"resolved_at,omitempty"`
+}
+
+// ScanSuppression is a triage decision: this CVE, in this package, in this
+// repository (or everywhere), does not count. Without it every rescan brings
+// back the finding the team already looked at, and the totals stop meaning
+// anything. The reason is required so the decision can be audited, and it
+// can expire so "we will fix it next sprint" is not forever.
+type ScanSuppression struct {
+	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	// RepoName empty means every repository.
+	RepoName string `gorm:"index" json:"repo_name"`
+	VulnID   string `gorm:"index;not null" json:"vuln_id"`
+	// Pkg empty means any package. A CVE usually names one, but a base-image
+	// CVE recurs across libc, libssl and friends.
+	Pkg string `json:"pkg"`
+	// Reason is one of: false_positive, not_affected, accepted_risk, fix_planned.
+	Reason         string     `gorm:"not null" json:"reason"`
+	Note           string     `json:"note"`
+	CreatedBy      uint       `json:"created_by"`
+	CreatedByEmail string     `json:"created_by_email"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 }
 
 type ScanHistory struct {

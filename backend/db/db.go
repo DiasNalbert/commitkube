@@ -107,6 +107,8 @@ func ConnectDB() {
 		&models.SMTPConfig{},
 		&models.ScanResult{},
 		&models.ScanHistory{},
+		&models.ScanFinding{},
+		&models.ScanSuppression{},
 		&models.RegistryCredential{},
 		&models.GoldenPath{},
 		&models.WebhookConfig{},

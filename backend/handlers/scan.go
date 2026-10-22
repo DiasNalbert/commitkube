@@ -3,11 +3,13 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/smtp"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -22,12 +24,28 @@ type TrivyReport struct {
 	Results []TrivyTarget `json:"Results"`
 }
 
+// TrivySecret deliberately has no Match field. Trivy reports the line that
+// matched, and that line is the credential; parsing it into this struct would
+// put it in the database, the API and the email. The rule, the file and the
+// line number are enough to go and look.
 type TrivySecret struct {
-	RuleID   string `json:"RuleID"`
-	Category string `json:"Category"`
-	Severity string `json:"Severity"`
-	Title    string `json:"Title"`
-	Match    string `json:"Match"`
+	RuleID    string `json:"RuleID"`
+	Category  string `json:"Category"`
+	Severity  string `json:"Severity"`
+	Title     string `json:"Title"`
+	StartLine int    `json:"StartLine"`
+}
+
+func unmarshalReport(raw string, into *TrivyReport) error {
+	if raw == "" {
+		return nil
+	}
+	return json.Unmarshal([]byte(raw), into)
+}
+
+func marshalReport(r TrivyReport) string {
+	b, _ := json.Marshal(r)
+	return string(b)
 }
 
 type TrivyTarget struct {
@@ -84,7 +102,7 @@ func deployedImage(repoName string, live bool) (string, error) {
 
 // scanImage runs Trivy against one image reference, with whatever registry
 // credential resolves for it.
-func scanImage(image string, userID uint) (TrivyReport, map[string]int, error) {
+func scanImage(image string, userID uint) (TrivyReport, error) {
 	scanID := uuid.New().String()
 	reportFile := filepath.Join(os.TempDir(), "trivy-image-"+scanID+".json")
 	defer os.Remove(reportFile)
@@ -127,27 +145,19 @@ func scanImage(image string, userID uint) (TrivyReport, map[string]int, error) {
 	trivyCmd := exec.Command("trivy", args...)
 	trivyCmd.Env = env
 	if out, err := trivyCmd.CombinedOutput(); err != nil {
-		return TrivyReport{}, nil, fmt.Errorf("trivy image scan failed: %s", strings.TrimSpace(string(out)))
+		return TrivyReport{}, fmt.Errorf("trivy image scan failed: %s", strings.TrimSpace(string(out)))
 	}
 
 	reportBytes, err := os.ReadFile(reportFile)
 	if err != nil {
-		return TrivyReport{}, nil, fmt.Errorf("failed to read image report: %w", err)
+		return TrivyReport{}, fmt.Errorf("failed to read image report: %w", err)
 	}
 
 	var report TrivyReport
 	if err := json.Unmarshal(reportBytes, &report); err != nil {
-		return TrivyReport{}, nil, fmt.Errorf("failed to parse image report: %w", err)
+		return TrivyReport{}, fmt.Errorf("failed to parse image report: %w", err)
 	}
-
-	counts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-	for _, target := range report.Results {
-		for _, v := range target.Vulnerabilities {
-			counts[v.Severity]++
-		}
-	}
-
-	return report, counts, nil
+	return report, nil
 }
 
 // ImageSource records which image a container scan actually looked at, because
@@ -163,20 +173,20 @@ const (
 // resolveImageScan scans the deployed image when the repository has one and
 // falls back to the base image its Dockerfile declares. checkoutDir may be
 // empty -- an image-only pass has no checkout, so it simply has no fallback.
-func resolveImageScan(repoName, checkoutDir string, userID uint, live bool) (report TrivyReport, counts map[string]int, image, source string, err error) {
+func resolveImageScan(repoName, checkoutDir string, userID uint, live bool) (report TrivyReport, image, source string, err error) {
 	image, deployErr := deployedImage(repoName, live)
 	if deployErr == nil && image != "" {
-		report, counts, err = scanImage(image, userID)
+		report, err = scanImage(image, userID)
 		if err == nil {
-			return report, counts, image, ImageSourceDeployed, nil
+			return report, image, ImageSourceDeployed, nil
 		}
 	}
 
 	if checkoutDir == "" {
 		if deployErr != nil {
-			return TrivyReport{}, nil, "", "", deployErr
+			return TrivyReport{}, "", "", deployErr
 		}
-		return TrivyReport{}, nil, image, "", err
+		return TrivyReport{}, image, "", err
 	}
 
 	base, dockerfile, baseErr := resolveBaseImage(checkoutDir)
@@ -184,16 +194,16 @@ func resolveImageScan(repoName, checkoutDir string, userID uint, live bool) (rep
 		// Report the reason the preferred scan failed, not the fallback's:
 		// "no workload deployed yet" is the actionable half.
 		if deployErr != nil {
-			return TrivyReport{}, nil, "", "", fmt.Errorf("%v; and no base image to fall back to: %v", deployErr, baseErr)
+			return TrivyReport{}, "", "", fmt.Errorf("%v; and no base image to fall back to: %v", deployErr, baseErr)
 		}
-		return TrivyReport{}, nil, image, "", err
+		return TrivyReport{}, image, "", err
 	}
 
-	report, counts, err = scanImage(base, userID)
+	report, err = scanImage(base, userID)
 	if err != nil {
-		return TrivyReport{}, nil, base, "", fmt.Errorf("base image %s from %s: %w", base, dockerfile, err)
+		return TrivyReport{}, base, "", fmt.Errorf("base image %s from %s: %w", base, dockerfile, err)
 	}
-	return report, counts, base, ImageSourceBase, nil
+	return report, base, ImageSourceBase, nil
 }
 
 // runImageOnlyScan refreshes just the container half of a repository's result.
@@ -212,23 +222,32 @@ func runImageOnlyScan(repoName string) error {
 		return runScanAndSave(repoName, "", false)
 	}
 
-	report, counts, image, source, err := resolveImageScan(repoName, "", repo.UserID, false)
+	report, image, source, err := resolveImageScan(repoName, "", repo.UserID, false)
 	if err != nil {
 		existing.ImageError = err.Error()
 		db.DB.Save(&existing)
 		return err
 	}
 
+	now := time.Now()
+	sups := activeSuppressions(repoName)
+	rows := applySuppressions(findingsFromReport(report, FindingDomainImage), sups)
+	counts := countFindings(rows)
+	if _, err := reconcileFindings(repoName, FindingDomainImage, rows, now); err != nil {
+		return fmt.Errorf("failed to record findings: %w", err)
+	}
+	codeRows := openFindings(repoName, FindingDomainCode)
+
 	previous := existing
-	reportJSON, _ := json.Marshal(report)
 	existing.ScannedImage = image
 	existing.ImageSource = source
 	existing.ImageCritical = counts["CRITICAL"]
 	existing.ImageHigh = counts["HIGH"]
 	existing.ImageMedium = counts["MEDIUM"]
 	existing.ImageLow = counts["LOW"]
-	existing.ImageReport = string(reportJSON)
+	existing.ImageReport = marshalReport(report)
 	existing.ImageError = ""
+	existing.Suppressed = countSuppressed(codeRows) + countSuppressed(rows)
 	if err := db.DB.Save(&existing).Error; err != nil {
 		return err
 	}
@@ -238,7 +257,7 @@ func runImageOnlyScan(repoName string) error {
 	// touched, so a worse result is exactly the thing worth an email -- and an
 	// unchanged one is exactly the thing that must stay quiet.
 	if counts["CRITICAL"] > previous.ImageCritical || counts["HIGH"] > previous.ImageHigh {
-		notifyImageRegression(repo, existing, report, counts, image)
+		notifyImageRegression(repo, existing, codeRows, rows, image)
 	}
 	return nil
 }
@@ -246,22 +265,15 @@ func runImageOnlyScan(repoName string) error {
 // notifyImageRegression mails the same report the full scan would, rebuilding
 // the code half from what is stored so the reader gets the whole picture
 // rather than a fragment that raises more questions than it answers.
-func notifyImageRegression(repo models.Repository, result models.ScanResult, imageReport TrivyReport, imageCounts map[string]int, image string) {
+func notifyImageRegression(repo models.Repository, result models.ScanResult, codeRows, imageRows []finding, image string) {
 	var user models.User
 	if db.DB.First(&user, repo.UserID).Error != nil || user.Email == "" {
 		return
 	}
 
-	var codeReport TrivyReport
-	_ = json.Unmarshal([]byte(result.Report), &codeReport)
-	codeCounts := map[string]int{
-		"CRITICAL": result.Critical, "HIGH": result.High,
-		"MEDIUM": result.Medium, "LOW": result.Low,
-	}
-
-	html := buildScanHTML(repo.Name, codeReport, codeCounts, imageReport, imageCounts, image, "")
+	html := buildScanHTML(repo.Name, codeRows, imageRows, image, "")
 	subject := fmt.Sprintf("[CommitKube] Novas vulnerabilidades na imagem: %s — C:%d H:%d",
-		repo.Name, imageCounts["CRITICAL"], imageCounts["HIGH"])
+		repo.Name, result.ImageCritical, result.ImageHigh)
 	if err := sendScanEmail(user.Email, subject, html); err != nil {
 		fmt.Printf("Image regression email failed for %s: %v\n", repo.Name, err)
 	}
@@ -361,65 +373,55 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 		return fmt.Errorf("failed to parse scan report: %w", err)
 	}
 
-	counts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-	for _, target := range report.Results {
-		for _, v := range target.Vulnerabilities {
-			counts[v.Severity]++
-		}
-		for _, m := range target.Misconfigurations {
-			if m.Status != "PASS" {
-				counts[m.Severity]++
-			}
-		}
-	}
-
-	reportJSON, _ := json.Marshal(report)
-
-	imageReport, imageCounts, scannedImage, imageSource, imageErr := resolveImageScan(repoName, scanDir, repo.UserID, true)
-	imageReportJSON, _ := json.Marshal(imageReport)
+	imageReport, scannedImage, imageSource, imageErr := resolveImageScan(repoName, scanDir, repo.UserID, true)
 	imageErrStr := ""
 	if imageErr != nil {
 		imageErrStr = imageErr.Error()
 		fmt.Printf("Image scan skipped for %s: %v\n", repoName, imageErr)
 	}
 
+	// Rows first, counts from the rows: what a person has suppressed is left
+	// out of every number from here on, and every row gets its identity
+	// before anything is mailed or stored.
+	now := time.Now()
+	sups := activeSuppressions(repoName)
+	rows := applySuppressions(findingsFromReport(report, FindingDomainCode), sups)
+	counts := countFindings(rows)
+	newCode, err := reconcileFindings(repoName, FindingDomainCode, rows, now)
+	if err != nil {
+		return fmt.Errorf("failed to record findings: %w", err)
+	}
+	var imageRows []finding
+	newImage := 0
+	if imageErr == nil {
+		imageRows = applySuppressions(findingsFromReport(imageReport, FindingDomainImage), sups)
+		if newImage, err = reconcileFindings(repoName, FindingDomainImage, imageRows, now); err != nil {
+			return fmt.Errorf("failed to record findings: %w", err)
+		}
+	}
+	imageCounts := countFindings(imageRows)
+
 	var existing models.ScanResult
 	hadPrevious := db.DB.Where("repo_name = ?", repoName).First(&existing).Error == nil
 	previous := existing // counts as they stood before this pass
 
-	if hadPrevious {
-		existing.Critical = counts["CRITICAL"]
-		existing.High = counts["HIGH"]
-		existing.Medium = counts["MEDIUM"]
-		existing.Low = counts["LOW"]
-		existing.Report = string(reportJSON)
-		existing.ScannedImage = scannedImage
-		existing.ImageSource = imageSource
-		existing.ImageCritical = imageCounts["CRITICAL"]
-		existing.ImageHigh = imageCounts["HIGH"]
-		existing.ImageMedium = imageCounts["MEDIUM"]
-		existing.ImageLow = imageCounts["LOW"]
-		existing.ImageReport = string(imageReportJSON)
-		existing.ImageError = imageErrStr
-		db.DB.Save(&existing)
-	} else {
-		db.DB.Create(&models.ScanResult{
-			RepoName:      repoName,
-			Critical:      counts["CRITICAL"],
-			High:          counts["HIGH"],
-			Medium:        counts["MEDIUM"],
-			Low:           counts["LOW"],
-			Report:        string(reportJSON),
-			ScannedImage:  scannedImage,
-			ImageSource:   imageSource,
-			ImageCritical: imageCounts["CRITICAL"],
-			ImageHigh:     imageCounts["HIGH"],
-			ImageMedium:   imageCounts["MEDIUM"],
-			ImageLow:      imageCounts["LOW"],
-			ImageReport:   string(imageReportJSON),
-			ImageError:    imageErrStr,
-		})
-	}
+	existing.RepoName = repoName
+	existing.Critical = counts["CRITICAL"]
+	existing.High = counts["HIGH"]
+	existing.Medium = counts["MEDIUM"]
+	existing.Low = counts["LOW"]
+	existing.Report = marshalReport(report)
+	existing.ScannedImage = scannedImage
+	existing.ImageSource = imageSource
+	existing.ImageCritical = imageCounts["CRITICAL"]
+	existing.ImageHigh = imageCounts["HIGH"]
+	existing.ImageMedium = imageCounts["MEDIUM"]
+	existing.ImageLow = imageCounts["LOW"]
+	existing.ImageReport = marshalReport(imageReport)
+	existing.ImageError = imageErrStr
+	existing.Secrets = countKind(rows, FindingSecret)
+	existing.Suppressed = countSuppressed(rows) + countSuppressed(imageRows)
+	db.DB.Save(&existing)
 
 	recordScanHistory(models.ScanResult{
 		RepoName:      repoName,
@@ -442,8 +444,16 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 			"medium":         counts["MEDIUM"],
 			"low":            counts["LOW"],
 			"image_critical": imageCounts["CRITICAL"],
+			"secrets":        existing.Secrets,
+			"new_findings":   newCode + newImage,
 		},
 	})
+
+	if existing.Secrets > 0 && existing.Secrets > previous.Secrets {
+		go SendNotifications("scan.secret", "Leaked Secret Found",
+			fmt.Sprintf("%d secret(s) found in the code of %s", existing.Secrets, repoName),
+			repoName, "system")
+	}
 
 	if counts["CRITICAL"] > 0 {
 		go SendNotifications("scan.critical", "Critical Vulnerabilities Found",
@@ -451,28 +461,24 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 			repoName, "system")
 	}
 
-	if counts["CRITICAL"] > 0 {
-		for _, target := range report.Results {
-			for _, v := range target.Vulnerabilities {
-				if v.Severity == "CRITICAL" {
-					v := v
-					go DispatchWebhook(services.WebhookEvent{
-						Event: "vulnerability.critical_found",
-						Payload: map[string]interface{}{
-							"repo_name": repoName,
-							"cve_id":    v.VulnerabilityID,
-							"pkg_name":  v.PkgName,
-							"severity":  v.Severity,
-							"title":     v.Title,
-						},
-					})
-				}
-			}
+	for _, f := range rows {
+		if f.Kind == FindingVulnerability && f.Severity == "CRITICAL" && !f.Suppressed {
+			f := f
+			go DispatchWebhook(services.WebhookEvent{
+				Event: "vulnerability.critical_found",
+				Payload: map[string]interface{}{
+					"repo_name": repoName,
+					"cve_id":    f.VulnID,
+					"pkg_name":  f.Pkg,
+					"severity":  f.Severity,
+					"title":     f.Title,
+				},
+			})
 		}
 	}
 
 	if user.Email != "" && shouldNotify(manual, hadPrevious, previous, counts, imageCounts) {
-		html := buildScanHTML(repoName, report, counts, imageReport, imageCounts, scannedImage, imageErrStr)
+		html := buildScanHTML(repoName, rows, imageRows, scannedImage, imageErrStr)
 		subject := fmt.Sprintf("[CommitKube] Security Scan: %s — Code C:%d H:%d M:%d L:%d",
 			repoName, counts["CRITICAL"], counts["HIGH"], counts["MEDIUM"], counts["LOW"])
 		if err := sendScanEmail(user.Email, subject, html); err != nil {
@@ -549,7 +555,14 @@ func sendScanEmail(to, subject, htmlBody string) error {
 	return smtp.SendMail(host+":"+port, auth, from, []string{to}, []byte(msg))
 }
 
-func buildScanHTML(repoName string, report TrivyReport, counts map[string]int, imageReport TrivyReport, imageCounts map[string]int, scannedImage, imageError string) string {
+// buildScanHTML renders the report that is mailed. Suppressed findings are
+// listed last, under their own heading, so the reader sees that a decision
+// was made rather than wondering why a CVE they know about is missing.
+func buildScanHTML(repoName string, codeRows, imageRows []finding, scannedImage, imageError string) string {
+	counts := countFindings(codeRows)
+	imageCounts := countFindings(imageRows)
+	esc := html.EscapeString
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
 body{font-family:Arial,sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:20px}
@@ -563,107 +576,118 @@ h1{color:#10b981;margin:0 0 4px}
 .H{background:#2d1a00;color:#ff8800;border:1px solid #ff8800}
 .M{background:#2d2600;color:#ffd700;border:1px solid #ffd700}
 .L{background:#1a2d1a;color:#00cc44;border:1px solid #00cc44}
+.S{background:#2d1a2d;color:#e879f9;border:1px solid #e879f9}
 .sec{color:#10b981;font-size:15px;font-weight:bold;margin:18px 0 6px}
+.muted{color:#8b949e}
 table{width:100%%;border-collapse:collapse;font-size:12px}
 th{background:#21262d;padding:7px 10px;text-align:left;color:#8b949e}
 td{padding:7px 10px;border-top:1px solid #21262d;vertical-align:top}
 .CRITICAL{color:#ff4444;font-weight:bold}.HIGH{color:#ff8800;font-weight:bold}
-.MEDIUM{color:#ffd700}.LOW{color:#00cc44}
+.MEDIUM{color:#ffd700}.LOW{color:#00cc44}.UNKNOWN{color:#8b949e}
 a{color:#58a6ff}
 .ok{background:#1a2d1a;border:1px solid #00cc44;border-radius:8px;padding:14px;color:#00cc44;text-align:center;font-size:16px;margin-top:12px}
 .footer{margin-top:20px;padding-top:12px;border-top:1px solid #30363d;color:#8b949e;font-size:11px}
 </style></head><body><div class="wrap">
 <h1>Security Scan Report</h1>
-<div class="sub">Repository: <strong>%s</strong></div>
-<div class="summary">
-  <div class="badge C">%d<span class="lbl">CRITICAL</span></div>
-  <div class="badge H">%d<span class="lbl">HIGH</span></div>
-  <div class="badge M">%d<span class="lbl">MEDIUM</span></div>
-  <div class="badge L">%d<span class="lbl">LOW</span></div>
-</div>`, repoName, counts["CRITICAL"], counts["HIGH"], counts["MEDIUM"], counts["LOW"]))
+<div class="sub">Repository: <strong>%s</strong></div>`, esc(repoName)))
 
-	hasFindings := false
-	for _, target := range report.Results {
-		vulns := target.Vulnerabilities
-		var misconfs []TrivyMisconf
-		for _, m := range target.Misconfigurations {
-			if m.Status != "PASS" {
-				misconfs = append(misconfs, m)
-			}
-		}
-
-		if len(vulns) == 0 && len(misconfs) == 0 {
-			continue
-		}
-		hasFindings = true
-
-		sb.WriteString(fmt.Sprintf(`<div class="sec">%s</div>`, target.Target))
-
-		if len(vulns) > 0 {
-			sb.WriteString(`<table><tr><th>CVE</th><th>Package</th><th>Installed</th><th>Fixed</th><th>Severity</th><th>Title</th></tr>`)
-			for _, v := range vulns {
-				sb.WriteString(fmt.Sprintf(`<tr>
-					<td><a href="https://nvd.nist.gov/vuln/detail/%s">%s</a></td>
-					<td>%s</td><td>%s</td><td>%s</td>
-					<td class="%s">%s</td><td>%s</td>
-				</tr>`, v.VulnerabilityID, v.VulnerabilityID,
-					v.PkgName, v.InstalledVersion, v.FixedVersion,
-					v.Severity, v.Severity, v.Title))
-			}
-			sb.WriteString(`</table>`)
-		}
-
-		if len(misconfs) > 0 {
-			sb.WriteString(`<table style="margin-top:8px"><tr><th>ID</th><th>Type</th><th>Title</th><th>Severity</th></tr>`)
-			for _, m := range misconfs {
-				sb.WriteString(fmt.Sprintf(`<tr>
-					<td>%s</td><td>%s</td><td>%s</td>
-					<td class="%s">%s</td>
-				</tr>`, m.ID, m.Type, m.Title, m.Severity, m.Severity))
-			}
-			sb.WriteString(`</table>`)
-		}
-	}
-
-	if !hasFindings {
-		sb.WriteString(`<div class="ok">No vulnerabilities or misconfigurations found!</div>`)
-	}
-
-	sb.WriteString(`<div style="margin-top:32px;border-top:2px solid #30363d;padding-top:20px">`)
-	sb.WriteString(`<h2 style="color:#58a6ff;margin:0 0 8px;font-size:18px">Image Scan</h2>`)
-	if imageError != "" {
-		sb.WriteString(fmt.Sprintf(`<div style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:12px;color:#8b949e;font-size:13px">Image scan skipped: %s</div>`, imageError))
-	} else {
-		sb.WriteString(fmt.Sprintf(`<div style="color:#8b949e;font-size:12px;margin-bottom:12px">Image: <code style="color:#e6edf3">%s</code></div>`, scannedImage))
+	writeSummary := func(counts map[string]int, secrets int) {
 		sb.WriteString(fmt.Sprintf(`<div class="summary">
   <div class="badge C">%d<span class="lbl">CRITICAL</span></div>
   <div class="badge H">%d<span class="lbl">HIGH</span></div>
   <div class="badge M">%d<span class="lbl">MEDIUM</span></div>
-  <div class="badge L">%d<span class="lbl">LOW</span></div>
-</div>`, imageCounts["CRITICAL"], imageCounts["HIGH"], imageCounts["MEDIUM"], imageCounts["LOW"]))
+  <div class="badge L">%d<span class="lbl">LOW</span></div>`,
+			counts["CRITICAL"], counts["HIGH"], counts["MEDIUM"], counts["LOW"]))
+		if secrets > 0 {
+			sb.WriteString(fmt.Sprintf(`<div class="badge S">%d<span class="lbl">SECRETS</span></div>`, secrets))
+		}
+		sb.WriteString(`</div>`)
+	}
 
-		hasImageFindings := false
-		for _, target := range imageReport.Results {
-			if len(target.Vulnerabilities) == 0 {
-				continue
+	// One table per target, in the order the rows come (worst first within
+	// a target), with secrets and misconfigurations in the same table as the
+	// CVEs: the columns are close enough, and a leaked key next to an old
+	// library is where it belongs on a list sorted by severity.
+	writeRows := func(rows []finding) {
+		byTarget := map[string][]finding{}
+		var order []string
+		for _, f := range rows {
+			if _, ok := byTarget[f.Target]; !ok {
+				order = append(order, f.Target)
 			}
-			hasImageFindings = true
-			sb.WriteString(fmt.Sprintf(`<div class="sec">%s</div>`, target.Target))
-			sb.WriteString(`<table><tr><th>CVE</th><th>Package</th><th>Installed</th><th>Fixed</th><th>Severity</th><th>Title</th></tr>`)
-			for _, v := range target.Vulnerabilities {
-				sb.WriteString(fmt.Sprintf(`<tr>
-					<td><a href="https://nvd.nist.gov/vuln/detail/%s">%s</a></td>
-					<td>%s</td><td>%s</td><td>%s</td>
-					<td class="%s">%s</td><td>%s</td>
-				</tr>`, v.VulnerabilityID, v.VulnerabilityID,
-					v.PkgName, v.InstalledVersion, v.FixedVersion,
-					v.Severity, v.Severity, v.Title))
+			byTarget[f.Target] = append(byTarget[f.Target], f)
+		}
+		for _, t := range order {
+			sb.WriteString(fmt.Sprintf(`<div class="sec">%s</div>`, esc(t)))
+			sb.WriteString(`<table><tr><th>Severity</th><th>ID</th><th>Type</th><th>Package / Location</th><th>Installed</th><th>Fixed</th><th>Title</th></tr>`)
+			for _, f := range byTarget[t] {
+				id := esc(f.VulnID)
+				if f.Kind == FindingVulnerability && strings.HasPrefix(f.VulnID, "CVE-") {
+					id = fmt.Sprintf(`<a href="https://nvd.nist.gov/vuln/detail/%s">%s</a>`, esc(f.VulnID), esc(f.VulnID))
+				}
+				where := esc(f.Pkg)
+				if f.Kind == FindingSecret {
+					where = fmt.Sprintf("%s · line %d", esc(f.Pkg), f.Line)
+				}
+				sb.WriteString(fmt.Sprintf(`<tr><td class="%s">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
+					esc(f.Severity), esc(f.Severity), id, esc(f.Kind), where, esc(f.Version), esc(f.Fixed), esc(f.Title)))
 			}
 			sb.WriteString(`</table>`)
 		}
-		if !hasImageFindings {
-			sb.WriteString(`<div class="ok">No vulnerabilities found in image!</div>`)
+	}
+
+	writeSuppressed := func(rows []finding) {
+		var sup []finding
+		for _, f := range rows {
+			if f.Suppressed {
+				sup = append(sup, f)
+			}
 		}
+		if len(sup) == 0 {
+			return
+		}
+		sb.WriteString(fmt.Sprintf(`<div class="sec muted">Suppressed (%d) — not counted above</div>`, len(sup)))
+		sb.WriteString(`<table><tr><th>ID</th><th>Package</th><th>Reason</th><th>By</th><th>Note</th></tr>`)
+		for _, f := range sup {
+			s := f.Suppression
+			sb.WriteString(fmt.Sprintf(`<tr class="muted"><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
+				esc(f.VulnID), esc(f.Pkg), esc(s.Reason), esc(s.CreatedByEmail), esc(s.Note)))
+		}
+		sb.WriteString(`</table>`)
+	}
+
+	split := func(rows []finding) (active []finding) {
+		for _, f := range rows {
+			if !f.Suppressed {
+				active = append(active, f)
+			}
+		}
+		return
+	}
+
+	writeSummary(counts, countKind(codeRows, FindingSecret))
+	active := split(codeRows)
+	if len(active) == 0 {
+		sb.WriteString(`<div class="ok">No vulnerabilities, misconfigurations or secrets found!</div>`)
+	} else {
+		writeRows(active)
+	}
+	writeSuppressed(codeRows)
+
+	sb.WriteString(`<div style="margin-top:32px;border-top:2px solid #30363d;padding-top:20px">`)
+	sb.WriteString(`<h2 style="color:#58a6ff;margin:0 0 8px;font-size:18px">Image Scan</h2>`)
+	if imageError != "" {
+		sb.WriteString(fmt.Sprintf(`<div style="background:#21262d;border:1px solid #30363d;border-radius:6px;padding:12px;color:#8b949e;font-size:13px">Image scan skipped: %s</div>`, esc(imageError)))
+	} else {
+		sb.WriteString(fmt.Sprintf(`<div style="color:#8b949e;font-size:12px;margin-bottom:12px">Image: <code style="color:#e6edf3">%s</code></div>`, esc(scannedImage)))
+		writeSummary(imageCounts, 0)
+		active := split(imageRows)
+		if len(active) == 0 {
+			sb.WriteString(`<div class="ok">No vulnerabilities found in image!</div>`)
+		} else {
+			writeRows(active)
+		}
+		writeSuppressed(imageRows)
 	}
 	sb.WriteString(`</div>`)
 
@@ -790,71 +814,26 @@ func GetRepoScanDetail(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no scan found for this repository"})
 	}
 
-	var report TrivyReport
-	if err := json.Unmarshal([]byte(result.Report), &report); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to parse report"})
-	}
-
-	type Finding struct {
-		Target   string `json:"target"`
-		Type     string `json:"type"`
-		VulnID   string `json:"vuln_id"`
-		Pkg      string `json:"pkg"`
-		Version  string `json:"version"`
-		Fixed    string `json:"fixed"`
-		Severity string `json:"severity"`
-		Title    string `json:"title"`
-	}
-
-	var findings []Finding
-	for _, target := range report.Results {
-		for _, v := range target.Vulnerabilities {
-			findings = append(findings, Finding{
-				Target:   target.Target,
-				Type:     "vulnerability",
-				VulnID:   v.VulnerabilityID,
-				Pkg:      v.PkgName,
-				Version:  v.InstalledVersion,
-				Fixed:    v.FixedVersion,
-				Severity: v.Severity,
-				Title:    v.Title,
-			})
+	findings := detailFindings(repoName, FindingDomainCode)
+	imageFindings := detailFindings(repoName, FindingDomainImage)
+	newCount := 0
+	for _, f := range findings {
+		if f.IsNew && !f.Suppressed {
+			newCount++
 		}
-		for _, m := range target.Misconfigurations {
-			if m.Status == "PASS" {
-				continue
-			}
-			findings = append(findings, Finding{
-				Target:   target.Target,
-				Type:     "misconfiguration",
-				VulnID:   m.ID,
-				Pkg:      m.Type,
-				Severity: m.Severity,
-				Title:    m.Title,
-			})
+	}
+	for _, f := range imageFindings {
+		if f.IsNew && !f.Suppressed {
+			newCount++
 		}
 	}
 
-	var imageFindings []Finding
-	if result.ImageReport != "" {
-		var imageReportParsed TrivyReport
-		if err := json.Unmarshal([]byte(result.ImageReport), &imageReportParsed); err == nil {
-			for _, target := range imageReportParsed.Results {
-				for _, v := range target.Vulnerabilities {
-					imageFindings = append(imageFindings, Finding{
-						Target:   target.Target,
-						Type:     "vulnerability",
-						VulnID:   v.VulnerabilityID,
-						Pkg:      v.PkgName,
-						Version:  v.InstalledVersion,
-						Fixed:    v.FixedVersion,
-						Severity: v.Severity,
-						Title:    v.Title,
-					})
-				}
-			}
-		}
-	}
+	// How many were closed in the last month: the half of the picture a
+	// list of open problems never shows.
+	var resolved int64
+	db.DB.Model(&models.ScanFinding{}).
+		Where("repo_name = ? AND resolved_at >= ?", repoName, time.Now().AddDate(0, 0, -30)).
+		Count(&resolved)
 
 	return c.JSON(fiber.Map{
 		"repo_name": result.RepoName,
@@ -866,8 +845,13 @@ func GetRepoScanDetail(c *fiber.Ctx) error {
 		"high":             result.High,
 		"medium":           result.Medium,
 		"low":              result.Low,
+		"secrets":          result.Secrets,
+		"suppressed":       result.Suppressed,
+		"new_findings":     newCount,
+		"resolved_30d":     resolved,
 		"findings":         findings,
 		"scanned_image":    result.ScannedImage,
+		"image_source":     result.ImageSource,
 		"image_critical":   result.ImageCritical,
 		"image_high":       result.ImageHigh,
 		"image_medium":     result.ImageMedium,

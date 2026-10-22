@@ -16,6 +16,7 @@ interface NotificationConfig {
 
 const ALL_EVENTS = [
   { value: "scan.critical", label: "Critical scan findings" },
+  { value: "scan.secret", label: "Leaked secret found in code" },
   { value: "repo.created", label: "Repository created" },
   { value: "repo.deleted", label: "Repository deleted" },
   { value: "workload.degraded", label: "Workload degraded (no replicas ready)" },
@@ -98,8 +99,6 @@ export default function NotificationsPage() {
   }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) { window.location.href = "/login"; return; }
     load();
   }, [load]);
 

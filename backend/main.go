@@ -58,6 +58,10 @@ func main() {
 	// Before any scan can add a point, so the trend and the dashboard totals
 	// start from the same numbers.
 	handlers.ReconcileScanHistory()
+	// Repositories scanned before findings had rows of their own get them
+	// from the report they stored, so the detail page is never empty after
+	// an upgrade.
+	handlers.BackfillScanFindings()
 	db.BackfillCollectedCluster()
 
 	// The scan pool and the vulnerability database come up before anything can
@@ -374,6 +378,9 @@ func main() {
 	post(api, "/global-vars", handlers.PermSettingsWrite, handlers.CreateGlobalVar)
 	put(api, "/global-vars/:id", handlers.PermSettingsWrite, handlers.UpdateGlobalVar)
 	del(api, "/global-vars/:id", handlers.PermSettingsWrite, handlers.DeleteGlobalVar)
+	get(api, "/scan-suppressions", handlers.PermSecurityRead, handlers.ListScanSuppressions)
+	post(api, "/scan-suppressions", handlers.PermSecurityTriage, handlers.CreateScanSuppression)
+	del(api, "/scan-suppressions/:id", handlers.PermSecurityTriage, handlers.DeleteScanSuppression)
 
 	get(api, "/workspaces", handlers.PermSCMRead, handlers.ListWorkspaces)
 	post(api, "/workspaces", handlers.PermSCMWrite, handlers.CreateWorkspace)

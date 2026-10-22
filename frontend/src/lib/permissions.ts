@@ -25,6 +25,7 @@ export const PERMISSIONS = {
   templateWrite: "template.write",
   securityRead: "security.read",
   securityScan: "security.scan",
+  securityTriage: "security.triage",
   cloudflareManage: "cloudflare.manage",
   vaultRead: "vault.read",
   vaultCreate: "vault.create",

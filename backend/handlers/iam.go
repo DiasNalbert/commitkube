@@ -42,6 +42,10 @@ const (
 	// Security findings
 	PermSecurityRead = "security.read"
 	PermSecurityScan = "security.scan" // trigger a scan by hand
+	// Decide that a finding does not count: false positive, accepted risk.
+	// Separate from running a scan, because this one changes the numbers
+	// everyone else reads.
+	PermSecurityTriage = "security.triage"
 	// Add, change and remove the Cloudflare zones being watched. Separate from
 	// security.read, which is enough to look at them: this one handles the
 	// API tokens.
@@ -87,7 +91,7 @@ var AllPermissions = []string{
 	PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow, PermK8sSecretsWrite,
 	PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 	PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
-	PermSecurityRead, PermSecurityScan, PermCloudflareManage,
+	PermSecurityRead, PermSecurityScan, PermSecurityTriage, PermCloudflareManage,
 	PermVaultRead, PermVaultCreate, PermVaultWrite, PermVaultShare,
 	PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
 }
@@ -101,7 +105,7 @@ var rolePermissions = map[string][]string{
 		PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow, PermK8sSecretsWrite,
 		PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 		PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
-		PermSecurityRead, PermSecurityScan, PermCloudflareManage,
+		PermSecurityRead, PermSecurityScan, PermSecurityTriage, PermCloudflareManage,
 		PermVaultRead, PermVaultCreate, PermVaultWrite, PermVaultShare,
 		PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
 	},

@@ -77,7 +77,15 @@ dentro das suas aplicações.
 ### Segurança
 
 - **Code Security**: Trivy no código (vulnerabilidades, misconfiguração e
-  segredos) com histórico, dashboard e linha do tempo
+  segredos) com histórico, dashboard e linha do tempo. Segredos entram na
+  contagem com arquivo e linha, nunca com o trecho que casou
+- **Findings com identidade**: cada CVE, misconfiguração ou segredo é uma
+  linha que sobrevive ao rescan — quando apareceu, quando sumiu, o que é novo
+  desde o último scan e quantos foram resolvidos nos últimos 30 dias
+- **Triagem**: um finding pode ser suprimido como falso positivo, não
+  afetado, risco aceito ou correção planejada, por repositório ou global, por
+  pacote ou qualquer, com motivo, autor e validade. Suprimido sai da contagem
+  na hora, aparece separado no e-mail e exige `security.triage`
 - **Container Security**: Trivy na imagem que está rodando; sem ela, na
   imagem base do Dockerfile. Base de vulnerabilidades atualizada de forma
   central e rescans automáticos
@@ -133,7 +141,7 @@ e de time, com membros, papéis e acesso por grupo.
 ### Acesso e auditoria
 
 - **MFA obrigatório** (TOTP) desde o primeiro acesso; sessão de 1 h com refresh
-- **Permissões granulares** (25 concedíveis, de `k8s.read` a `audit.read`),
+- **Permissões granulares** (26 concedíveis, de `k8s.read` a `audit.read`),
   liberadas ou negadas por usuário ou grupo, em cima dos papéis root, admin e
   user. `iam.manage` é exclusiva de root e há no máximo 2 contas root
 - **Escopo de namespace** por cluster: quem tem escopo só vê os seus
@@ -146,7 +154,7 @@ e de time, com membros, papéis e acesso por grupo.
 ### Notificações
 
 - Canais de **Microsoft Teams, webhook e e-mail**, cada um inscrito nos
-  eventos que interessam: scans críticos, workload degradado, node fora,
+  eventos que interessam: scans críticos, segredo vazado, workload degradado, node fora,
   problemas de pod e de aplicação, repositório criado ou removido, alertas da
   Cloudflare
 - **Webhooks de saída** assinados com HMAC (`X-Hub-Signature-256`)
