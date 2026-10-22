@@ -24,7 +24,12 @@ async function readJSON(res: Response): Promise<AuthResponse> {
   try {
     return JSON.parse(text);
   } catch {
-    return { error: text.trim() || `${res.status} ${res.statusText}` };
+    // A gateway in front answers in HTML when the API is down or still
+    // starting. Its markup means nothing to the person signing in.
+    if (/^\s*</.test(text) || res.status >= 502) {
+      return { error: `The server is not answering (${res.status}${res.statusText ? " " + res.statusText : ""}). It may be restarting; try again in a minute.` };
+    }
+    return { error: text.trim().slice(0, 300) || `${res.status} ${res.statusText}` };
   }
 }
 

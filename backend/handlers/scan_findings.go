@@ -200,17 +200,23 @@ func applySuppressions(rows []finding, sups []models.ScanSuppression) []finding 
 // It returns how many of the rows are being seen for the first time -- the
 // "new since the last scan" number that a report should lead with.
 func reconcileFindings(repoName, domain string, rows []finding, at time.Time) (newCount int, err error) {
+	// One read of every row this repository and domain ever had, then bulk
+	// writes. A row at a time was two queries per finding: an image with two
+	// thousand CVEs across a few hundred repositories is millions of queries,
+	// and the startup backfill did all of them before the API could listen.
 	err = db.DB.Transaction(func(tx *gorm.DB) error {
-		var open []models.ScanFinding
-		if err := tx.Where("repo_name = ? AND domain = ? AND resolved_at IS NULL", repoName, domain).Find(&open).Error; err != nil {
+		var existing []models.ScanFinding
+		if err := tx.Where("repo_name = ? AND domain = ?", repoName, domain).Find(&existing).Error; err != nil {
 			return err
 		}
-		openBy := make(map[identity]*models.ScanFinding, len(open))
-		for i := range open {
-			f := &open[i]
-			openBy[identity{f.Domain, f.Kind, f.Target, f.VulnID, f.Pkg, f.Line}] = f
+		byID := make(map[identity]*models.ScanFinding, len(existing))
+		for i := range existing {
+			f := &existing[i]
+			byID[identity{f.Domain, f.Kind, f.Target, f.VulnID, f.Pkg, f.Line}] = f
 		}
 
+		var touched []uint // still open, nothing but last_seen moves
+		var created []models.ScanFinding
 		seen := make(map[identity]bool, len(rows))
 		for _, r := range rows {
 			id := r.identity()
@@ -219,58 +225,77 @@ func reconcileFindings(repoName, domain string, rows []finding, at time.Time) (n
 			}
 			seen[id] = true
 
-			if cur, ok := openBy[id]; ok {
-				// Severity and the fixed version move as the database learns
-				// more; the identity does not.
-				if err := tx.Model(cur).Updates(map[string]any{
-					"last_seen": at, "severity": r.Severity, "fixed": r.Fixed,
-					"version": r.Version, "title": r.Title,
+			cur, ok := byID[id]
+			switch {
+			case !ok:
+				created = append(created, models.ScanFinding{
+					RepoName: repoName, Domain: r.Domain, Kind: r.Kind, Target: r.Target,
+					VulnID: r.VulnID, Pkg: r.Pkg, Line: r.Line, Version: r.Version,
+					Fixed: r.Fixed, Severity: r.Severity, Title: r.Title,
+					FirstSeen: at, LastSeen: at,
+				})
+				newCount++
+			case cur.ResolvedAt != nil:
+				// It came back: a new problem, not the old one resumed. The
+				// row is reopened in place so the unique index holds.
+				if err := tx.Model(&models.ScanFinding{}).Where("id = ?", cur.ID).Updates(map[string]any{
+					"resolved_at": nil, "first_seen": at, "last_seen": at,
+					"severity": r.Severity, "fixed": r.Fixed, "version": r.Version, "title": r.Title,
 				}).Error; err != nil {
 					return err
 				}
-				delete(openBy, id)
-				continue
-			}
-
-			row := models.ScanFinding{
-				RepoName: repoName, Domain: r.Domain, Kind: r.Kind, Target: r.Target,
-				VulnID: r.VulnID, Pkg: r.Pkg, Line: r.Line, Version: r.Version,
-				Fixed: r.Fixed, Severity: r.Severity, Title: r.Title,
-				FirstSeen: at, LastSeen: at,
-			}
-			// A resolved row with this identity exists when the finding came
-			// back; it is reopened in place so the unique index holds.
-			res := tx.Model(&models.ScanFinding{}).
-				Where("repo_name = ? AND domain = ? AND kind = ? AND target = ? AND vuln_id = ? AND pkg = ? AND line = ?",
-					repoName, r.Domain, r.Kind, r.Target, r.VulnID, r.Pkg, r.Line).
-				Updates(map[string]any{
-					"resolved_at": nil, "first_seen": at, "last_seen": at,
-					"severity": r.Severity, "fixed": r.Fixed, "version": r.Version, "title": r.Title,
-				})
-			if res.Error != nil {
-				return res.Error
-			}
-			if res.RowsAffected == 0 {
-				if err := tx.Create(&row).Error; err != nil {
+				newCount++
+			case cur.Severity != r.Severity || cur.Fixed != r.Fixed || cur.Version != r.Version || cur.Title != r.Title:
+				// Severity and the fixed version move as the database learns
+				// more; the identity does not.
+				if err := tx.Model(&models.ScanFinding{}).Where("id = ?", cur.ID).Updates(map[string]any{
+					"last_seen": at, "severity": r.Severity, "fixed": r.Fixed, "version": r.Version, "title": r.Title,
+				}).Error; err != nil {
 					return err
 				}
+			default:
+				touched = append(touched, cur.ID)
 			}
-			newCount++
 		}
 
-		// Whatever is still in openBy was not reported this time.
 		var gone []uint
-		for _, f := range openBy {
-			gone = append(gone, f.ID)
+		for id, f := range byID {
+			if f.ResolvedAt == nil && !seen[id] {
+				gone = append(gone, f.ID)
+			}
 		}
-		if len(gone) > 0 {
-			if err := tx.Model(&models.ScanFinding{}).Where("id IN ?", gone).Update("resolved_at", at).Error; err != nil {
+
+		for _, ids := range chunkIDs(touched, 500) {
+			if err := tx.Model(&models.ScanFinding{}).Where("id IN ?", ids).Update("last_seen", at).Error; err != nil {
+				return err
+			}
+		}
+		for _, ids := range chunkIDs(gone, 500) {
+			if err := tx.Model(&models.ScanFinding{}).Where("id IN ?", ids).Update("resolved_at", at).Error; err != nil {
+				return err
+			}
+		}
+		if len(created) > 0 {
+			if err := tx.CreateInBatches(&created, 200).Error; err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	return newCount, err
+}
+
+// chunkIDs keeps an IN list under SQLite's bound-parameter limit.
+func chunkIDs(ids []uint, size int) [][]uint {
+	var out [][]uint
+	for len(ids) > size {
+		out = append(out, ids[:size])
+		ids = ids[size:]
+	}
+	if len(ids) > 0 {
+		out = append(out, ids)
+	}
+	return out
 }
 
 // openFindings reads the current findings of one repository and domain, with
@@ -393,19 +418,42 @@ func recountRepo(repoName string) {
 // scan. Safe on every start: a repository with rows is left alone. It also
 // rewrites those stored reports through the current struct, which drops the
 // matched text of any secret an older version kept.
+//
+// It runs in the background after the API is listening, and reads one
+// repository's reports at a time. The first version loaded every stored
+// report at once before the server started -- megabytes of Trivy JSON per
+// repository -- which on a large estate ran the pod out of memory before it
+// ever answered, and the gateway in front could only say 502.
 func BackfillScanFindings() {
-	var results []models.ScanResult
-	db.DB.Find(&results)
-	done := 0
-	for _, r := range results {
-		var n int64
-		db.DB.Model(&models.ScanFinding{}).Where("repo_name = ?", r.RepoName).Count(&n)
-		if n > 0 {
+	var done []string
+	db.DB.Model(&models.ScanFinding{}).Distinct().Pluck("repo_name", &done)
+	have := make(map[string]bool, len(done))
+	for _, r := range done {
+		have[r] = true
+	}
+	var todo []models.ScanResult
+	db.DB.Select("id", "repo_name", "updated_at").Find(&todo)
+
+	n := 0
+	for _, t := range todo {
+		if have[t.RepoName] {
+			continue
+		}
+		// The scan workers run alongside: a repository scanned since the list
+		// was read already has rows from a newer report, and must be left to it.
+		var rowsNow int64
+		db.DB.Model(&models.ScanFinding{}).Where("repo_name = ?", t.RepoName).Count(&rowsNow)
+		if rowsNow > 0 {
+			continue
+		}
+		var r models.ScanResult
+		if db.DB.Select("id", "repo_name", "updated_at", "report", "image_report").First(&r, t.ID).Error != nil {
 			continue
 		}
 		var code, image TrivyReport
 		_ = unmarshalReport(r.Report, &code)
 		_ = unmarshalReport(r.ImageReport, &image)
+		r.Report, r.ImageReport = "", ""
 		if _, err := reconcileFindings(r.RepoName, FindingDomainCode, findingsFromReport(code, FindingDomainCode), r.UpdatedAt); err != nil {
 			fmt.Printf("findings backfill failed for %s: %v\n", r.RepoName, err)
 			continue
@@ -414,15 +462,20 @@ func BackfillScanFindings() {
 			fmt.Printf("findings backfill failed for %s: %v\n", r.RepoName, err)
 			continue
 		}
-		db.DB.Model(&models.ScanResult{}).Where("id = ?", r.ID).UpdateColumns(map[string]any{
+		// UpdateColumns, not Save: the scan date stays the scan's.
+		// Only if no scan rewrote the row meanwhile.
+		db.DB.Model(&models.ScanResult{}).Where("id = ? AND updated_at = ?", r.ID, r.UpdatedAt).UpdateColumns(map[string]any{
 			"report":       marshalReport(code),
 			"image_report": marshalReport(image),
 		})
 		recountRepo(r.RepoName)
-		done++
+		n++
+		if n%50 == 0 {
+			fmt.Printf("scan findings backfill: %d repositories so far\n", n)
+		}
 	}
-	if done > 0 {
-		fmt.Printf("scan findings backfilled for %d repositories\n", done)
+	if n > 0 {
+		fmt.Printf("scan findings backfilled for %d repositories\n", n)
 	}
 }
 

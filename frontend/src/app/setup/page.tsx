@@ -59,7 +59,7 @@ export default function SetupPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: `The server is not answering (${res.status}). It may be restarting; try again in a minute.` }));
       if (!res.ok) throw new Error(data.error || "Failed to start setup");
 
       const QRCode = (await import("qrcode")).default;
@@ -85,7 +85,7 @@ export default function SetupPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ setup_token: setupToken, totp_code: totpCode }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({ error: `The server is not answering (${res.status}). It may be restarting; try again in a minute.` }));
       if (!res.ok) throw new Error(data.error || "Invalid code");
 
       localStorage.removeItem("setup_token");

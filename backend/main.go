@@ -60,8 +60,9 @@ func main() {
 	handlers.ReconcileScanHistory()
 	// Repositories scanned before findings had rows of their own get them
 	// from the report they stored, so the detail page is never empty after
-	// an upgrade.
-	handlers.BackfillScanFindings()
+	// an upgrade. In the background: on a large estate this takes a while,
+	// and the API must be answering -- sign-in above all -- while it runs.
+	go handlers.BackfillScanFindings()
 	db.BackfillCollectedCluster()
 
 	// The scan pool and the vulnerability database come up before anything can
