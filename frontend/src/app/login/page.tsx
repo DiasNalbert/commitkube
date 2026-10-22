@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import ThemeToggle from "@/app/components/ThemeToggle";
-import KubeLogo from "@/app/components/KubeLogo";
+import { LogoMark } from "@/app/components/shell/icons";
 import { API } from "@/lib/api";
 import { safeNext } from "@/lib/auth";
 
@@ -92,24 +92,18 @@ export default function LoginPage() {
       <div className="absolute top-4 right-4">
         <ThemeToggle />
       </div>
-      <div className="w-full max-w-md px-4">
-        <div className="flex justify-center mb-6">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-brand-green/10 border border-brand-green/50 flex items-center justify-center tech-glow p-2">
-              <KubeLogo className="w-full h-full" />
-            </div>
-            <span className="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-r from-brand-green to-brand-gold">
-              CommitKube
-            </span>
-          </div>
+      <div className="w-full max-w-[400px] px-4">
+        <div className="flex items-center gap-2.5 mb-8">
+          <LogoMark className="w-[26px] h-[26px]" />
+          <span className="text-[22px] font-bold tracking-[-0.02em]">CommitKube</span>
         </div>
 
-        <div className="glass-card p-8 tech-glow">
-          <div className="text-center mb-8">
-            <h1 className="text-xl font-bold" style={{ color: "var(--color-fg)" }}>
+        <div className="p-8" style={{ background: "var(--card)", border: "1px solid var(--rule)", borderRadius: 4 }}>
+          <div className="mb-7">
+            <h1 className="text-[22px] font-medium tracking-[-0.02em] m-0">
               {step === "credentials" ? "Sign in to your account" : "Two-factor authentication"}
             </h1>
-            <p className="text-zinc-400 mt-1 text-sm">
+            <p className="mt-1.5 text-[13px]" style={{ color: "var(--t3)" }}>
               {step === "credentials" ? "Enter your email and password" : "Enter the 6-digit code from your authenticator app"}
             </p>
           </div>
@@ -124,7 +118,7 @@ export default function LoginPage() {
             {step === "credentials" && (
               <>
                 <div>
-                  <label className="block text-sm font-medium text-zinc-300 mb-2">Email</label>
+                  <label className="block text-sm font-medium mb-2">Email</label>
                   <input
                     type="text"
                     required
@@ -135,7 +129,7 @@ export default function LoginPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-zinc-300 mb-2">Password</label>
+                  <label className="block text-sm font-medium mb-2">Password</label>
                   <div className="relative">
                     <input
                       type={showPassword ? "text" : "password"}
@@ -169,7 +163,7 @@ export default function LoginPage() {
 
             {step === "mfa" && (
               <div>
-                <label className="block text-sm font-medium text-zinc-300 mb-2">6-digit code</label>
+                <label className="block text-sm font-medium mb-2">6-digit code</label>
                 <input
                   type="text"
                   required
