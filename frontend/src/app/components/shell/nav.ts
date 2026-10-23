@@ -52,6 +52,7 @@ export const MODULES: NavModule[] = [
     items: [
       { href: "/", label: "Repositories", perm: P.scmRead, match: ["/repositories/"] },
       // Read from the cluster, so gated on cluster read like its API.
+      { href: "/gitops", label: "GitOps", perm: P.k8sRead, match: ["/gitops/"] },
       { href: "/delivery", label: "Releases", perm: P.k8sRead },
       { href: "/templates", label: "Templates", perm: P.templateRead },
       { href: "/golden-paths", label: "Golden paths", perm: P.templateRead },

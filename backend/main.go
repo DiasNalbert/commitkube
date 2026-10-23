@@ -90,6 +90,24 @@ func main() {
 	}()
 
 	go func() {
+		// GitOps: every application is compared with its cluster on this
+		// interval, and synced when it asks to be.
+		interval := 3 * time.Minute
+		if v := os.Getenv("GITOPS_INTERVAL"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d >= 30*time.Second {
+				interval = d
+			}
+		}
+		time.Sleep(30 * time.Second)
+		handlers.PollGitOps()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			handlers.PollGitOps()
+		}
+	}()
+
+	go func() {
 		// Session rows past their deadline are dead weight; an hourly sweep
 		// keeps the table the size of the people actually signed in.
 		handlers.PruneRefreshTokens()
@@ -466,6 +484,17 @@ func main() {
 	get(api, "/kubernetes/detail/:kind/:name", handlers.PermK8sRead, handlers.GetK8sResourceDetail)
 	get(api, "/kubernetes/cluster-overview", handlers.PermK8sRead, handlers.GetClusterOverview)
 	get(api, "/kubernetes/changes", handlers.PermK8sRead, handlers.GetClusterChanges)
+
+	// CommitKube GitOps: looking is cluster read; syncing and managing an
+	// application are permissions of their own.
+	get(api, "/gitops/apps", handlers.PermK8sRead, handlers.ListGitopsApps)
+	post(api, "/gitops/apps", handlers.PermGitOpsManage, handlers.CreateGitopsApp)
+	get(api, "/gitops/apps/:id", handlers.PermK8sRead, handlers.GetGitopsApp)
+	put(api, "/gitops/apps/:id", handlers.PermGitOpsManage, handlers.UpdateGitopsApp)
+	del(api, "/gitops/apps/:id", handlers.PermGitOpsManage, handlers.DeleteGitopsApp)
+	post(api, "/gitops/apps/:id/refresh", handlers.PermGitOpsSync, handlers.RefreshGitopsApp)
+	post(api, "/gitops/apps/:id/sync", handlers.PermGitOpsSync, handlers.SyncGitopsApp)
+	get(api, "/gitops/apps/:id/access", handlers.PermK8sRead, handlers.GetGitopsAccess)
 	get(api, "/kubernetes/pod-security", handlers.PermSecurityRead, handlers.GetPodSecurity)
 	get(api, "/security/posture", handlers.PermSecurityRead, handlers.GetPosture)
 	get(api, "/security/posture/history", handlers.PermSecurityRead, handlers.GetPostureHistory)

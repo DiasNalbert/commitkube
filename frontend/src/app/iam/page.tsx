@@ -31,6 +31,8 @@ const DESCRIPTIONS: Record<string, string> = {
   "scm.approve": "Approve repositories",
   "template.read": "View templates and golden paths",
   "template.write": "Create and edit templates and golden paths",
+  "gitops.sync": "Sync and refresh GitOps applications (writes to their namespaces)",
+  "gitops.manage": "Create, change and remove GitOps applications",
   "security.read": "View security findings",
   "security.scan": "Trigger a scan by hand",
   "security.triage": "Suppress findings as false positives or accepted risk",
@@ -48,7 +50,7 @@ const DESCRIPTIONS: Record<string, string> = {
 
 const GROUPS: [string, string[]][] = [
   ["Kubernetes", ["k8s.read", "k8s.logs.read", "k8s.secrets.read", "k8s.secrets.show", "k8s.secrets.write", "k8s.pod.delete", "k8s.scale", "cluster.manage"]],
-  ["Source control", ["scm.read", "scm.write", "scm.approve", "template.read", "template.write"]],
+  ["Source control", ["scm.read", "scm.write", "scm.approve", "template.read", "template.write", "gitops.sync", "gitops.manage"]],
   ["Security", ["security.read", "security.scan", "security.triage", "cloudflare.manage"]],
   // What someone may do in the vault. Inside a team vault their role there
   // still applies on top: a reader in that vault stays a reader.

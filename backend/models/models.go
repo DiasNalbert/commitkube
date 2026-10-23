@@ -1020,3 +1020,83 @@ type VaultItem struct {
 	CreatedBy uint `json:"created_by"`
 	UpdatedBy uint `json:"updated_by"`
 }
+
+// ---- GitOps ---------------------------------------------------------------
+//
+// CommitKube's own GitOps engine: a repository path, kept applied to one
+// namespace of one cluster. The engine is deliberately narrow -- namespaced
+// objects in the application's own namespace only -- so the write access it
+// needs can be granted namespace by namespace, never cluster-wide.
+
+// GitOpsApp is one repository path kept in sync with one namespace.
+type GitOpsApp struct {
+	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	// Name is unique and is what the tracking label carries.
+	Name      string `gorm:"uniqueIndex;not null" json:"name"`
+	ClusterID uint   `gorm:"index;not null" json:"cluster_id"`
+	RepoName  string `gorm:"index;not null" json:"repo_name"`
+	Branch    string `gorm:"not null;default:'main'" json:"branch"`
+	Path      string `json:"path"`
+	Namespace string `gorm:"not null" json:"namespace"`
+
+	// AutoSync applies a new commit as soon as it is seen; SelfHeal also
+	// re-applies when someone changes the live objects by hand; Prune
+	// deletes what was removed from Git. All off by default.
+	AutoSync bool `json:"auto_sync"`
+	SelfHeal bool `json:"self_heal"`
+	Prune    bool `json:"prune"`
+
+	// The last refresh: the commit it read and what it found.
+	Revision    string     `json:"revision"`
+	SyncStatus  string     `json:"sync_status"`  // Synced | OutOfSync | Unknown
+	Health      string     `json:"health"`       // Healthy | Progressing | Degraded | Missing | Suspended | Unknown
+	Message     string     `json:"message"`      // why Unknown, when it is
+	RefreshedAt *time.Time `json:"refreshed_at"`
+	// The last sync that ran, and the commit it applied.
+	SyncedRevision string     `json:"synced_revision"`
+	SyncedAt       *time.Time `json:"synced_at"`
+	CreatedBy      uint       `json:"created_by"`
+}
+
+// GitOpsResource is one object of an application as the last refresh saw
+// it. Rows of objects the engine applied are also its inventory: prune only
+// ever considers what is here.
+type GitOpsResource struct {
+	ID        uint   `gorm:"primarykey;autoIncrement" json:"id"`
+	AppID     uint   `gorm:"index;not null" json:"app_id"`
+	Group     string `json:"group"`
+	Version   string `json:"version"`
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	// Status: Synced | OutOfSync | Missing (in Git, not in the cluster) |
+	// Extraneous (applied before, gone from Git) | Invalid (refused by the
+	// API server or the engine's rules).
+	Status  string `json:"status"`
+	Health  string `json:"health"`
+	Message string `gorm:"type:text" json:"message"`
+	// Diff is a unified diff, live to desired, for OutOfSync objects.
+	Diff string `gorm:"type:text" json:"diff,omitempty"`
+	// Applied: the engine has applied this object at least once, so it is
+	// the engine's to prune.
+	Applied bool `json:"applied"`
+}
+
+// GitOpsSync is one sync, kept as history.
+type GitOpsSync struct {
+	ID         uint       `gorm:"primarykey;autoIncrement" json:"id"`
+	AppID      uint       `gorm:"index;not null" json:"app_id"`
+	StartedAt  time.Time  `gorm:"index" json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+	Revision   string     `json:"revision"`
+	Trigger    string     `json:"trigger"` // manual | auto | self-heal
+	UserID     uint       `json:"user_id,omitempty"`
+	UserEmail  string     `json:"user_email,omitempty"`
+	Phase      string     `json:"phase"` // Running | Succeeded | Failed
+	Message    string     `gorm:"type:text" json:"message"`
+	// Results is one line per object: what was done to it, or why it failed.
+	Results string `gorm:"type:text" json:"results"`
+}
+

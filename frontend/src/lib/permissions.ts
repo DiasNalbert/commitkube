@@ -23,6 +23,8 @@ export const PERMISSIONS = {
   scmApprove: "scm.approve",
   templateRead: "template.read",
   templateWrite: "template.write",
+  gitopsSync: "gitops.sync",
+  gitopsManage: "gitops.manage",
   securityRead: "security.read",
   securityScan: "security.scan",
   securityTriage: "security.triage",

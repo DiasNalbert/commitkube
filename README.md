@@ -23,6 +23,18 @@ dentro das suas aplicações.
 - **Detalhe do repositório**: navegador de código com edição e commit,
   branches, commits, pipelines do Bitbucket (disparar, parar, ver steps e logs),
   scans e análise por IA
+- **GitOps próprio**: um caminho de um repositório mantido aplicado num
+  namespace, sem ArgoCD. A cada poucos minutos o CommitKube compara a branch
+  com o cluster usando o dry-run do próprio API server (server-side apply),
+  mostra o diff de cada objeto, aplica commits novos com auto-sync, desfaz
+  edições manuais com self-heal e apaga o que saiu do Git com prune — só o
+  que ele mesmo aplicou e que ainda carrega a marca da aplicação. Manifestos
+  inválidos voltam com a mensagem do API server antes de qualquer escrita.
+  Escopo desta versão: manifestos YAML puros e objetos dentro do namespace da
+  aplicação (Kustomize, Helm e objetos de cluster ficam com quem instala a
+  plataforma). A escrita é concedida namespace a namespace; a tela mostra o
+  que falta e o RBAC exato. Um repositório novo pode nascer já com a
+  aplicação, no lugar do ArgoCD
 - **Templates** YAML por workspace ou projeto, com variáveis globais e por
   projeto (inclusive secured)
 - **Golden paths**: um jeito pronto de criar um tipo de serviço. Cada um traz
@@ -155,7 +167,7 @@ e de time, com membros, papéis e acesso por grupo.
   renderizar. A sessão expira por inatividade e por duração máxima, gira a
   cada uso (reuso de um token gasto encerra a sessão inteira) e é revogada no
   logout, na troca de senha, de papel ou de MFA
-- **Permissões granulares** (26 concedíveis, de `k8s.read` a `audit.read`),
+- **Permissões granulares** (28 concedíveis, de `k8s.read` a `audit.read`),
   liberadas ou negadas por usuário ou grupo, em cima dos papéis root, admin e
   user. `iam.manage` é exclusiva de root e há no máximo 2 contas root
 - **Escopo de namespace** por cluster: quem tem escopo só vê os seus
@@ -345,6 +357,7 @@ O botão *Test connection* diz qual delas está faltando.
 |---|---|
 | `TRIVY_DB_INTERVAL` | `6h` |
 | `RESCAN_INTERVAL` | `1h` |
+| `GITOPS_INTERVAL` | `3m` |
 | `WORKLOAD_MONITORING_INTERVAL` | `5m` |
 | `POD_MONITORING_INTERVAL` | `2m` |
 | `TOPOLOGY_INTERVAL` | `10m` |

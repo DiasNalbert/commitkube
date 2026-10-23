@@ -71,6 +71,10 @@ export default function NewRepository() {
   const [argoInstances, setArgoInstances] = useState<ArgoCDInst[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number>(0);
   const [selectedArgoCDId, setSelectedArgoCDId] = useState<number>(-1);
+  // How the new repository gets deployed: CommitKube's own GitOps engine,
+  // an ArgoCD application, or not at all.
+  const [deployWith, setDeployWith] = useState<"gitops" | "argocd" | "none">("argocd");
+  const [gitopsNamespace, setGitopsNamespace] = useState("");
   const [selectedProjectKey, setSelectedProjectKey] = useState<string>("");
   const [wsProjects, setWsProjects] = useState<Project[]>([]);
 
@@ -152,6 +156,8 @@ export default function NewRepository() {
       if (Array.isArray(argoList)) {
         setArgoInstances(argoList);
         setSelectedArgoCDId(argoList.length > 0 ? argoList[0].id : 0);
+        // With no ArgoCD to hand the repository to, CommitKube deploys it.
+        if (argoList.length === 0) setDeployWith("gitops");
       }
     });
   }, []);
@@ -224,8 +230,10 @@ export default function NewRepository() {
       ...extraYamls.filter(y => y.path && y.content),
     ],
     workspace_id: selectedWorkspaceId > 0 ? selectedWorkspaceId : undefined,
-    argocd_instance_id: selectedArgoCDId > 0 ? selectedArgoCDId : undefined,
-    skip_argocd: selectedArgoCDId === 0 ? true : undefined,
+    argocd_instance_id: deployWith === "argocd" && selectedArgoCDId > 0 ? selectedArgoCDId : undefined,
+    skip_argocd: deployWith !== "argocd" || selectedArgoCDId === 0 ? true : undefined,
+    gitops: deployWith === "gitops" ? true : undefined,
+    gitops_namespace: deployWith === "gitops" ? (gitopsNamespace || goldenInputs.namespace || undefined) : undefined,
     project_key: entry.projectKey || selectedProjectKey || undefined,
     extra_branch: useExtraBranch && extraBranch ? extraBranch : undefined,
     registry_id: selectedRegistryId > 0 ? selectedRegistryId : undefined,
@@ -283,7 +291,8 @@ export default function NewRepository() {
         if (!res.ok) throw new Error(data.error || "Failed to create repo");
         // (violations, when the golden path refuses, are already in data.error, one per line)
         results[i] = {
-          ...results[i], status: "done", message: res.status === 202 ? "Pending approval" : "Created",
+          ...results[i], status: "done",
+          message: res.status === 202 ? "Pending approval" : data.gitops_app ? `Created · deployed by GitOps app ${data.gitops_app}` : "Created",
           deployKey: data.deploy_key, warnings: data.warnings, argocd: data.argocd,
         };
       } catch (err: unknown) {
@@ -519,9 +528,9 @@ export default function NewRepository() {
             </div>
           </div>
 
-          {(workspaces.length > 0 || argoInstances.length > 0) && (
+          {(
             <div className="glass-card p-6 border-l-4 border-l-[#0052CC]">
-              <h2 className="text-xl font-bold mb-4">2. Workspace & ArgoCD</h2>
+              <h2 className="text-xl font-bold mb-4">2. Workspace & deploy</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {workspaces.length > 0 && (
                   <div>
@@ -542,7 +551,29 @@ export default function NewRepository() {
                     </select>
                   </div>
                 )}
-                {argoInstances.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-zinc-400 mb-1">Deploy with</label>
+                  <select className="input-tech text-sm" value={deployWith} onChange={e => setDeployWith(e.target.value as typeof deployWith)}>
+                    <option value="gitops">CommitKube GitOps</option>
+                    {argoInstances.length > 0 && <option value="argocd">ArgoCD</option>}
+                    <option value="none">Don&apos;t deploy</option>
+                  </select>
+                  {deployWith === "gitops" && (
+                    <div className="mt-2">
+                      <label className="block text-xs text-zinc-400 mb-1">Namespace</label>
+                      <input
+                        className="input-tech text-sm font-mono"
+                        placeholder={goldenInputs.namespace || (golden?.allowed_namespaces ? golden.allowed_namespaces.split(",")[0].trim() : "my-namespace")}
+                        value={gitopsNamespace}
+                        onChange={e => setGitopsNamespace(e.target.value.toLowerCase())}
+                      />
+                      <p className="text-xs text-zinc-500 mt-1">
+                        Every commit to the branch is applied to this namespace. CommitKube needs write access there; the application page shows how to grant it.
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {argoInstances.length > 0 && deployWith === "argocd" && (
                   <div>
                     <label className="block text-sm font-medium text-zinc-400 mb-1">ArgoCD Instance</label>
                     <select

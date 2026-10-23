@@ -55,6 +55,12 @@ type CreateRepoRequest struct {
 	// SkipArgoCD is the creator explicitly choosing "No ArgoCD". Without it a
 	// missing instance id is ambiguous with an instance list that never loaded.
 	SkipArgoCD bool `json:"skip_argocd,omitempty"`
+	// GitOps deploys the repository with CommitKube's own engine instead of
+	// ArgoCD: an application is created for its manifest path.
+	GitOps bool `json:"gitops,omitempty"`
+	// GitOpsNamespace is where it deploys; empty means the golden path's
+	// namespace, then the default.
+	GitOpsNamespace string `json:"gitops_namespace,omitempty"`
 }
 
 type RepoVariable struct {
@@ -157,12 +163,17 @@ type provisionResult struct {
 	// ArgoCD is "configured", "failed", "skipped" (the creator chose no
 	// instance), "not_configured" (there was none to use) or "no_token" (the
 	// creator has no personal token for the instance).
-	ArgoCD   string
+	ArgoCD string
+	// GitOps names the CommitKube GitOps application, when one was created.
+	GitOps   string
 	Warnings []string
 }
 
 func (r *provisionResult) response(message string) fiber.Map {
 	resp := fiber.Map{"message": message, "repo": r.Repo, "argocd": r.ArgoCD}
+	if r.GitOps != "" {
+		resp["gitops_app"] = r.GitOps
+	}
 	if r.DeployKey != nil {
 		resp["deploy_key"] = r.DeployKey
 	}
@@ -225,7 +236,7 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 	// says how to add one.
 	var argoInstance string
 	switch {
-	case req.SkipArgoCD:
+	case req.SkipArgoCD, req.GitOps:
 	default:
 		var inst models.ArgoCDInstance
 		if req.ArgoCDInstanceID > 0 {
@@ -385,6 +396,8 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 	repoURL := scmClient.CloneURL(bbWorkspace, req.Name)
 	cloneKey = strings.ReplaceAll(cloneKey, `\n`, "\n")
 	switch {
+	case req.GitOps:
+		result.ArgoCD = "gitops"
 	case req.SkipArgoCD:
 		result.ArgoCD = "skipped"
 	case argoURL == "":
@@ -456,6 +469,14 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 	go SendNotifications("repo.created", "Repository Created",
 		fmt.Sprintf("Repository %s was created by %s", req.Name, db.GetUserEmail(userID)),
 		req.Name, db.GetUserEmail(userID))
+
+	if req.GitOps {
+		if app, err := createGitopsAppForRepo(req, userID, argoAppPath, assembled); err != nil {
+			setupWarnings = append(setupWarnings, "GitOps: "+err.Error())
+		} else {
+			result.GitOps = app.Name
+		}
+	}
 
 	result.Repo = repo
 	result.Warnings = setupWarnings
@@ -761,6 +782,9 @@ func CommitFileEdit(c *fiber.Ctx) error {
 	db.LogAudit(callerID, "commit_file", "repository", repoName, fmt.Sprintf(`{"branch":"%s","message":%q,"files":%d}`, req.Branch, req.Message, len(filesToCommit)), c.IP())
 
 	TriggerScanBackground(repoName)
+	// An application on this repository should not wait for the poll to
+	// notice a commit made from here.
+	RefreshGitopsForRepo(repoName)
 
 	return c.JSON(fiber.Map{"message": "File committed successfully"})
 }
