@@ -96,17 +96,35 @@ export const MODULES: NavModule[] = [
   },
 ];
 
+/** How well an item matches a path: an exact match beats any prefix, and a
+ *  longer prefix beats a shorter one. 0 is no match. */
+function matchScore(item: NavItem, pathname: string): number {
+  if (pathname === item.href) return 10_000;
+  let best = 0;
+  for (const m of item.match ?? []) {
+    const hit = m.endsWith("/") ? pathname.startsWith(m) : pathname === m || pathname.startsWith(m + "/");
+    if (hit) best = Math.max(best, m.length);
+  }
+  return best;
+}
+
+/** The one item a path belongs to. Several can match -- Repositories claims
+ *  /repositories/..., New repository is /repositories/new -- and only the
+ *  most specific is the page you are on. */
+export function activeItem(pathname: string): { module: NavModule; item: NavItem } | null {
+  let found: { module: NavModule; item: NavItem } | null = null;
+  let score = 0;
+  for (const m of MODULES) for (const i of m.items) {
+    const sc = matchScore(i, pathname);
+    if (sc > score) { score = sc; found = { module: m, item: i }; }
+  }
+  return found;
+}
+
 export function itemActive(item: NavItem, pathname: string): boolean {
-  if (pathname === item.href) return true;
-  return (item.match ?? []).some(m => (m.endsWith("/") ? pathname.startsWith(m) : pathname === m || pathname.startsWith(m + "/")));
+  return activeItem(pathname)?.item.href === item.href;
 }
 
 export function activeModule(pathname: string): ModuleKey | null {
-  for (const m of MODULES) if (m.items.some(i => itemActive(i, pathname))) return m.key;
-  return null;
-}
-
-export function activeItem(pathname: string): { module: NavModule; item: NavItem } | null {
-  for (const m of MODULES) for (const i of m.items) if (itemActive(i, pathname)) return { module: m, item: i };
-  return null;
+  return activeItem(pathname)?.module.key ?? null;
 }
