@@ -457,6 +457,7 @@ func main() {
 	get(api, "/security/posture", handlers.PermSecurityRead, handlers.GetPosture)
 	get(api, "/security/posture/history", handlers.PermSecurityRead, handlers.GetPostureHistory)
 	post(api, "/security/posture/assess", handlers.PermSecurityScan, handlers.RunPostureAssessment)
+	get(api, "/security/posture/remediation", handlers.PermSecurityRead, handlers.GetPostureRemediation)
 
 	// Cloudflare zones. Looking needs security.read; adding, changing and
 	// removing a zone handles its API token, so that is a permission of its

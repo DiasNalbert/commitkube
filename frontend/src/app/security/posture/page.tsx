@@ -6,6 +6,7 @@ import {
 } from "recharts";
 import { apiFetch } from "@/lib/api";
 import { loadPermissions, PERMISSIONS } from "@/lib/permissions";
+import RemediationPanel from "./RemediationPanel";
 
 type Severity = "critical" | "high" | "medium" | "low";
 type Result = "passed" | "failed" | "not_relevant";
@@ -144,6 +145,8 @@ export default function Page() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   const [canScan, setCanScan] = useState(true);
+  // Which failing resource has its fix open: "rule|kind/namespace/name".
+  const [fixing, setFixing] = useState<string | null>(null);
 
   const [resultFilter, setResultFilter] = useState<"" | Result>("");
   const [severityFilter, setSeverityFilter] = useState<"" | Severity>("");
@@ -558,17 +561,36 @@ export default function Page() {
                                         <th className="px-3 py-1.5 font-medium w-40">Namespace</th>
                                         <th className="px-3 py-1.5 font-medium w-56">Name</th>
                                         <th className="px-3 py-1.5 font-medium">Detail</th>
+                                        <th className="px-3 py-1.5 font-medium w-24" />
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {r.failed_resources.map((f, i) => (
-                                        <tr key={`${f.kind}/${f.namespace}/${f.name}/${i}`} className="border-t border-[var(--card-border)] align-top">
+                                      {r.failed_resources.map((f, i) => {
+                                        const key = `${r.rule_id}|${f.kind}/${f.namespace}/${f.name}`;
+                                        return (
+                                        <Fragment key={`${f.kind}/${f.namespace}/${f.name}/${i}`}>
+                                        <tr className="border-t border-[var(--card-border)] align-top">
                                           <td className="px-3 py-1.5">{f.kind}</td>
                                           <td className="px-3 py-1.5 font-mono text-zinc-500 dark:text-zinc-400">{f.namespace || "—"}</td>
                                           <td className="px-3 py-1.5 font-mono break-all">{f.name}</td>
                                           <td className="px-3 py-1.5 text-zinc-500 dark:text-zinc-400 break-words">{f.detail}</td>
+                                          <td className="px-3 py-1.5 text-right whitespace-nowrap">
+                                            <button type="button" onClick={() => setFixing(fixing === key ? null : key)}
+                                              className="text-[12px] p-0" style={{ color: "var(--green)" }}>
+                                              {fixing === key ? "Close" : "How to fix"}
+                                            </button>
+                                          </td>
                                         </tr>
-                                      ))}
+                                        {fixing === key && (
+                                          <tr className="border-t border-[var(--card-border)]">
+                                            <td colSpan={5} className="p-0">
+                                              <RemediationPanel rule={r.rule_id} kind={f.kind} namespace={f.namespace} name={f.name} />
+                                            </td>
+                                          </tr>
+                                        )}
+                                        </Fragment>
+                                        );
+                                      })}
                                     </tbody>
                                   </table>
                                 </div>

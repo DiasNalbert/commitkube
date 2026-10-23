@@ -93,7 +93,11 @@ dentro das suas aplicações.
   capabilities perigosas, hostPath, ferramentas de download
 - **Security Posture**: as 33 regras do padrão Security Essentials para
   Kubernetes (cada uma com o id DTSE correspondente) e 11 boas práticas com nota
-  separada, avaliadas a cada 6 h e guardadas por um ano
+  separada, avaliadas a cada 6 h e guardadas por um ano. Cada recurso que
+  falha tem o comando que o corrige, gerado do objeto vivo: `kubectl patch`
+  para workloads e a versão estreitada da Role para RBAC, conferidos pela
+  própria regra antes de aparecer, com o que a mudança pode quebrar e o aviso
+  quando o objeto é de um Helm, ArgoCD ou operador. Nada é aplicado pela tela
 - **Review por IA** de um repositório inteiro (Claude, via `ANTHROPIC_API_KEY`)
 - **Credenciais de registry** (genérico, ECR, GCR) cifradas, usadas no scan de
   imagens privadas
