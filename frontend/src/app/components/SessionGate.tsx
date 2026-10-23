@@ -15,16 +15,26 @@ export default function SessionGate({ children }: { children: React.ReactNode })
   const pathname = usePathname();
   const isPublic = isPublicRoute(pathname);
   const [ok, setOk] = useState(false);
+  const [waiting, setWaiting] = useState("");
 
   useEffect(() => {
     if (isPublic) return;
     let cancelled = false;
-    ensureSession().then(token => {
-      if (cancelled) return;
-      if (token) setOk(true);
-      else goToLogin();
-    });
-    return () => { cancelled = true; };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      ensureSession().then(token => {
+        if (cancelled) return;
+        if (token) { setOk(true); setWaiting(""); } else goToLogin();
+      }).catch(e => {
+        // The server could not say -- restarting, rate limited, offline.
+        // That is not a sign-out: wait and ask again.
+        if (cancelled) return;
+        setWaiting(e instanceof Error ? e.message : "the server is not answering");
+        timer = setTimeout(check, 5000);
+      });
+    };
+    check();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [isPublic]);
 
   // While the tab is in front, keep the session warm: the access token is
@@ -34,12 +44,12 @@ export default function SessionGate({ children }: { children: React.ReactNode })
     if (isPublic || !ok) return;
     const tick = () => {
       if (document.hidden) return;
-      refreshSession().then(t => { if (!t) goToLogin(); });
+      refreshSession().then(t => { if (!t) goToLogin(); }).catch(() => { /* try again next tick */ });
     };
     const id = setInterval(tick, 4 * 60 * 1000);
     const onVisible = () => {
       if (document.hidden) return;
-      ensureSession().then(t => { if (!t) goToLogin(); });
+      ensureSession().then(t => { if (!t) goToLogin(); }).catch(() => { /* try again next time */ });
     };
     document.addEventListener("visibilitychange", onVisible);
     const stopWatching = watchSignOut(() => { window.location.href = "/login"; });
@@ -54,7 +64,9 @@ export default function SessionGate({ children }: { children: React.ReactNode })
   if (!ok) {
     return (
       <div className="flex-1 min-h-screen grid place-items-center" aria-busy="true">
-        <span className="font-mono text-[11px]" style={{ color: "var(--m2)" }}>checking session…</span>
+        <span className="font-mono text-[11px] text-center" style={{ color: "var(--m2)" }}>
+          {waiting ? <>checking session… {waiting}; trying again</> : "checking session…"}
+        </span>
       </div>
     );
   }

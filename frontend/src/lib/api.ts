@@ -11,6 +11,12 @@ function withCluster(path: string): string {
   return path + (path.includes("?") ? "&" : "?") + "cluster=" + encodeURIComponent(cluster);
 }
 
+const unavailable = () =>
+  new Response(JSON.stringify({ error: "the server is not answering; try again in a moment" }), {
+    status: 503,
+    headers: { "Content-Type": "application/json" },
+  });
+
 const unauthorized = () =>
   new Response(JSON.stringify({ error: "not signed in" }), {
     status: 401,
@@ -31,7 +37,14 @@ export async function apiFetch(
 
   const url = `${API}${withCluster(path)}`;
 
-  const token = await ensureSession();
+  let token: string | null;
+  try {
+    token = await ensureSession();
+  } catch {
+    // The server could not confirm the session right now. The call fails
+    // like any other unavailable request; the session is left alone.
+    return unavailable();
+  }
   if (!token) {
     goToLogin();
     return unauthorized();
@@ -43,7 +56,12 @@ export async function apiFetch(
     // The access token may have been signed before a change on the server
     // (a revoked session, a new role). One refresh decides: a new token
     // retries the call, none ends the visit.
-    const fresh = await refreshSession();
+    let fresh: string | null;
+    try {
+      fresh = await refreshSession();
+    } catch {
+      return res;
+    }
     if (!fresh) {
       goToLogin();
       return res;

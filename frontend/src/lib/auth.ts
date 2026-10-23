@@ -56,19 +56,42 @@ function clear() {
   listeners.forEach(l => l(null));
 }
 
-async function doRefresh(): Promise<string | null> {
+/** The server could not answer right now -- rate limited, restarting, the
+ *  network dropped. Not a verdict on the session, so nobody is signed out
+ *  for it. */
+export class SessionUnavailable extends Error {}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+async function refreshOnce(): Promise<string | null> {
+  let res: Response;
   try {
-    const res = await fetch(`${API}/auth/refresh`, { method: "POST", credentials: "include" });
-    if (!res.ok) { clear(); return null; }
-    const data = await res.json();
-    if (typeof data.token !== "string") { clear(); return null; }
-    apply(data.token, data.expires_in ?? 600, data.user ?? null);
-    return data.token;
+    // keepalive lets the request finish -- and the browser store the
+    // rotated cookie -- even when the page navigates away mid-flight.
+    res = await fetch(`${API}/auth/refresh`, { method: "POST", credentials: "include", keepalive: true });
   } catch {
-    // The network, not the session: keep what we have and let the caller
-    // decide. A dropped Wi-Fi should not sign anyone out.
-    return accessToken;
+    throw new SessionUnavailable("the server could not be reached");
   }
+  // Only a 401 says the session is over.
+  if (res.status === 401) { clear(); return null; }
+  if (!res.ok) throw new SessionUnavailable(`the server answered ${res.status}`);
+  const data = await res.json().catch(() => null);
+  if (!data || typeof data.token !== "string") throw new SessionUnavailable("unexpected answer from the server");
+  apply(data.token, data.expires_in ?? 600, data.user ?? null);
+  return data.token;
+}
+
+async function doRefresh(): Promise<string | null> {
+  let last: unknown;
+  for (const wait of [0, 1000, 2500, 5000]) {
+    if (wait) await sleep(wait);
+    try {
+      return await refreshOnce();
+    } catch (e) {
+      last = e;
+    }
+  }
+  throw last;
 }
 
 /** Ask the server for a fresh access token. One request at a time, across
@@ -86,7 +109,8 @@ export function refreshSession(): Promise<string | null> {
 }
 
 /** A valid access token, refreshing first when there is none or it is about
- *  to expire. Null means there is no session. */
+ *  to expire. Null means there is no session; a SessionUnavailable means the
+ *  server could not say, and the caller should try again later. */
 export async function ensureSession(): Promise<string | null> {
   if (accessToken && Date.now() < expiresAt) return accessToken;
   return refreshSession();

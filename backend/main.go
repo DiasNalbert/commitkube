@@ -349,7 +349,20 @@ func main() {
 
 	app.Post("/api/auth/login", authLimit, handlers.Login)
 	app.Post("/api/auth/verify-mfa", authLimit, handlers.VerifyMFA)
-	app.Post("/api/auth/refresh", authLimit, handlers.RefreshTokenHandler)
+	// Refresh is not a guessing target -- the token is 256 random bits -- so
+	// it is limited per session, not per address. Per address it shared the
+	// login limit, and an office behind one NAT address signed everyone out
+	// once twenty page loads landed in the same minute.
+	refreshLimit := limiter.New(limiter.Config{
+		Max:          60,
+		Expiration:   time.Minute,
+		KeyGenerator: handlers.RefreshLimitKey,
+		LimitReached: func(c *fiber.Ctx) error {
+			c.Set("Retry-After", "5")
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": "too many refreshes; retrying shortly"})
+		},
+	})
+	app.Post("/api/auth/refresh", refreshLimit, handlers.RefreshTokenHandler)
 	app.Post("/api/auth/logout", handlers.Logout)
 	app.Post("/api/auth/setup-init", authLimit, handlers.SetupInit)
 	app.Post("/api/auth/setup-confirm", authLimit, handlers.SetupConfirm)

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,5 +205,37 @@ func TestLogoutEndsTheSessionOnTheServer(t *testing.T) {
 	// No cookie at all is simply no session.
 	if authCall(t, app, "/auth/refresh", "").status != 401 {
 		t.Fatal("a refresh without a cookie succeeded")
+	}
+}
+
+// The refresh limit counts per session. The cookie changes on every refresh,
+// so keying on it would never limit anything; keying on the address signed
+// out a whole office behind one NAT.
+func TestRefreshLimitKeyFollowsTheSessionAcrossRotation(t *testing.T) {
+	app := sessionApp(t)
+	u := activeUser(t)
+	first := signIn(t, app, u)
+	r := authCall(t, app, "/auth/refresh", first)
+	second := r.cookie.Value
+
+	keyFor := func(cookie string) string {
+		k := fiber.New()
+		var got string
+		k.Post("/", func(c *fiber.Ctx) error { got = RefreshLimitKey(c); return nil })
+		req := httptest.NewRequest("POST", "/", nil)
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: SessionCookie, Value: cookie})
+		}
+		if _, err := k.Test(req, -1); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	a, b := keyFor(first), keyFor(second)
+	if a != b || !strings.HasPrefix(a, "session|") {
+		t.Fatalf("keys across rotation: %q %q", a, b)
+	}
+	if k := keyFor("not-a-session"); !strings.HasPrefix(k, "ip|") {
+		t.Fatalf("unknown cookie should fall back to the address, got %q", k)
 	}
 }

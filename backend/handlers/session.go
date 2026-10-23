@@ -300,3 +300,17 @@ func PruneRefreshTokens() {
 	cutoff := time.Now().Add(-24 * time.Hour)
 	db.DB.Unscoped().Where("expires_at < ?", cutoff).Delete(&models.RefreshToken{})
 }
+
+// RefreshLimitKey keys the refresh rate limit on the session the cookie
+// belongs to -- the session id, which survives rotation, unlike the token.
+// A cookie that matches no session falls back to the address, so guessing
+// is still limited where it comes from.
+func RefreshLimitKey(c *fiber.Ctx) string {
+	if raw := c.Cookies(SessionCookie); raw != "" {
+		var rt models.RefreshToken
+		if db.DB.Select("session_id").Where("token = ?", hashToken(raw)).First(&rt).Error == nil && rt.SessionID != "" {
+			return "session|" + rt.SessionID
+		}
+	}
+	return "ip|" + c.IP()
+}
