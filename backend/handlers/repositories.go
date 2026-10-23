@@ -98,8 +98,16 @@ func CreateRepository(c *fiber.Ctx) error {
 		if err := db.DB.Where("id = ? AND is_active = true", req.GoldenPathID).First(&gp).Error; err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "golden path not found or inactive"})
 		}
-		if errMsg := ValidateGoldenPathInputs(gp, req.GoldenPathInputs); errMsg != "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": errMsg})
+		// Answers, templates and rules are all checked now, before anything
+		// exists in the SCM: a refusal after the repository was created would
+		// leave it behind, empty.
+		ws, pk := repoScope(&req)
+		if _, err := assembleRepoFiles(&req, ws, pk); err != nil {
+			body := fiber.Map{"error": err.Error()}
+			if pe, ok := err.(*goldenPolicyError); ok {
+				body["violations"] = pe.Problems
+			}
+			return c.Status(fiber.StatusBadRequest).JSON(body)
 		}
 		if gp.ApprovalWorkflow == "manual" {
 			payload, _ := json.Marshal(req)
@@ -336,41 +344,6 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 		}
 	}
 
-	files := map[string]string{}
-	argoAppPath := "."
-
-	editedMap := map[uint]string{}
-	for _, e := range req.EditedTemplates {
-		editedMap[e.ID] = e.Content
-	}
-
-	skippedSet := map[uint]bool{}
-	for _, id := range req.SkippedTemplateIDs {
-		skippedSet[id] = true
-	}
-
-	applyTemplates := func(tmplList []models.YamlTemplate) {
-		for _, tmpl := range tmplList {
-			if !tmpl.IsActive || skippedSet[tmpl.ID] {
-				continue
-			}
-			content := tmpl.Content
-			if edited, ok := editedMap[tmpl.ID]; ok {
-				content = edited
-			}
-			rendered := renderTplWithInputs(content, req.Name, req.GoldenPathInputs)
-			filePath := tmpl.Name
-			if tmpl.Path != "" {
-				filePath = tmpl.Path + "/" + tmpl.Name
-			}
-			filePath = strings.TrimPrefix(filePath, "/")
-			files[filePath] = rendered
-			if tmpl.Type == "manifest" && tmpl.Path != "" {
-				argoAppPath = strings.TrimPrefix(tmpl.Path, "/")
-			}
-		}
-	}
-
 	projectKey := req.ProjectKey
 	if projectKey == "" && req.WorkspaceID > 0 {
 		var ws models.BitbucketWorkspace
@@ -378,35 +351,19 @@ func provisionRepository(userID uint, req *CreateRepoRequest, ip string) (*provi
 			projectKey = ws.ProjectKey
 		}
 	}
-
-	var matched []models.YamlTemplate
-	if result := db.DB.Raw(`
-		SELECT yt.* FROM yaml_templates yt
-		LEFT JOIN bitbucket_workspaces bw ON yt.workspace_id = bw.id
-		WHERE yt.is_active = 1
-		  AND yt.deleted_at IS NULL
-		  AND (
-		    bw.workspace_id = ?
-		    OR (yt.workspace_id IS NULL AND (yt.project_key = '' OR yt.project_key = ?))
-		  )
-		ORDER BY yt.type DESC, yt.id ASC
-	`, bbWorkspace, projectKey).Scan(&matched); result.Error != nil {
-		// Said on the result, not only in the log: without its templates the
-		// repository is created with no pipeline and no manifests.
-		msg := fmt.Sprintf("templates: could not load them (%v), so none were committed", result.Error)
-		fmt.Printf("Warning: %s | repo=%s workspace=%s project=%s\n", msg, req.Name, bbWorkspace, projectKey)
-		setupWarnings = append(setupWarnings, msg)
+	assembled, aerr := assembleRepoFiles(req, bbWorkspace, projectKey)
+	if aerr != nil {
+		// CreateRepository checks this before anything is created, so this
+		// only fires if a template or the path changed in between.
+		return nil, &provisionError{fiber.StatusBadRequest, aerr.Error()}
 	}
-	fmt.Printf("Templates: matched=%d for workspace=%q project=%q\n", len(matched), bbWorkspace, projectKey)
-	for _, t := range matched {
-		fmt.Printf("  - template id=%d name=%q path=%q type=%q workspace_id=%v project_key=%q\n", t.ID, t.Name, t.Path, t.Type, t.WorkspaceID, t.ProjectKey)
-	}
-	applyTemplates(matched)
-
-	for _, f := range req.UploadedFiles {
-		if f.Path != "" && f.Content != "" {
-			files[f.Path] = f.Content
-		}
+	files := assembled.Files
+	argoAppPath := assembled.ArgoAppPath
+	setupWarnings = append(setupWarnings, assembled.Warnings...)
+	fmt.Printf("Templates: %d files for workspace=%q project=%q golden_path=%d\n", len(files), bbWorkspace, projectKey, req.GoldenPathID)
+	if assembled.Golden != nil && assembled.Golden.Namespace != "" {
+		// The golden path decided where this service runs.
+		argoNamespace = assembled.Golden.Namespace
 	}
 
 	if len(files) > 0 {
@@ -1067,56 +1024,11 @@ func PreflightRepository(c *fiber.Ctx) error {
 		}
 	}
 
-	files := map[string]string{}
-
-	editedMap := map[uint]string{}
-	for _, e := range req.EditedTemplates {
-		editedMap[e.ID] = e.Content
+	assembled, aerr := assembleRepoFiles(&req, bbWorkspace, projectKey)
+	if aerr != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": aerr.Error()})
 	}
-
-	skippedSet := map[uint]bool{}
-	for _, id := range req.SkippedTemplateIDs {
-		skippedSet[id] = true
-	}
-
-	applyTemplates := func(tmplList []models.YamlTemplate) {
-		for _, tmpl := range tmplList {
-			if !tmpl.IsActive || skippedSet[tmpl.ID] {
-				continue
-			}
-			content := tmpl.Content
-			if edited, ok := editedMap[tmpl.ID]; ok {
-				content = edited
-			}
-			rendered := renderTplWithInputs(content, req.Name, req.GoldenPathInputs)
-			filePath := tmpl.Name
-			if tmpl.Path != "" {
-				filePath = tmpl.Path + "/" + tmpl.Name
-			}
-			filePath = strings.TrimPrefix(filePath, "/")
-			files[filePath] = rendered
-		}
-	}
-
-	var matched []models.YamlTemplate
-	db.DB.Raw(`
-		SELECT yt.* FROM yaml_templates yt
-		LEFT JOIN bitbucket_workspaces bw ON yt.workspace_id = bw.id
-		WHERE yt.is_active = 1
-		  AND yt.deleted_at IS NULL
-		  AND (
-		    bw.workspace_id = ?
-		    OR (yt.workspace_id IS NULL AND (yt.project_key = '' OR yt.project_key = ?))
-		  )
-		ORDER BY yt.type DESC, yt.id ASC
-	`, bbWorkspace, projectKey).Scan(&matched)
-	applyTemplates(matched)
-
-	for _, f := range req.UploadedFiles {
-		if f.Path != "" && f.Content != "" {
-			files[f.Path] = f.Content
-		}
-	}
+	files := assembled.Files
 
 	result := PreflightResult{
 		FilesChecked: len(files),

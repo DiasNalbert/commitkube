@@ -3,6 +3,16 @@
 import { useState, useEffect } from "react";
 import DeployKeyPanel, { type DeployKey } from "@/app/components/DeployKeyPanel";
 import { apiFetch } from "@/lib/api";
+import { InputsForm, type FieldDef } from "@/app/golden-paths/PathTemplates";
+
+type GoldenPath = {
+  id: number; name: string; description: string; fields_schema: string; allowed_namespaces: string;
+  required_labels: string; resource_limits: string; approval_workflow: string; is_active: boolean;
+};
+type GoldenPreview = { files: Record<string, string>; namespace?: string; violations: string[]; error?: string };
+const parseFields = (gp?: GoldenPath): FieldDef[] => {
+  try { return gp ? JSON.parse(gp.fields_schema || "[]") : []; } catch { return []; }
+};
 
 type Template = { id: number; name: string; path: string; content: string; type: string; is_active: boolean };
 type RepoVariable = { key: string; value: string; secured: boolean };
@@ -73,6 +83,14 @@ export default function NewRepository() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [activeRepoTab, setActiveRepoTab] = useState(0);
 
+  // The golden path, when one is chosen: its answers go with every
+  // repository in this batch, and its files are shown rendered for review.
+  const [goldenPaths, setGoldenPaths] = useState<GoldenPath[]>([]);
+  const [goldenId, setGoldenId] = useState(0);
+  const [goldenInputs, setGoldenInputs] = useState<Record<string, string>>({});
+  const [goldenPreview, setGoldenPreview] = useState<GoldenPreview | null>(null);
+  const golden = goldenPaths.find(g => g.id === goldenId);
+
   const loadTemplates = async () => {
     const res = await apiFetch(`/templates`);
     const data = await res.json();
@@ -116,6 +134,9 @@ export default function NewRepository() {
     }).catch(() => {});
 
     loadTemplates();
+    apiFetch("/golden-paths").then(r => r.json()).then(list => {
+      if (Array.isArray(list)) setGoldenPaths(list.filter((g: GoldenPath) => g.is_active));
+    }).catch(() => {});
 
     Promise.all([
       apiFetch("/workspaces").then(r => r.json()),
@@ -210,7 +231,21 @@ export default function NewRepository() {
     registry_id: selectedRegistryId > 0 ? selectedRegistryId : undefined,
     docker_image_private: dockerImagePrivate,
     provider,
+    golden_path_id: goldenId > 0 ? goldenId : undefined,
+    golden_path_inputs: goldenId > 0 ? goldenInputs : undefined,
   });
+
+  // The path's files, rendered for the repository on screen, with the
+  // verdict of its rules -- what will be committed, before it is.
+  useEffect(() => {
+    if (step !== 2 || !goldenId) { setGoldenPreview(null); return; }
+    const name = repoEntries[activeRepoTab]?.name || "my-service";
+    let cancelled = false;
+    apiFetch(`/golden-paths/${goldenId}/preview`, { method: "POST", body: JSON.stringify({ name, inputs: goldenInputs }) })
+      .then(r => r.json()).then(d => { if (!cancelled) setGoldenPreview(d); })
+      .catch(() => { if (!cancelled) setGoldenPreview({ files: {}, violations: [], error: "could not render the golden path" }); });
+    return () => { cancelled = true; };
+  }, [step, goldenId, goldenInputs, activeRepoTab, repoEntries]);
 
   const handlePreflight = async () => {
     setPreflightLoading(true);
@@ -246,6 +281,7 @@ export default function NewRepository() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to create repo");
+        // (violations, when the golden path refuses, are already in data.error, one per line)
         results[i] = {
           ...results[i], status: "done", message: res.status === 202 ? "Pending approval" : "Created",
           deployKey: data.deploy_key, warnings: data.warnings, argocd: data.argocd,
@@ -292,6 +328,35 @@ export default function NewRepository() {
 
       {step === 1 && (
         <div className="space-y-6">
+          {goldenPaths.length > 0 && (
+            <div className="glass-card p-6 space-y-4">
+              <div>
+                <h2 className="text-xl font-bold mb-1">Golden path <span className="text-sm font-normal text-zinc-400">(optional)</span></h2>
+                <p className="text-zinc-400 text-sm">A ready-made way to create this kind of service: its files, its questions and its rules.</p>
+              </div>
+              <select
+                className="input-tech text-sm max-w-md"
+                value={goldenId}
+                onChange={e => { setGoldenId(Number(e.target.value)); setGoldenInputs({}); }}
+              >
+                <option value={0}>None — project templates only</option>
+                {goldenPaths.map(g => <option key={g.id} value={g.id}>{g.name}{g.approval_workflow === "manual" ? " (needs approval)" : ""}</option>)}
+              </select>
+              {golden && (
+                <div className="space-y-3">
+                  {golden.description && <p className="text-sm text-zinc-400 m-0">{golden.description}</p>}
+                  <InputsForm fields={parseFields(golden)} values={goldenInputs} onChange={setGoldenInputs} namespaces={golden.allowed_namespaces} />
+                  <p className="text-xs text-zinc-500 m-0">
+                    {[
+                      golden.required_labels && `every workload must carry ${golden.required_labels}`,
+                      golden.resource_limits && `containers capped at ${golden.resource_limits}`,
+                      golden.approval_workflow === "manual" && "an approver creates it after review",
+                    ].filter(Boolean).join(" · ")}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
           <div className="glass-card p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold">1. Repositories</h2>
@@ -607,6 +672,32 @@ export default function NewRepository() {
               </div>
             )}
           </div>
+
+          {golden && (
+            <div className="glass-card p-6 space-y-3" style={{ borderLeft: "4px solid var(--gold)" }}>
+              <div>
+                <h3 className="font-bold text-lg m-0">From {golden.name}</h3>
+                <p className="text-zinc-400 text-sm m-0">Rendered with your answers. These come with the path and replace a project template that writes the same file.</p>
+              </div>
+              {!goldenPreview && <p className="text-sm text-zinc-500 m-0">Rendering…</p>}
+              {goldenPreview?.error && <p className="text-sm m-0" style={{ color: "var(--red)" }}>{goldenPreview.error}</p>}
+              {goldenPreview && goldenPreview.violations.length > 0 && (
+                <div className="p-3 text-xs flex flex-col gap-1" style={{ border: "1px solid rgba(248,113,113,.3)", color: "var(--red)" }}>
+                  <strong>This would be refused:</strong>
+                  {goldenPreview.violations.map(v => <span key={v}>{v}</span>)}
+                </div>
+              )}
+              {goldenPreview && Object.keys(goldenPreview.files).length === 0 && !goldenPreview.error && (
+                <p className="text-sm text-zinc-500 m-0">This path brings no files of its own; only its rules apply.</p>
+              )}
+              {goldenPreview && Object.entries(goldenPreview.files).map(([f, c]) => (
+                <div key={f} className="space-y-1">
+                  <span className="font-mono text-xs text-zinc-400">{f}</span>
+                  <pre className="m-0 p-3 font-mono text-[11px] overflow-x-auto" style={{ background: "var(--side)", border: "1px solid var(--rule)" }}>{c}</pre>
+                </div>
+              ))}
+            </div>
+          )}
 
           {manifests.length === 0 && (
             <div className="glass-card p-6 border-l-4 border-l-zinc-600">

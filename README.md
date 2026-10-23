@@ -25,6 +25,14 @@ dentro das suas aplicações.
   scans e análise por IA
 - **Templates** YAML por workspace ou projeto, com variáveis globais e por
   projeto (inclusive secured)
+- **Golden paths**: um jeito pronto de criar um tipo de serviço. Cada um traz
+  arquivos próprios (renderizados com Go templates: `{{.Name}}`,
+  `{{.Namespace}}`, `{{.Inputs.campo}}`, `{{if .Inputs.expor}}`), perguntas com
+  tipo, padrão e validação, e regras: namespaces permitidos (com curinga),
+  labels obrigatórias e teto de CPU e memória por container. Os manifestos
+  gerados são conferidos antes de qualquer coisa ser criada, e o que quebra a
+  regra é recusado com o motivo por arquivo. Com aprovação manual, o pedido cai
+  numa fila e é criado ao ser aprovado. Tem preview na própria tela
 - **Entrega (DORA)**, medida pelo cluster e não pela pipeline. Um deploy é uma
   imagem que passou a rodar:
   - *Deployment frequency*: contagem de trocas de imagem nos workloads
@@ -38,10 +46,6 @@ dentro das suas aplicações.
 
 > **Provedores de SCM:** só o Bitbucket está implementado. GitHub e GitLab
 > existem como esqueleto (*preview*) e respondem "not yet implemented".
->
-> **Golden paths** (formulários de serviço com limites, namespaces permitidos,
-> labels obrigatórias e aprovação) existem na API e em `/golden-paths`, mas a
-> página ainda não está no menu e a aprovação não tem tela.
 
 ### Kubernetes
 

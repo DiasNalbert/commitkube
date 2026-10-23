@@ -3,16 +3,10 @@
 import { useEffect, useState } from "react";
 import { getSessionUser } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
-
-type FieldDef = {
-  key: string;
-  label: string;
-  type: "string" | "number" | "select" | "bool";
-  required: boolean;
-  options?: string[];
-  validation?: string;
-  default?: string;
-};
+import { usePermissions } from "@/app/components/usePermissions";
+import { PERMISSIONS } from "@/lib/permissions";
+import PathTemplates, { type FieldDef } from "./PathTemplates";
+import PendingApprovals from "./PendingApprovals";
 
 type GoldenPath = {
   id: number;
@@ -32,6 +26,8 @@ const emptyForm = {
   description: "",
   approval_workflow: "none" as "none" | "manual",
   allowed_namespaces: "",
+  required_labels: "",
+  resource_limits: "",
   is_active: true,
 };
 
@@ -62,6 +58,7 @@ export default function GoldenPathsPage() {
   const msg = (m: string) => { setMessage(m); setTimeout(() => setMessage(""), 4000); };
 
   const isAdmin = userRole === "admin" || userRole === "root";
+  const { can } = usePermissions();
 
   const load = async () => {
     const res = await apiFetch("/golden-paths");
@@ -89,6 +86,8 @@ export default function GoldenPathsPage() {
       description: gp.description,
       approval_workflow: gp.approval_workflow,
       allowed_namespaces: gp.allowed_namespaces,
+      required_labels: gp.required_labels ?? "",
+      resource_limits: gp.resource_limits ?? "",
       is_active: gp.is_active,
     });
     try {
@@ -151,7 +150,7 @@ export default function GoldenPathsPage() {
             Golden Paths
           </h1>
           <p className="text-zinc-400 mt-1 text-sm">
-            Templates with guardrails. Define required fields, validations, and approval workflows for repository creation.
+            A ready-made way to create a service: the files it brings, the questions it asks, and the rules what it produces must follow. Pick one in New repository.
           </p>
         </div>
         {isAdmin && (
@@ -198,6 +197,17 @@ export default function GoldenPathsPage() {
               <label className="text-xs text-zinc-400 mb-1 block">Allowed namespaces <span className="text-zinc-600">(comma-separated)</span></label>
               <input className="input-tech text-sm" placeholder="production, staging" value={form.allowed_namespaces} onChange={e => setForm({ ...form, allowed_namespaces: e.target.value })} />
             </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">Required labels <span className="text-zinc-600">(on every workload, comma-separated)</span></label>
+              <input className="input-tech text-sm font-mono" placeholder="team, cost-center" value={form.required_labels} onChange={e => setForm({ ...form, required_labels: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">Resource ceiling <span className="text-zinc-600">(per container)</span></label>
+              <input className="input-tech text-sm font-mono" placeholder="cpu=1, memory=1Gi" value={form.resource_limits} onChange={e => setForm({ ...form, resource_limits: e.target.value })} />
+            </div>
+            <p className="md:col-span-2 m-0 text-xs text-zinc-500">
+              Namespaces accept wildcards (<code>apps-*</code>). A repository whose files break any of these is refused before anything is created, with the reason per file.
+            </p>
             <div className="flex items-center gap-3 pt-5">
               <input
                 type="checkbox"
@@ -323,6 +333,8 @@ export default function GoldenPathsPage() {
         </div>
       )}
 
+      {can(PERMISSIONS.scmApprove) && <PendingApprovals />}
+
       {loading ? (
         <div className="text-zinc-500 text-center py-16">Loading...</div>
       ) : paths.length === 0 ? (
@@ -356,6 +368,8 @@ export default function GoldenPathsPage() {
                     <div className="flex items-center gap-4 mt-2 text-xs text-zinc-500">
                       <span>{gpFields.length} field{gpFields.length !== 1 ? "s" : ""}</span>
                       {gp.allowed_namespaces && <span>Namespaces: {gp.allowed_namespaces}</span>}
+                      {gp.required_labels && <span>Labels: {gp.required_labels}</span>}
+                      {gp.resource_limits && <span>Ceiling: {gp.resource_limits}</span>}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -407,6 +421,12 @@ export default function GoldenPathsPage() {
                 {isExpanded && gpFields.length === 0 && (
                   <div className="border-t border-zinc-800 px-5 pb-4 pt-3">
                     <p className="text-zinc-600 text-sm">This Golden Path has no custom fields.</p>
+                  </div>
+                )}
+
+                {isExpanded && (
+                  <div className="border-t border-zinc-800 px-5 pb-5 pt-4">
+                    <PathTemplates goldenPathId={gp.id} fields={gpFields} namespaces={gp.allowed_namespaces} canEdit={isAdmin} />
                   </div>
                 )}
               </div>

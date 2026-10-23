@@ -75,8 +75,12 @@ type YamlTemplate struct {
 	UserID      uint           `gorm:"index" json:"user_id"`
 	WorkspaceID *uint          `gorm:"index" json:"workspace_id"`
 	ProjectKey  string         `json:"project_key"`
-	Name        string         `gorm:"not null" json:"name"`
-	Path        string         `gorm:"not null" json:"path"`
+	// GoldenPathID marks a template that belongs to a golden path: it is
+	// applied only to repositories created on that path, never as a global
+	// or project template.
+	GoldenPathID *uint  `gorm:"index" json:"golden_path_id,omitempty"`
+	Name         string `gorm:"not null" json:"name"`
+	Path         string `gorm:"not null" json:"path"`
 	Content     string         `gorm:"type:text" json:"content"`
 	Type        string         `gorm:"not null" json:"type"`
 	IsActive    bool           `gorm:"default:true" json:"is_active"`

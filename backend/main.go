@@ -513,7 +513,10 @@ func main() {
 	get(api, "/golden-paths/:id", handlers.PermTemplateRead, handlers.GetGoldenPath)
 	put(api, "/golden-paths/:id", handlers.PermTemplateWrite, handlers.UpdateGoldenPath)
 	del(api, "/golden-paths/:id", handlers.PermTemplateWrite, handlers.DeleteGoldenPath)
+	post(api, "/golden-paths/:id/preview", handlers.PermTemplateRead, handlers.PreviewGoldenPath)
+	get(api, "/repositories/pending", handlers.PermSCMApprove, handlers.ListPendingRepositories)
 	post(api, "/repositories/:name/approve", handlers.PermSCMApprove, handlers.ApproveRepository)
+	post(api, "/repositories/:name/reject", handlers.PermSCMApprove, handlers.RejectRepository)
 
 	// Unlocking takes the password and a code from the sign-in authenticator;
 	// limited per person, since a password guessed here is a password.
