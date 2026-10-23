@@ -10,6 +10,8 @@
     "test:crypto": "tsc src/lib/vault-crypto.ts --outDir .crypto-test --module esnext --target es2022 --moduleResolution bundler --skipLibCheck --lib es2022,dom && node -e \"require('fs').writeFileSync('.crypto-test/package.json','{\\\"type\\\":\\\"module\\\"}')\" && node test/vault-crypto.test.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@fontsource-variable/onest": "5.3.1",
     "@types/qrcode": "^1.5.6",
     "autoprefixer": "^10.4.27",
     "hash-wasm": "^4.12.0",

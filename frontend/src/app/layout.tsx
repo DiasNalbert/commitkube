@@ -1,15 +1,23 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import { Onest, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import Shell from "./components/shell/Shell";
 import SessionGate from "./components/SessionGate";
 import ThemeProvider from "./components/ThemeProvider";
 
-// Downloaded at build time and served from this origin, so the page's CSP
-// needs no exception for a font host.
-const onest = Onest({ subsets: ["latin"], weight: ["300", "400", "500", "600", "700"], variable: "--font-onest", display: "swap" });
-const mono = JetBrains_Mono({ subsets: ["latin"], weight: ["300", "400", "500"], variable: "--font-jetbrains", display: "swap" });
+// The fonts come from npm packages (OFL-licensed) and are served from this
+// origin: the page's CSP needs no font host, and the build needs no network
+// beyond the npm registry it already uses. next/font/google fetched them
+// from Google at build time, which fails wherever the build cannot reach it.
+const onest = localFont({
+  src: "../../node_modules/@fontsource-variable/onest/files/onest-latin-wght-normal.woff2",
+  weight: "100 900", variable: "--font-onest", display: "swap",
+});
+const mono = localFont({
+  src: "../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2",
+  weight: "100 800", variable: "--font-jetbrains", display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "CommitKube",
