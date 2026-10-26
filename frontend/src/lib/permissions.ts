@@ -17,6 +17,7 @@ export const PERMISSIONS = {
   secretsWrite: "k8s.secrets.write",
   podDelete: "k8s.pod.delete",
   scale: "k8s.scale",
+  workloadDelete: "k8s.workload.delete",
   clusterManage: "cluster.manage",
   scmRead: "scm.read",
   scmWrite: "scm.write",

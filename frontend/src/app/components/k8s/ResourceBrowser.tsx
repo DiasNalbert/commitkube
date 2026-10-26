@@ -24,18 +24,27 @@ const IconSearch = () => (
   </svg>
 );
 
+const rowKey = (r: ResourceRow) => `${r.namespace}/${r.name}`;
+
 export default function ResourceBrowser({
   kind,
   title,
   subtitle,
   columns,
   namespaced = true,
+  bulkActions,
+  rowAction,
 }: {
   kind: string;
   title: string;
   subtitle: string;
   columns: ResourceColumn[];
   namespaced?: boolean;
+  /** When given, rows get checkboxes and this renders above the table for
+   *  the selection. done() clears the selection and reloads. */
+  bulkActions?: (selected: ResourceRow[], done: () => void) => React.ReactNode;
+  /** An action per row, rendered in its own column. */
+  rowAction?: (row: ResourceRow, reload: () => void) => React.ReactNode;
 }) {
   const [rows, setRows] = useState<ResourceRow[]>([]);
   const [, setTotals] = useState<Totals | null>(null);
@@ -48,6 +57,8 @@ export default function ResourceBrowser({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [selected, setSelected] = useState<ResourceRow | null>(null);
+  // Checked rows, by namespace/name, kept across pages and filters.
+  const [checked, setChecked] = useState<Set<string>>(new Set());
 
   // Kinds with an Overview tab get a panel worth calling "Details".
   const hasDetail = KINDS_WITH_DETAIL.has(kind);
@@ -126,6 +137,21 @@ export default function ResourceBrowser({
     ["warning", "Warning", scopedTotals.warning, "text-amber-600 dark:text-amber-400"],
     ["healthy", "Healthy", scopedTotals.healthy, "text-brand-green"],
   ];
+
+  const checkedRows = rows.filter(r => checked.has(rowKey(r)));
+  const pageAllChecked = pageRows.length > 0 && pageRows.every(r => checked.has(rowKey(r)));
+  const toggle = (r: ResourceRow) => setChecked(prev => {
+    const n = new Set(prev);
+    if (n.has(rowKey(r))) n.delete(rowKey(r)); else n.add(rowKey(r));
+    return n;
+  });
+  const togglePage = () => setChecked(prev => {
+    const n = new Set(prev);
+    if (pageAllChecked) pageRows.forEach(r => n.delete(rowKey(r)));
+    else pageRows.forEach(r => n.add(rowKey(r)));
+    return n;
+  });
+  const bulkDone = () => { setChecked(new Set()); load(); };
 
   const cellValue = (row: ResourceRow, col: ResourceColumn) => {
     switch (col.id) {
@@ -223,6 +249,15 @@ export default function ResourceBrowser({
         )}
       </div>
 
+      {bulkActions && checkedRows.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 px-3 py-2" style={{ background: "var(--panel)", border: "1px solid var(--rule)" }}>
+          <span className="text-[13px]">{checkedRows.length} selected</span>
+          <button type="button" onClick={() => setChecked(new Set())} className="text-[12.5px] p-0" style={{ color: "var(--t3)" }}>Clear</button>
+          <div className="flex-1" />
+          {bulkActions(checkedRows, bulkDone)}
+        </div>
+      )}
+
       {loading ? (
         <div className="glass-card p-12 text-center text-zinc-500">Loading {kind}…</div>
       ) : filtered.length === 0 ? (
@@ -236,6 +271,11 @@ export default function ResourceBrowser({
               <table className="w-full text-[13px]">
                 <thead className="text-[10px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400 border-b rule">
                   <tr>
+                    {bulkActions && (
+                      <th className="px-3 py-3 w-8">
+                        <input type="checkbox" aria-label="Select this page" checked={pageAllChecked} onChange={togglePage} />
+                      </th>
+                    )}
                     {columns.map(col => (
                       <th
                         key={col.id}
@@ -245,6 +285,7 @@ export default function ResourceBrowser({
                         {col.label}
                       </th>
                     ))}
+                    {rowAction && <th className="px-3 py-1.5" />}
                     <th className="px-3 py-1.5 text-right font-medium">{hasDetail ? "Details" : "Manifest"}</th>
                   </tr>
                 </thead>
@@ -257,6 +298,11 @@ export default function ResourceBrowser({
                         onClick={() => setSelected(row)}
                         className="border-b rule last:border-0 hover:bg-[var(--color-surface-hover)] cursor-pointer data-row"
                       >
+                        {bulkActions && (
+                          <td className="px-3 py-1.5" onClick={e => e.stopPropagation()}>
+                            <input type="checkbox" aria-label={`Select ${row.name}`} checked={checked.has(rowKey(row))} onChange={() => toggle(row)} />
+                          </td>
+                        )}
                         {columns.map((col, i) => {
                           const value = cellValue(row, col);
                           return (
@@ -283,6 +329,11 @@ export default function ResourceBrowser({
                             </td>
                           );
                         })}
+                        {rowAction && (
+                          <td className="px-3 py-1.5 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                            {rowAction(row, load)}
+                          </td>
+                        )}
                         <td className="px-3 py-1.5 text-right">
                           <span className="text-xs text-zinc-500 hover:text-brand-green">{hasDetail ? "Inspect" : "View YAML"}</span>
                         </td>

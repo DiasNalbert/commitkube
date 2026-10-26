@@ -530,6 +530,8 @@ func main() {
 	post(api, "/kubernetes/pods/restart", handlers.PermK8sPodDelete, handlers.RestartPod)
 	post(api, "/kubernetes/pods/scale", handlers.PermK8sScale, handlers.ScalePodWorkload)
 	del(api, "/kubernetes/pods", handlers.PermK8sPodDelete, handlers.DeletePod)
+	post(api, "/kubernetes/replicasets/delete", handlers.PermK8sWorkloadDelete, handlers.DeleteReplicaSets)
+	post(api, "/kubernetes/replicasets/scale", handlers.PermK8sScale, handlers.ScaleReplicaSet)
 
 	get(api, "/users/me", handlers.PermSelf, handlers.GetMe)
 	get(api, "/users/me/keys", handlers.PermSelf, handlers.GetMyKeys)

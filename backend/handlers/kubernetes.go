@@ -331,19 +331,20 @@ func ListK8sResources(c *fiber.Ctx) error {
 					if desired == 0 {
 						status, text = "unknown", "scaled to zero"
 					}
-					owner := ""
+					owner, ownerKind := "", ""
 					if len(r.OwnerReferences) > 0 {
-						owner = r.OwnerReferences[0].Name
+						owner, ownerKind = r.OwnerReferences[0].Name, r.OwnerReferences[0].Kind
 					}
 					rows = append(rows, ResourceRow{
 						Name: r.Name, Namespace: r.Namespace, Age: shortAge(r.CreationTimestamp.Time),
 						Status: status, StatusText: text,
 						Fields: map[string]string{
-							"desired": fmt.Sprintf("%d", desired),
-							"current": fmt.Sprintf("%d", r.Status.Replicas),
-							"ready":   fmt.Sprintf("%d", r.Status.ReadyReplicas),
-							"owner":   owner,
-							"image":   podImage((r.Spec.Template.Spec.Containers)),
+							"owner_kind": ownerKind,
+							"desired":    fmt.Sprintf("%d", desired),
+							"current":    fmt.Sprintf("%d", r.Status.Replicas),
+							"ready":      fmt.Sprintf("%d", r.Status.ReadyReplicas),
+							"owner":      owner,
+							"image":      podImage((r.Spec.Template.Spec.Containers)),
 						},
 					})
 				}

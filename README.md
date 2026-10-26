@@ -66,6 +66,11 @@ dentro das suas aplicações.
 - **Navegador de recursos**: Deployments, ReplicaSets, DaemonSets,
   StatefulSets, Pods, Services, Ingresses, PVCs e Namespaces, com manifest e
   painel de detalhe (nunca serve o manifest de Secrets)
+- **ReplicaSets**: exclusão em lote por seleção, que apaga as revisões antigas
+  e só leva as que rodam pods com confirmação explícita, e escala por linha.
+  Uma ReplicaSet de um Deployment escala o Deployment, porque é a contagem
+  que o Kubernetes mantém. Exige `k8s.workload.delete` e `k8s.scale`, e a
+  service account precisa de `delete` em `replicasets`
 - **Pods**: CPU, memória e throttling de CFS (do `metrics.k8s.io` e do
   cadvisor de cada kubelet) com histórico; logs com streaming ao vivo;
   restart, scale e delete
@@ -170,7 +175,7 @@ e de time, com membros, papéis e acesso por grupo.
   renderizar. A sessão expira por inatividade e por duração máxima, gira a
   cada uso (reuso de um token gasto encerra a sessão inteira) e é revogada no
   logout, na troca de senha, de papel ou de MFA
-- **Permissões granulares** (29 concedíveis, de `k8s.read` a `audit.read`),
+- **Permissões granulares** (30 concedíveis, de `k8s.read` a `audit.read`),
   liberadas ou negadas por usuário ou grupo, em cima dos papéis root, admin e
   user. `iam.manage` é exclusiva de root e há no máximo 2 contas root
 - **Escopo de namespace** por cluster: quem tem escopo só vê os seus

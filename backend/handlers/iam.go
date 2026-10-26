@@ -30,7 +30,10 @@ const (
 	// Kubernetes, write
 	PermK8sPodDelete = "k8s.pod.delete" // delete and restart
 	PermK8sScale     = "k8s.scale"
-	PermClusterWrite = "cluster.manage" // import and remove clusters
+	// Deleting workload objects (ReplicaSets today). Separate from deleting a
+	// pod, which its controller recreates: this removes the controller.
+	PermK8sWorkloadDelete = "k8s.workload.delete"
+	PermClusterWrite      = "cluster.manage" // import and remove clusters
 
 	// Source control
 	PermSCMRead       = "scm.read"
@@ -98,7 +101,7 @@ const MaxRootUsers = 2
 // AllPermissions is the vocabulary, in the order the UI should list it.
 var AllPermissions = []string{
 	PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow, PermK8sSecretsWrite,
-	PermK8sPodDelete, PermK8sScale, PermClusterWrite,
+	PermK8sPodDelete, PermK8sScale, PermK8sWorkloadDelete, PermClusterWrite,
 	PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 	PermGitOpsSync, PermGitOpsManage,
 	PermSecurityRead, PermSecurityScan, PermSecurityTriage, PermCloudflareRead, PermCloudflareManage,
@@ -113,7 +116,7 @@ var rolePermissions = map[string][]string{
 	"root": append(append([]string{}, AllPermissions...), PermIAMManage),
 	"admin": {
 		PermK8sRead, PermK8sLogsRead, PermK8sSecretsRead, PermK8sSecretsShow, PermK8sSecretsWrite,
-		PermK8sPodDelete, PermK8sScale, PermClusterWrite,
+		PermK8sPodDelete, PermK8sScale, PermK8sWorkloadDelete, PermClusterWrite,
 		PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 		PermGitOpsSync, PermGitOpsManage,
 		PermSecurityRead, PermSecurityScan, PermSecurityTriage, PermCloudflareRead, PermCloudflareManage,

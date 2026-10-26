@@ -1,8 +1,14 @@
 "use client";
 
 import ResourceBrowser from "@/app/components/k8s/ResourceBrowser";
+import { usePermissions } from "@/app/components/usePermissions";
+import { PERMISSIONS } from "@/lib/permissions";
+import { DeleteReplicaSets, ScaleReplicaSet } from "./ReplicaSetActions";
 
 export default function Page() {
+  const { can } = usePermissions();
+  const canDelete = can(PERMISSIONS.workloadDelete);
+  const canScale = can(PERMISSIONS.scale);
   return (
     <ResourceBrowser
       kind="replicasets"
@@ -18,6 +24,8 @@ export default function Page() {
         { id: "ready", label: "Ready", align: "right" },
         { id: "age", label: "Age", align: "right" },
       ]}
+      bulkActions={canDelete ? (rows, done) => <DeleteReplicaSets rows={rows} done={done} /> : undefined}
+      rowAction={canScale ? (row, reload) => <ScaleReplicaSet row={row} reload={reload} /> : undefined}
     />
   );
 }
