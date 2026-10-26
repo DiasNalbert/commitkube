@@ -140,3 +140,28 @@ func TestRootCapIsTwo(t *testing.T) {
 		t.Fatalf("MaxRootUsers is %d; the agreed cap is 2", MaxRootUsers)
 	}
 }
+
+// Cloudflare shows a company's traffic and the ports open on its origins:
+// a plain account does not get it with security.read any more, only by an
+// explicit grant.
+func TestCloudflareIsItsOwnGrant(t *testing.T) {
+	has := func(role, perm string) bool {
+		for _, p := range rolePermissions[role] {
+			if p == perm {
+				return true
+			}
+		}
+		return false
+	}
+	if has("user", PermCloudflareRead) || has("user", PermCloudflareManage) {
+		t.Fatal("a plain user gets Cloudflare without a grant")
+	}
+	if !has("user", PermSecurityRead) {
+		t.Fatal("users keep security.read")
+	}
+	for _, role := range []string{"root", "admin"} {
+		if !has(role, PermCloudflareRead) || !has(role, PermCloudflareManage) {
+			t.Fatalf("%s lost Cloudflare access", role)
+		}
+	}
+}

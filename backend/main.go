@@ -501,23 +501,23 @@ func main() {
 	post(api, "/security/posture/assess", handlers.PermSecurityScan, handlers.RunPostureAssessment)
 	get(api, "/security/posture/remediation", handlers.PermSecurityRead, handlers.GetPostureRemediation)
 
-	// Cloudflare zones. Looking needs security.read; adding, changing and
-	// removing a zone handles its API token, so that is a permission of its
-	// own.
-	get(api, "/cloudflare/zones", handlers.PermSecurityRead, handlers.ListCloudflareZones)
+	// Cloudflare zones: a permission of their own, granted in IAM. Looking
+	// needs cloudflare.read; adding, changing and removing a zone (its API
+	// token) and checking on demand need cloudflare.manage.
+	get(api, "/cloudflare/zones", handlers.PermCloudflareRead, handlers.ListCloudflareZones)
 	post(api, "/cloudflare/zones", handlers.PermCloudflareManage, handlers.CreateCloudflareZone)
 	post(api, "/cloudflare/zones/verify", handlers.PermCloudflareManage, handlers.VerifyCloudflareZone)
-	get(api, "/cloudflare/zones/:id", handlers.PermSecurityRead, handlers.GetCloudflareZone)
+	get(api, "/cloudflare/zones/:id", handlers.PermCloudflareRead, handlers.GetCloudflareZone)
 	put(api, "/cloudflare/zones/:id", handlers.PermCloudflareManage, handlers.UpdateCloudflareZone)
 	del(api, "/cloudflare/zones/:id", handlers.PermCloudflareManage, handlers.DeleteCloudflareZone)
-	get(api, "/cloudflare/zones/:id/analytics", handlers.PermSecurityRead, handlers.GetCloudflareAnalytics)
-	get(api, "/cloudflare/zones/:id/alerts", handlers.PermSecurityRead, handlers.ListCloudflareAlerts)
-	post(api, "/cloudflare/zones/:id/poll", handlers.PermSecurityScan, handlers.PollCloudflareZoneNow)
-	get(api, "/cloudflare/zones/:id/exposure", handlers.PermSecurityRead, handlers.GetCloudflareExposure)
-	get(api, "/cloudflare/zones/:id/geo", handlers.PermSecurityRead, handlers.GetCloudflareGeo)
-	get(api, "/cloudflare/zones/:id/waf", handlers.PermSecurityRead, handlers.GetCloudflareWAF)
-	post(api, "/cloudflare/zones/:id/exposure/scan", handlers.PermSecurityScan, handlers.ScanCloudflareExposureNow)
-	get(api, "/cloudflare/alerts", handlers.PermSecurityRead, handlers.ListCloudflareAlerts)
+	get(api, "/cloudflare/zones/:id/analytics", handlers.PermCloudflareRead, handlers.GetCloudflareAnalytics)
+	get(api, "/cloudflare/zones/:id/alerts", handlers.PermCloudflareRead, handlers.ListCloudflareAlerts)
+	post(api, "/cloudflare/zones/:id/poll", handlers.PermCloudflareManage, handlers.PollCloudflareZoneNow)
+	get(api, "/cloudflare/zones/:id/exposure", handlers.PermCloudflareRead, handlers.GetCloudflareExposure)
+	get(api, "/cloudflare/zones/:id/geo", handlers.PermCloudflareRead, handlers.GetCloudflareGeo)
+	get(api, "/cloudflare/zones/:id/waf", handlers.PermCloudflareRead, handlers.GetCloudflareWAF)
+	post(api, "/cloudflare/zones/:id/exposure/scan", handlers.PermCloudflareManage, handlers.ScanCloudflareExposureNow)
+	get(api, "/cloudflare/alerts", handlers.PermCloudflareRead, handlers.ListCloudflareAlerts)
 
 	get(api, "/clusters", handlers.PermK8sRead, handlers.ListClusters)
 	post(api, "/clusters", handlers.PermClusterWrite, handlers.CreateCluster)

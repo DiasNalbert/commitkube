@@ -28,6 +28,7 @@ export const PERMISSIONS = {
   securityRead: "security.read",
   securityScan: "security.scan",
   securityTriage: "security.triage",
+  cloudflareRead: "cloudflare.read",
   cloudflareManage: "cloudflare.manage",
   vaultRead: "vault.read",
   vaultCreate: "vault.create",

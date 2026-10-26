@@ -51,9 +51,13 @@ const (
 	// Separate from running a scan, because this one changes the numbers
 	// everyone else reads.
 	PermSecurityTriage = "security.triage"
-	// Add, change and remove the Cloudflare zones being watched. Separate from
-	// security.read, which is enough to look at them: this one handles the
-	// API tokens.
+	// Cloudflare is its own grant, not part of security.read: the zones show
+	// a company's traffic, its origin addresses and the ports open on them,
+	// which is not for everyone who can read a CVE list.
+	// cloudflare.read looks; cloudflare.manage adds, changes and removes
+	// zones (it handles the API tokens) and runs checks on demand -- the
+	// exposure scan opens connections to the origin addresses.
+	PermCloudflareRead   = "cloudflare.read"
 	PermCloudflareManage = "cloudflare.manage"
 
 	// The vault. These gate the API surface, not the data: a vault key is
@@ -97,7 +101,7 @@ var AllPermissions = []string{
 	PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 	PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 	PermGitOpsSync, PermGitOpsManage,
-	PermSecurityRead, PermSecurityScan, PermSecurityTriage, PermCloudflareManage,
+	PermSecurityRead, PermSecurityScan, PermSecurityTriage, PermCloudflareRead, PermCloudflareManage,
 	PermVaultRead, PermVaultCreate, PermVaultWrite, PermVaultShare,
 	PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
 }
@@ -112,7 +116,7 @@ var rolePermissions = map[string][]string{
 		PermK8sPodDelete, PermK8sScale, PermClusterWrite,
 		PermSCMRead, PermSCMWrite, PermSCMApprove, PermTemplateRead, PermTemplateWrite,
 		PermGitOpsSync, PermGitOpsManage,
-		PermSecurityRead, PermSecurityScan, PermSecurityTriage, PermCloudflareManage,
+		PermSecurityRead, PermSecurityScan, PermSecurityTriage, PermCloudflareRead, PermCloudflareManage,
 		PermVaultRead, PermVaultCreate, PermVaultWrite, PermVaultShare,
 		PermSettingsRead, PermSettingsWrite, PermNotifyWrite, PermUserManage, PermAuditRead,
 	},

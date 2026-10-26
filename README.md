@@ -121,7 +121,10 @@ dentro das suas aplicações.
 ### Cloudflare
 
 Monitoramento de segurança por zona, a partir do zone ID, account ID e um API
-token da própria zona:
+token da própria zona. O acesso é concedido no IAM, à parte da segurança:
+`cloudflare.read` para ver e `cloudflare.manage` para gerenciar zonas e
+tokens e disparar verificações. Root e admin têm as duas; o papel user não
+vê a Cloudflare sem uma concessão:
 
 - **Analytics**: requisições, ameaças mitigadas, 4xx/5xx, cache, tráfego
   automatizado; paths, hosts, países, IPs, métodos e user agents
@@ -167,7 +170,7 @@ e de time, com membros, papéis e acesso por grupo.
   renderizar. A sessão expira por inatividade e por duração máxima, gira a
   cada uso (reuso de um token gasto encerra a sessão inteira) e é revogada no
   logout, na troca de senha, de papel ou de MFA
-- **Permissões granulares** (28 concedíveis, de `k8s.read` a `audit.read`),
+- **Permissões granulares** (29 concedíveis, de `k8s.read` a `audit.read`),
   liberadas ou negadas por usuário ou grupo, em cima dos papéis root, admin e
   user. `iam.manage` é exclusiva de root e há no máximo 2 contas root
 - **Escopo de namespace** por cluster: quem tem escopo só vê os seus

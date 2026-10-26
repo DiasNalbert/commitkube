@@ -28,7 +28,7 @@ function SignedInShell({ children, pathname }: { children: React.ReactNode; path
   const { can } = usePermissions();
   const user = useSessionUser();
   const isAdmin = user?.role === "root" || user?.role === "admin";
-  const badges = useBadges(can, { k8s: P.k8sRead, security: P.securityRead });
+  const badges = useBadges(can, { k8s: P.k8sRead, security: P.securityRead, cloudflare: P.cloudflareRead });
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);

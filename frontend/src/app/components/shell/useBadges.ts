@@ -10,10 +10,11 @@ export type Badges = Partial<Record<BadgeKey, number>>;
  *  critical security findings, open edge alerts. Each comes from a table the
  *  pollers already keep, never from a live cluster call, so the rail costs
  *  three index lookups a minute -- and none while the tab is hidden. */
-export function useBadges(can: (perm?: string) => boolean, perms: { k8s: string; security: string }): Badges {
+export function useBadges(can: (perm?: string) => boolean, perms: { k8s: string; security: string; cloudflare: string }): Badges {
   const [badges, setBadges] = useState<Badges>({});
   const canK8s = can(perms.k8s);
   const canSec = can(perms.security);
+  const canEdge = can(perms.cloudflare);
 
   useEffect(() => {
     let stopped = false;
@@ -34,6 +35,8 @@ export function useBadges(can: (perm?: string) => boolean, perms: { k8s: string;
           if (!d) return;
           next.security = (d.code_totals?.critical ?? 0) + (d.image_totals?.critical ?? 0);
         }).catch(() => {}));
+      }
+      if (canEdge) {
         jobs.push(apiFetch("/cloudflare/alerts?limit=1").then(r => r.ok ? r.json() : null).then(d => {
           if (d && typeof d.open === "number") next.edge = d.open;
         }).catch(() => {}));
@@ -46,7 +49,7 @@ export function useBadges(can: (perm?: string) => boolean, perms: { k8s: string;
     const onVisible = () => { if (!document.hidden) load(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => { stopped = true; clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
-  }, [canK8s, canSec]);
+  }, [canK8s, canSec, canEdge]);
 
   return badges;
 }

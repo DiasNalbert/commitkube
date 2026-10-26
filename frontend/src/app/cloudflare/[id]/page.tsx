@@ -142,7 +142,7 @@ export default function ZonePage() {
     } catch { /* storage blocked: defaults are fine */ }
     loadPermissions().then(p => {
       setCanManage(p.size === 0 || p.has(PERMISSIONS.cloudflareManage));
-      setCanPoll(p.size === 0 || p.has(PERMISSIONS.securityScan));
+      setCanPoll(p.size === 0 || p.has(PERMISSIONS.cloudflareManage));
     });
   }, []);
 

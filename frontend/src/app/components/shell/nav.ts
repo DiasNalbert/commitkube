@@ -73,7 +73,7 @@ export const MODULES: NavModule[] = [
     // Not under Cluster: a zone is not bound to the cluster selected above.
     key: "edge", label: "Cloudflare", badge: "edge",
     items: [
-      { href: "/cloudflare", label: "Zones & exposure", perm: P.securityRead, badge: "edge", match: ["/cloudflare/"] },
+      { href: "/cloudflare", label: "Zones & exposure", perm: P.cloudflareRead, badge: "edge", match: ["/cloudflare/"] },
     ],
   },
   {

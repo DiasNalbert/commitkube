@@ -36,7 +36,8 @@ const DESCRIPTIONS: Record<string, string> = {
   "security.read": "View security findings",
   "security.scan": "Trigger a scan by hand",
   "security.triage": "Suppress findings as false positives or accepted risk",
-  "cloudflare.manage": "Add, change and remove Cloudflare zones and their API tokens",
+  "cloudflare.read": "View Cloudflare zones: traffic, WAF, origin exposure and alerts",
+  "cloudflare.manage": "Add, change and remove Cloudflare zones and their API tokens, and run checks on demand",
   "vault.read": "Open the vaults they belong to and reveal their secrets",
   "vault.create": "Create vaults and add new secrets to them",
   "vault.write": "Edit and delete existing secrets, delete vaults they own",
@@ -51,7 +52,8 @@ const DESCRIPTIONS: Record<string, string> = {
 const GROUPS: [string, string[]][] = [
   ["Kubernetes", ["k8s.read", "k8s.logs.read", "k8s.secrets.read", "k8s.secrets.show", "k8s.secrets.write", "k8s.pod.delete", "k8s.scale", "cluster.manage"]],
   ["Source control", ["scm.read", "scm.write", "scm.approve", "template.read", "template.write", "gitops.sync", "gitops.manage"]],
-  ["Security", ["security.read", "security.scan", "security.triage", "cloudflare.manage"]],
+  ["Security", ["security.read", "security.scan", "security.triage"]],
+  ["Cloudflare", ["cloudflare.read", "cloudflare.manage"]],
   // What someone may do in the vault. Inside a team vault their role there
   // still applies on top: a reader in that vault stays a reader.
   ["Vault", ["vault.read", "vault.create", "vault.write", "vault.share"]],
