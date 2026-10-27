@@ -15,7 +15,14 @@ ENV NEXT_PUBLIC_API_URL=/api
 RUN npm run build
 
 FROM node:20-alpine
-RUN apk add --no-cache ca-certificates sqlite nginx wget git openssh-client
+RUN apk add --no-cache ca-certificates sqlite wget git openssh-client
+
+# nginx comes from nginx.org's own Alpine repository: Alpine's stable branch
+# ships 1.28, which gets no fix for CVE-2026-15176 and friends. The version
+# floor makes the build fail instead of quietly falling back to Alpine's.
+RUN wget -qO /etc/apk/keys/nginx_signing.rsa.pub https://nginx.org/keys/nginx_signing.rsa.pub \
+    && echo "https://nginx.org/packages/alpine/v$(cut -d. -f1,2 /etc/alpine-release)/main" >> /etc/apk/repositories \
+    && apk add --no-cache 'nginx>=1.30.6'
 
 # Install Trivy
 RUN wget -qO /tmp/trivy-install.sh https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
