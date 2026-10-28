@@ -159,6 +159,12 @@ type ScanResult struct {
 	// show -- has to come from UpdatedAt: CreatedAt never moves again.
 	CreatedAt    time.Time `json:"first_scanned_at"`
 	UpdatedAt    time.Time `json:"scanned_at"`
+	// CodeScannedAt is when the code half was last scanned -- the clone and
+	// filesystem pass. UpdatedAt cannot say: the daily image-only pass
+	// rewrites the row too, so by UpdatedAt the code never looked stale and
+	// a repository nobody pushed to was never scanned for new CVEs in its
+	// dependencies or for secrets again. Nil on rows from before it existed.
+	CodeScannedAt *time.Time `json:"code_scanned_at"`
 	RepoName     string    `gorm:"index;not null" json:"repo_name"`
 	Critical     int       `json:"critical"`
 	High         int       `json:"high"`
@@ -1063,6 +1069,18 @@ type GitOpsRepo struct {
 	WebhookSecret string     `gorm:"type:text" json:"-"` // encrypted
 	LastPushAt    *time.Time `json:"last_push_at"`
 	CreatedBy     uint       `json:"created_by"`
+}
+
+// SSHKnownHost is the host key pinned for a Git server at the first
+// successful SSH connection to it, for servers whose keys are not built in
+// (the big hosts publish theirs). Host is the known_hosts name: "host", or
+// "[host]:port" off port 22.
+type SSHKnownHost struct {
+	ID          uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	Host        string    `gorm:"uniqueIndex;not null" json:"host"`
+	KnownHosts  string    `gorm:"type:text;not null" json:"-"`
+	Fingerprint string    `json:"fingerprint"`
 }
 
 // GitOpsApp is one repository path kept in sync with a cluster.

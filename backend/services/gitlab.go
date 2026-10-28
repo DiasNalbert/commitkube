@@ -1,6 +1,9 @@
 package services
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type GitlabClient struct {
 	Token     string
@@ -18,7 +21,8 @@ func NewGitlabClient(token, namespace, baseURL string) *GitlabClient {
 func (g *GitlabClient) CloneURL(_, repoName string) string {
 	host := "gitlab.com"
 	if g.BaseURL != "" && g.BaseURL != "https://gitlab.com" {
-		host = g.BaseURL
+		// BaseURL is the web address; SSH wants the bare host.
+		host = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(g.BaseURL, "https://"), "http://"), "/")
 	}
 	return fmt.Sprintf("git@%s:%s/%s.git", host, g.Namespace, repoName)
 }

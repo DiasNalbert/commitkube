@@ -1086,6 +1086,7 @@ func PreflightRepository(c *fiber.Ctx) error {
 		"--no-progress",
 		scanDir,
 	)
+	trivyCmd.Env = trivyEnv()
 	trivyOut, trivyErr := trivyCmd.CombinedOutput()
 
 	if trivyErr != nil {

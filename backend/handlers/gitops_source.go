@@ -35,6 +35,10 @@ type gitopsRepoAccess struct {
 	// sshOnly: refuse every transport but ssh, so a URL cannot reach for
 	// ext:: or file:// on the server.
 	sshOnly bool
+	// pinGlobally: an unpinned host's key is pinned for every clone once
+	// this one succeeds (see pinIfNew). Connected repositories pin their
+	// own key on the connection instead.
+	pinGlobally bool
 }
 
 func (a *gitopsRepoAccess) env() []string {
@@ -82,16 +86,16 @@ func gitopsAccess(repoName string) (*gitopsRepoAccess, error) {
 	if err != nil {
 		return nil, fmt.Errorf("repository %s has no workspace: %v", repoName, err)
 	}
-	keyFile, err := writeAccessKey(repoCloneKey(repo, ws))
-	if err != nil {
-		return nil, fmt.Errorf("repository %s: %v", repoName, err)
-	}
 	provider := repo.Provider
 	if provider == "" {
 		provider = "bitbucket"
 	}
 	url := services.NewSCMClient(provider, ws.Username, "", ws.WorkspaceID).CloneURL(ws.WorkspaceID, repoName)
-	return &gitopsRepoAccess{url: url, keyFile: keyFile, knownHosts: keyFile + ".known_hosts"}, nil
+	acc, err := newSCMAccess(url, repoCloneKey(repo, ws))
+	if err != nil {
+		return nil, fmt.Errorf("repository %s: %v", repoName, err)
+	}
+	return acc, nil
 }
 
 // connectionAccess is the access for a connected repository.
@@ -279,6 +283,7 @@ func gitopsCheckout(acc *gitopsRepoAccess, branch string) (dir, revision string,
 		cleanup()
 		return "", "", nil, err
 	}
+	acc.pinIfNew()
 	return dir, strings.TrimSpace(string(rev)), cleanup, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +102,29 @@ func trivyCacheArgs() []string {
 	return args
 }
 
+// trivyEnv is the whole environment a Trivy run gets: what it needs to find
+// its way out (proxies, CA bundles), its own configuration, and the cloud
+// credentials a registry pull may rely on -- plus extra, the credential
+// resolved for the one image it scans. Not the API's environment: that holds
+// ENCRYPTION_KEY and JWT_SECRET, and a scanner has no use for either. The
+// v0.69.4 release (CVE-2026-33634) was built to steal exactly what the
+// process running it could see.
+func trivyEnv(extra ...string) []string {
+	keep := []string{"PATH=", "HOME=", "TMPDIR=", "TRIVY_", "HTTP_PROXY=", "HTTPS_PROXY=", "NO_PROXY=",
+		"http_proxy=", "https_proxy=", "no_proxy=", "SSL_CERT_", "DOCKER_CONFIG=", "DOCKER_HOST=",
+		"AWS_", "GOOGLE_APPLICATION_CREDENTIALS=", "AZURE_"}
+	var env []string
+	for _, kv := range os.Environ() {
+		for _, p := range keep {
+			if strings.HasPrefix(kv, p) {
+				env = append(env, kv)
+				break
+			}
+		}
+	}
+	return append(env, extra...)
+}
+
 // EnqueueScan schedules a scan, collapsing duplicates: a repository already
 // waiting is not queued twice, so ten pushes in a minute cost one scan.
 func EnqueueScan(repoName string, mode ScanMode) {
@@ -191,6 +215,7 @@ func UpdateTrivyDB() {
 	}
 
 	cmd := exec.Command("trivy", "image", "--cache-dir", dir, "--download-db-only", "--no-progress")
+	cmd.Env = trivyEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Printf("trivy database update failed: %s\n", string(out))
 		return
@@ -204,6 +229,10 @@ func UpdateTrivyDB() {
 		fmt.Printf("trivy vulnerability database ready in %s\n", dir)
 	}
 }
+
+// enqueueRescan is how PollRescans queues work; tests replace it to see the
+// decision without running scans.
+var enqueueRescan = EnqueueScan
 
 // PollRescans enqueues the repositories whose findings have gone stale. Both
 // cadences exist because the two passes cost very different amounts: an image
@@ -244,16 +273,19 @@ func PollRescans() {
 		if err != nil {
 			// Never scanned: a full pass is the only one that can produce
 			// anything, since there is nothing to rescan yet.
-			EnqueueScan(repo.Name, ScanFull)
+			enqueueRescan(repo.Name, ScanFull)
 			full++
 			continue
 		}
+		// The code half has its own clock: the image-only pass rewrites the
+		// row daily, so UpdatedAt alone never let the code go stale. A row
+		// from before the clock existed has never had a scheduled code pass.
 		switch {
-		case now.Sub(last.UpdatedAt) >= fullAge:
-			EnqueueScan(repo.Name, ScanFull)
+		case last.CodeScannedAt == nil || now.Sub(*last.CodeScannedAt) >= fullAge:
+			enqueueRescan(repo.Name, ScanFull)
 			full++
 		case now.Sub(last.UpdatedAt) >= imageAge:
-			EnqueueScan(repo.Name, ScanImage)
+			enqueueRescan(repo.Name, ScanImage)
 			image++
 		}
 	}

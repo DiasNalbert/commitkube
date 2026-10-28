@@ -222,7 +222,7 @@ e de time, com membros, papéis e acesso por grupo.
 | Vault | WebCrypto (P-256, AES-GCM) + Argon2id (hash-wasm) |
 | Proxy | nginx |
 | Cluster | client-go (typed + dynamic), `metrics.k8s.io`, cadvisor |
-| Scans | Trivy |
+| Scans | Trivy 0.76.1 (versão e checksum fixos no Dockerfile; roda sem acesso às variáveis secretas do CommitKube) |
 | GitOps | git + OpenSSH, Helm 3, Kustomize 5 (versões e checksums fixos no Dockerfile) |
 | Autenticação | JWT + TOTP |
 | Criptografia em repouso | AES-256-GCM |

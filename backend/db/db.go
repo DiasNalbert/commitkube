@@ -110,6 +110,7 @@ func ConnectDB() {
 		&models.ScanFinding{},
 		&models.ScanSuppression{},
 		&models.GitOpsRepo{},
+		&models.SSHKnownHost{},
 		&models.GitOpsApp{},
 		&models.GitOpsResource{},
 		&models.GitOpsSync{},

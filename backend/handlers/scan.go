@@ -117,7 +117,7 @@ func scanImage(image string, userID uint) (TrivyReport, error) {
 		"--no-progress",
 	)
 
-	env := os.Environ()
+	var env []string
 	cred := ResolveRegistryCredential(image, userID)
 	if cred != nil {
 		switch cred.Type {
@@ -143,7 +143,7 @@ func scanImage(image string, userID uint) (TrivyReport, error) {
 
 	args = append(args, image)
 	trivyCmd := exec.Command("trivy", args...)
-	trivyCmd.Env = env
+	trivyCmd.Env = trivyEnv(env...)
 	if out, err := trivyCmd.CombinedOutput(); err != nil {
 		return TrivyReport{}, fmt.Errorf("trivy image scan failed: %s", strings.TrimSpace(string(out)))
 	}
@@ -322,15 +322,6 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 	if sshKeyOverride != "" {
 		sshKey = sshKeyOverride
 	}
-	sshKey = strings.ReplaceAll(sshKey, `\n`, "\n")
-	sshKey = strings.ReplaceAll(sshKey, "\r\n", "\n")
-	sshKey = strings.TrimSpace(sshKey) + "\n"
-
-	keyFile := filepath.Join(os.TempDir(), "trivy-key-"+scanID)
-	defer os.Remove(keyFile)
-	if err := os.WriteFile(keyFile, []byte(sshKey), 0600); err != nil {
-		return fmt.Errorf("failed to prepare credentials: %w", err)
-	}
 
 	provider := repo.Provider
 	if provider == "" {
@@ -338,13 +329,19 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 	}
 	scmClient := services.NewSCMClient(provider, ws.Username, "", ws.WorkspaceID)
 	repoURL := scmClient.CloneURL(ws.WorkspaceID, repoName)
-	cloneCmd := exec.Command("git", "clone", "--depth=1", repoURL, scanDir)
-	cloneCmd.Env = append(os.Environ(),
-		fmt.Sprintf("GIT_SSH_COMMAND=ssh -i %s -o StrictHostKeyChecking=no", keyFile),
-	)
-	if out, err := cloneCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to clone repository: %s", string(out))
+	// The server must present its pinned host key: the scanned code is only
+	// worth anything if it came from the repository.
+	acc, err := newSCMAccess(repoURL, sshKey)
+	if err != nil {
+		return fmt.Errorf("failed to prepare credentials: %w", err)
 	}
+	defer acc.close()
+	cloneCmd := exec.Command("git", "clone", "--depth=1", "--", repoURL, scanDir)
+	cloneCmd.Env = acc.env()
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to clone repository: %s", explainGitError(string(out), err))
+	}
+	acc.pinIfNew()
 
 	reportFile := filepath.Join(os.TempDir(), "trivy-report-"+scanID+".json")
 	defer os.Remove(reportFile)
@@ -359,6 +356,7 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 		scanDir,
 	)
 	trivyCmd := exec.Command("trivy", fsArgs...)
+	trivyCmd.Env = trivyEnv()
 	if out, err := trivyCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("trivy scan failed: %s", string(out))
 	}
@@ -406,6 +404,7 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 	previous := existing // counts as they stood before this pass
 
 	existing.RepoName = repoName
+	existing.CodeScannedAt = &now
 	existing.Critical = counts["CRITICAL"]
 	existing.High = counts["HIGH"]
 	existing.Medium = counts["MEDIUM"]

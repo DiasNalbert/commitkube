@@ -30,6 +30,13 @@ type gitSSHServer struct {
 
 func startGitSSHServer(t *testing.T, root string, authorized ssh.PublicKey) *gitSSHServer {
 	t.Helper()
+	return startGitSSHServerOn(t, "127.0.0.1:0", root, authorized)
+}
+
+// startGitSSHServerOn is startGitSSHServer on a chosen address, with a host
+// key of its own -- a different server answering where another one was.
+func startGitSSHServerOn(t *testing.T, addr, root string, authorized ssh.PublicKey) *gitSSHServer {
+	t.Helper()
 	_, hostPriv, _ := ed25519.GenerateKey(rand.Reader)
 	hostSigner, _ := ssh.NewSignerFromKey(hostPriv)
 	cfg := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
@@ -39,7 +46,7 @@ func startGitSSHServer(t *testing.T, root string, authorized ssh.PublicKey) *git
 		return nil, fmt.Errorf("unknown key")
 	}}
 	cfg.AddHostKey(hostSigner)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
