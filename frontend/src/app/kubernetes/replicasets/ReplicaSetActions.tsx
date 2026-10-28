@@ -8,6 +8,9 @@ type Result = { namespace: string; name: string; outcome: string; message: strin
 
 const desired = (r: ResourceRow) => Number(r.fields?.desired ?? "0");
 
+// Mirrors the per-request limit in DeleteReplicaSets on the backend.
+const BATCH = 200;
+
 /** Deletes the selected ReplicaSets. Old revisions (scaled to zero) are
  *  cleanup; one that runs pods takes them down with it, so those are only
  *  included when the person ticks the box that says so. */
@@ -21,17 +24,33 @@ export function DeleteReplicaSets({ rows, done }: { rows: ResourceRow[]; done: (
   const running = rows.filter(r => desired(r) > 0);
   const retired = rows.length - running.length;
 
+  // The API takes at most BATCH per request, so a larger selection goes in
+  // turns. A batch that fails stops the rest; what earlier batches already
+  // did is still shown, since those deletions happened.
   const submit = async () => {
     setBusy(true);
     setError("");
-    const res = await apiFetch("/kubernetes/replicasets/delete", {
-      method: "POST",
-      body: JSON.stringify({ items: rows.map(r => ({ namespace: r.namespace, name: r.name })), allow_running: allowRunning }),
-    });
-    const body = await res.json().catch(() => ({}));
+    const all: Result[] = [];
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const res = await apiFetch("/kubernetes/replicasets/delete", {
+        method: "POST",
+        body: JSON.stringify({
+          items: rows.slice(i, i + BATCH).map(r => ({ namespace: r.namespace, name: r.name })),
+          allow_running: allowRunning,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = body.error ?? `Request failed (${res.status})`;
+        setError(all.length ? `Stopped after ${all.length} of ${rows.length}: ${msg}` : msg);
+        if (all.length) setResults(all);
+        setBusy(false);
+        return;
+      }
+      all.push(...(body.results ?? []));
+    }
     setBusy(false);
-    if (!res.ok) { setError(body.error ?? `Request failed (${res.status})`); return; }
-    setResults(body.results ?? []);
+    setResults(all);
   };
 
   const close = () => {
@@ -95,6 +114,7 @@ export function DeleteReplicaSets({ rows, done }: { rows: ResourceRow[]; done: (
                     </div>
                   ))}
                 </div>
+                {error && <p className="m-0 text-xs" style={{ color: "var(--red)" }}>{error}</p>}
                 <div className="flex justify-end"><button type="button" onClick={close} className="btn-primary">Done</button></div>
               </>
             )}
