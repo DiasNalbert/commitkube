@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,9 +12,7 @@ import (
 	"github.com/kubecommit/backend/models"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 )
 
@@ -31,10 +27,10 @@ import (
 //   - an object is the engine's to delete only if the engine applied it and
 //     it still carries the engine's tracking annotation for that app.
 //
-// It is narrower on purpose: namespaced objects, in the application's own
-// namespace. That keeps the access it needs grantable one namespace at a
-// time, and leaves cluster-wide objects (CRDs, ClusterRoles) to whoever
-// installs the platform.
+// By default it is narrower on purpose: namespaced objects, in the
+// application's own namespace, which keeps the access it needs grantable
+// one namespace at a time. An application with ClusterScope may also
+// manage cluster-scoped objects and other namespaces.
 
 const (
 	gitopsFieldManager    = "commitkube"
@@ -70,64 +66,43 @@ type gitopsManifest struct {
 	File string
 }
 
-// readManifests reads every Kubernetes object under dir. Files that are not
-// Kubernetes objects -- a pipeline definition, a values file -- are skipped:
-// only a document with apiVersion and kind is a manifest.
+// readManifests reads every Kubernetes object under dir.
 func readManifests(dir string) ([]gitopsManifest, error) {
+	return readManifestsFiltered(dir, nil, nil)
+}
+
+// readManifestsFiltered reads the YAML files under dir that the include
+// globs admit (all, when there are none) and the exclude globs do not.
+// Kustomization files and Helm charts below dir are skipped: they are not
+// plain manifests, and an application points at them directly instead.
+func readManifestsFiltered(dir string, include, exclude []string) ([]gitopsManifest, error) {
 	var out []gitopsManifest
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+		rel := relPath(dir, p)
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") && p != dir {
+			if p == dir {
+				return nil
+			}
+			if strings.HasPrefix(d.Name(), ".") || isHelmChart(p) || globMatch(exclude, rel) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		name := d.Name()
-		if name == "kustomization.yaml" || name == "kustomization.yml" || name == "Chart.yaml" {
-			return fmt.Errorf("%s: Kustomize and Helm sources are not supported yet; point the application at a directory of plain manifests", relPath(dir, p))
-		}
-		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+		if !isYAML(name) || name == "kustomization.yaml" || name == "kustomization.yml" {
 			return nil
 		}
-		f, err := os.Open(p)
+		if (len(include) > 0 && !globMatch(include, rel)) || globMatch(exclude, rel) {
+			return nil
+		}
+		m, err := readManifestFile(p, rel)
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		dec := k8syaml.NewYAMLOrJSONDecoder(f, 4096)
-		for {
-			var doc map[string]any
-			if err := dec.Decode(&doc); err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				return fmt.Errorf("%s: %v", relPath(dir, p), err)
-			}
-			if doc == nil {
-				continue
-			}
-			if _, ok := doc["apiVersion"].(string); !ok {
-				continue
-			}
-			if _, ok := doc["kind"].(string); !ok {
-				continue
-			}
-			obj := &unstructured.Unstructured{Object: doc}
-			if obj.IsList() {
-				if err := obj.EachListItem(func(o runtime.Object) error {
-					u := o.(*unstructured.Unstructured)
-					out = append(out, gitopsManifest{Obj: u.DeepCopy(), File: relPath(dir, p)})
-					return nil
-				}); err != nil {
-					return fmt.Errorf("%s: %v", relPath(dir, p), err)
-				}
-				continue
-			}
-			out = append(out, gitopsManifest{Obj: obj, File: relPath(dir, p)})
-		}
+		out = append(out, m...)
 		return nil
 	})
 	return out, err
@@ -187,22 +162,22 @@ func prepareTargets(app *models.GitOpsApp, kube gitopsKube, manifests []gitopsMa
 		}
 		gvr, namespaced, err := kube.Mapping(gvk)
 		if err != nil {
-			fail(fmt.Sprintf("the cluster does not know %s %s (is its CRD installed?)", gvk.GroupVersion(), gvk.Kind))
+			fail(fmt.Sprintf("the cluster does not know %s %s (%s)", gvk.GroupVersion(), gvk.Kind, unknownKindHint))
 			continue
 		}
-		if !namespaced {
-			fail(fmt.Sprintf("%s is cluster-scoped; CommitKube GitOps only manages objects inside the application's namespace", gvk.Kind))
+		switch {
+		case !namespaced && !app.ClusterScope:
+			fail(fmt.Sprintf("%s is cluster-scoped; turn on cluster scope for this application to manage it", gvk.Kind))
 			continue
-		}
-		switch obj.GetNamespace() {
-		case "":
+		case !namespaced:
+			obj.SetNamespace("")
+		case obj.GetNamespace() == "":
 			obj.SetNamespace(app.Namespace)
-		case app.Namespace:
-		default:
-			fail(fmt.Sprintf("it is in namespace %s; this application deploys to %s", obj.GetNamespace(), app.Namespace))
+		case obj.GetNamespace() != app.Namespace && !app.ClusterScope:
+			fail(fmt.Sprintf("it is in namespace %s; this application deploys to %s (turn on cluster scope to allow other namespaces)", obj.GetNamespace(), app.Namespace))
 			continue
 		}
-		res.Namespace = app.Namespace
+		res.Namespace = obj.GetNamespace()
 		k := res.key()
 		if prev, dup := seen[k]; dup {
 			fail(fmt.Sprintf("%s %s is also declared in %s", gvk.Kind, obj.GetName(), prev))
@@ -366,14 +341,17 @@ func apiMessage(err error) string {
 // ---- syncing -----------------------------------------------------------------------
 
 // kindOrder is the order in which kinds are applied, from gitops-engine
-// (pkg/sync/sync_tasks.go, Apache-2.0), reduced to namespaced kinds. Kinds
-// it does not list -- custom resources -- go last.
+// (pkg/sync/sync_tasks.go, Apache-2.0): namespaces and CRDs before what
+// lives in them, config before the workloads that read it. Kinds it does
+// not list -- custom resources -- go last.
 var gitopsKindOrder = func() map[string]int {
 	kinds := []string{
-		"NetworkPolicy", "ResourceQuota", "LimitRange", "PodDisruptionBudget", "ServiceAccount",
-		"Secret", "ConfigMap", "PersistentVolumeClaim", "Role", "RoleBinding", "Service",
-		"DaemonSet", "Pod", "ReplicationController", "ReplicaSet", "Deployment",
-		"HorizontalPodAutoscaler", "StatefulSet", "Job", "CronJob", "Ingress",
+		"Namespace", "NetworkPolicy", "ResourceQuota", "LimitRange", "PodSecurityPolicy", "PodDisruptionBudget",
+		"ServiceAccount", "Secret", "SecretList", "ConfigMap", "StorageClass", "PersistentVolume",
+		"PersistentVolumeClaim", "CustomResourceDefinition", "ClusterRole", "ClusterRoleList",
+		"ClusterRoleBinding", "ClusterRoleBindingList", "Role", "RoleList", "RoleBinding", "RoleBindingList",
+		"Service", "DaemonSet", "Pod", "ReplicationController", "ReplicaSet", "Deployment",
+		"HorizontalPodAutoscaler", "StatefulSet", "Job", "CronJob", "IngressClass", "Ingress", "APIService",
 	}
 	m := map[string]int{}
 	for i, k := range kinds {
@@ -381,6 +359,10 @@ var gitopsKindOrder = func() map[string]int {
 	}
 	return m
 }()
+
+// unknownKindHint ends the message for a kind the cluster does not serve;
+// a sync recognizes it to retry once the CRDs it applied are established.
+const unknownKindHint = "is its CRD installed?"
 
 func lessByKindOrder(kindA, nameA, kindB, nameB string) bool {
 	if d := gitopsKindOrder[kindA] - gitopsKindOrder[kindB]; d != 0 {

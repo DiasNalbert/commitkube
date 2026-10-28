@@ -23,18 +23,37 @@ dentro das suas aplicações.
 - **Detalhe do repositório**: navegador de código com edição e commit,
   branches, commits, pipelines do Bitbucket (disparar, parar, ver steps e logs),
   scans e análise por IA
-- **GitOps próprio**: um caminho de um repositório mantido aplicado num
-  namespace, sem ArgoCD. A cada poucos minutos o CommitKube compara a branch
-  com o cluster usando o dry-run do próprio API server (server-side apply),
-  mostra o diff de cada objeto, aplica commits novos com auto-sync, desfaz
-  edições manuais com self-heal e apaga o que saiu do Git com prune — só o
-  que ele mesmo aplicou e que ainda carrega a marca da aplicação. Manifestos
-  inválidos voltam com a mensagem do API server antes de qualquer escrita.
-  Escopo desta versão: manifestos YAML puros e objetos dentro do namespace da
-  aplicação (Kustomize, Helm e objetos de cluster ficam com quem instala a
-  plataforma). A escrita é concedida namespace a namespace; a tela mostra o
-  que falta e o RBAC exato. Um repositório novo pode nascer já com a
-  aplicação, no lugar do ArgoCD
+- **GitOps próprio**, no lugar do ArgoCD:
+  - **Repositórios por SSH**: qualquer host Git (GitHub, GitLab, Bitbucket,
+    Gitea ou próprio). O CommitKube gera um par de chaves e mostra a pública
+    para cadastrar como deploy key, ou aceita uma chave privada existente (sem
+    passphrase, guardada cifrada). O teste de conexão lista as branches e fixa a
+    chave do host na primeira conexão; se ela mudar depois, a conexão para e
+    avisa em vez de confiar na nova
+  - **Aplicações**: um caminho do repositório (pasta ou arquivo único)
+    mantido aplicado no cluster. O caminho é escolhido num navegador de pastas
+    que já diz o que cada uma é. Lê manifestos YAML puros (com subpastas e
+    filtros include/exclude por glob), overlays **Kustomize** (`kustomize
+    build`) e charts **Helm** (`helm template`, com arquivos de values e values
+    inline). O tipo pode ser detectado automaticamente
+  - **Sincronização**: compara a branch com o cluster usando o dry-run do
+    próprio API server (server-side apply) e mostra o diff de cada objeto.
+    Aplica commits novos com auto-sync, desfaz edições manuais com self-heal e
+    apaga o que saiu do Git com prune (só o que ele mesmo aplicou e que ainda
+    carrega a marca da aplicação). Manifestos inválidos voltam com a mensagem
+    do API server antes de qualquer escrita. CRDs e os recursos que dependem
+    deles podem vir no mesmo sync
+  - **Webhook de push**: cada repositório tem uma URL e um segredo próprios
+    (assinatura HMAC `X-Hub-Signature-256`/`X-Hub-Signature` ou
+    `X-Gitlab-Token`). Um push atualiza na hora as aplicações daquela branch;
+    sem webhook, o ciclo de `GITOPS_INTERVAL` continua valendo
+  - **Escopo**: por padrão, só objetos do namespace da aplicação, com escrita
+    concedida namespace a namespace; a tela mostra o que falta e o RBAC exato.
+    Com **cluster scope** ligado na aplicação, ela também gerencia objetos de
+    cluster (Namespaces, CRDs, ClusterRoles) e outros namespaces, e o RBAC
+    sugerido passa a ser de escrita no cluster todo. Só quem não está restrito
+    a namespaces pode ligar essa opção
+  - Um repositório criado pelo CommitKube pode nascer já com a aplicação
 - **Templates** YAML por workspace ou projeto, com variáveis globais e por
   projeto (inclusive secured)
 - **Golden paths**: um jeito pronto de criar um tipo de serviço. Cada um traz
@@ -204,6 +223,7 @@ e de time, com membros, papéis e acesso por grupo.
 | Proxy | nginx |
 | Cluster | client-go (typed + dynamic), `metrics.k8s.io`, cadvisor |
 | Scans | Trivy |
+| GitOps | git + OpenSSH, Helm 3, Kustomize 5 (versões e checksums fixos no Dockerfile) |
 | Autenticação | JWT + TOTP |
 | Criptografia em repouso | AES-256-GCM |
 

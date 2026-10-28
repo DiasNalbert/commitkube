@@ -109,6 +109,7 @@ func ConnectDB() {
 		&models.ScanHistory{},
 		&models.ScanFinding{},
 		&models.ScanSuppression{},
+		&models.GitOpsRepo{},
 		&models.GitOpsApp{},
 		&models.GitOpsResource{},
 		&models.GitOpsSync{},

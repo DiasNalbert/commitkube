@@ -6,10 +6,11 @@ import { apiFetch } from "@/lib/api";
 import { PERMISSIONS } from "@/lib/permissions";
 import { usePermissions } from "@/app/components/usePermissions";
 import { useShellRefresh } from "@/app/components/shell/refresh";
-import { Status, ago, shortSha, type GitopsApp, type GitopsResource, type GitopsSync } from "../shared";
+import AppForm from "../AppForm";
+import { GitopsTabs, SOURCE_LABEL, Status, ago, shortSha, type GitopsApp, type GitopsResource, type GitopsSync } from "../shared";
 
-type Detail = { app: GitopsApp; cluster: string; resources: GitopsResource[]; syncs: GitopsSync[] };
-type Access = { identity: string; namespace: string; missing: string[]; grant: string; error?: string };
+type Detail = { app: GitopsApp; cluster: string; source: string; resources: GitopsResource[]; syncs: GitopsSync[] };
+type Access = { identity: string; namespace: string; scope?: "namespace" | "cluster"; missing: string[]; grant: string; error?: string };
 
 function DiffBlock({ diff }: { diff: string }) {
   return (
@@ -31,13 +32,15 @@ function AccessPanel({ appId }: { appId: number }) {
   }, [appId]);
   if (!a) return <p className="m-0 text-xs" style={{ color: "var(--m2)" }}>Asking the cluster what CommitKube may do…</p>;
   if (a.error) return <p className="m-0 text-xs" style={{ color: "var(--red)" }}>{a.error}</p>;
+  const cluster = a.scope === "cluster";
+  const where = cluster ? "across the cluster" : `in ${a.namespace}`;
   if (a.missing.length === 0) {
-    return <p className="m-0 text-[13px]" style={{ color: "var(--green)" }}>✓ {a.identity || "CommitKube"} can write everything an application needs in {a.namespace}.</p>;
+    return <p className="m-0 text-[13px]" style={{ color: "var(--green)" }}>✓ {a.identity || "CommitKube"} can write everything an application needs {where}.</p>;
   }
   return (
     <div className="flex flex-col gap-2">
       <p className="m-0 text-[13px]" style={{ color: "var(--gold)" }}>
-        {a.identity || "CommitKube"} cannot yet write in {a.namespace}: {a.missing.length} permission{a.missing.length === 1 ? "" : "s"} missing
+        {a.identity || "CommitKube"} cannot yet write {where}: {a.missing.length} permission{a.missing.length === 1 ? "" : "s"} missing
         ({a.missing.slice(0, 4).join(", ")}{a.missing.length > 4 ? ", …" : ""}). Apply this once, as a cluster admin:
       </p>
       <div className="flex justify-end">
@@ -46,7 +49,9 @@ function AccessPanel({ appId }: { appId: number }) {
       </div>
       <pre className="m-0 p-3 font-mono text-[11px] leading-[1.6] overflow-x-auto" style={{ background: "var(--side)", border: "1px solid var(--rule)", color: "var(--t2)" }}>{a.grant}</pre>
       <p className="m-0 text-xs" style={{ color: "var(--m2)" }}>
-        The ClusterRole holds no RBAC objects on purpose: a deployer that can write RoleBindings can grant itself anything.
+        {cluster
+          ? "Cluster scope means write access to everything, RBAC included: whoever can commit to this application's path can grant themselves anything in the cluster."
+          : "The ClusterRole holds no RBAC objects on purpose: a deployer that can write RoleBindings can grant itself anything."}
       </p>
     </div>
   );
@@ -61,6 +66,7 @@ export default function GitopsAppPage() {
   const [openDiff, setOpenDiff] = useState<number | null>(null);
   const [openRun, setOpenRun] = useState<number | null>(null);
   const [showAccess, setShowAccess] = useState(false);
+  const [editingSource, setEditingSource] = useState(false);
 
   const { markSynced } = useShellRefresh(() => load());
   const load = useCallback(async () => {
@@ -122,11 +128,18 @@ export default function GitopsAppPage() {
 
   return (
     <div className="max-w-[1280px] flex flex-col gap-8 pb-10">
+      <GitopsTabs active="apps" />
       <a href="/gitops" className="text-[12.5px] no-underline self-start" style={{ color: "var(--t3)" }}>← Applications</a>
       <section className="flex flex-col gap-4 max-w-[1000px]">
         <h1 className="m-0 text-[26px] md:text-[30px] leading-[1.25] font-medium tracking-[-0.02em]">{headline}</h1>
         <p className="m-0 text-[13px] font-mono" style={{ color: "var(--t3)" }}>
-          {app.repo_name}{app.path ? `/${app.path}` : ""} @ {app.branch} → {d.cluster} / {app.namespace}
+          {app.gitops_repo_id ? <a href={`/gitops/repos/${app.gitops_repo_id}`} style={{ color: "inherit" }}>{d.source}</a> : d.source}
+          {app.path ? `/${app.path}` : ""} @ {app.branch} → {d.cluster} / {app.namespace}{app.cluster_scope ? " (cluster scope)" : ""}
+        </p>
+        <p className="m-0 text-xs" style={{ color: "var(--m2)" }}>
+          {app.source_type === "auto" ? `Auto-detected${app.rendered_as ? `: ${SOURCE_LABEL[app.rendered_as] ?? app.rendered_as}` : ""}` : SOURCE_LABEL[app.source_type] ?? app.source_type}
+          {(app.rendered_as || app.source_type) === "helm" && ` · release ${app.helm_release_name || app.name}`}
+          {app.include && ` · include ${app.include}`}{app.exclude && ` · exclude ${app.exclude}`}
         </p>
         <div className="flex gap-2.5 flex-wrap items-center">
           {canSync && <button type="button" disabled={!!busy} onClick={() => act("sync")} className="btn-primary disabled:opacity-50">{busy === "sync" ? "Syncing…" : `Sync ${shortSha(app.revision)}`}</button>}
@@ -153,8 +166,12 @@ export default function GitopsAppPage() {
           <label className="flex items-center gap-2"><input type="checkbox" disabled={!!busy} checked={app.auto_sync} onChange={e => save({ auto_sync: e.target.checked, self_heal: e.target.checked && app.self_heal })} /> Auto-sync new commits</label>
           <label className="flex items-center gap-2" style={{ opacity: app.auto_sync ? 1 : 0.5 }}><input type="checkbox" disabled={!!busy || !app.auto_sync} checked={app.self_heal} onChange={e => save({ self_heal: e.target.checked })} /> Self-heal hand edits</label>
           <label className="flex items-center gap-2"><input type="checkbox" disabled={!!busy} checked={app.prune} onChange={e => save({ prune: e.target.checked })} /> Prune what leaves Git</label>
-          <button type="button" onClick={remove} className="ml-auto text-[12.5px] p-0" style={{ color: "var(--red)" }}>Remove application</button>
+          <button type="button" onClick={() => setEditingSource(v => !v)} className="text-[12.5px] p-0 ml-auto" style={{ color: "var(--green)" }}>{editingSource ? "Close source settings" : "Edit source"}</button>
+          <button type="button" onClick={remove} className="text-[12.5px] p-0" style={{ color: "var(--red)" }}>Remove application</button>
         </section>
+      )}
+      {canManage && editingSource && (
+        <AppForm app={{ ...app, cluster: d.cluster }} onCancel={() => setEditingSource(false)} onDone={() => { setEditingSource(false); load(); }} />
       )}
 
       <section className="flex flex-col">

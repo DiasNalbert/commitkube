@@ -1023,12 +1023,49 @@ type VaultItem struct {
 
 // ---- GitOps ---------------------------------------------------------------
 //
-// CommitKube's own GitOps engine: a repository path, kept applied to one
-// namespace of one cluster. The engine is deliberately narrow -- namespaced
-// objects in the application's own namespace only -- so the write access it
-// needs can be granted namespace by namespace, never cluster-wide.
+// CommitKube's own GitOps engine: a repository path, rendered and kept
+// applied to a cluster. By default an application only touches namespaced
+// objects in its own namespace, so the write access it needs can be granted
+// namespace by namespace; ClusterScope lifts that for the one application
+// that asks.
 
-// GitOpsApp is one repository path kept in sync with one namespace.
+// GitOpsRepo is a Git repository connected over SSH for GitOps, independent
+// of the repositories CommitKube creates: any host, any provider, reached
+// with a key of its own.
+type GitOpsRepo struct {
+	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Name      string    `gorm:"uniqueIndex;not null" json:"name"`
+	// URL is an SSH clone URL: git@host:org/repo.git or ssh://...
+	URL string `gorm:"not null" json:"url"`
+
+	// KeySource is "generated" (CommitKube made the pair and only the public
+	// half ever left it) or "imported" (someone pasted a private key).
+	KeySource      string `json:"key_source"`
+	SSHPubKey      string `gorm:"type:text" json:"ssh_pub_key"`
+	SSHPrivKey     string `gorm:"type:text" json:"-"` // encrypted
+	KeyFingerprint string `json:"key_fingerprint"`
+	// KnownHosts pins the server's host key from the first successful
+	// connection; every later one must present the same key.
+	KnownHosts string `gorm:"type:text" json:"-"`
+	HostKey    string `json:"host_key"` // fingerprint of the pinned key, for display
+
+	// Status is pending (never tested), connected or failed.
+	Status        string     `gorm:"default:'pending'" json:"status"`
+	Message       string     `gorm:"type:text" json:"message"`
+	CheckedAt     *time.Time `json:"checked_at"`
+	DefaultBranch string     `json:"default_branch"`
+
+	// A push webhook reaches /api/gitops/webhook/<WebhookID>, signed with
+	// WebhookSecret. The id is random so the URL names nothing guessable.
+	WebhookID     string     `gorm:"uniqueIndex" json:"webhook_id"`
+	WebhookSecret string     `gorm:"type:text" json:"-"` // encrypted
+	LastPushAt    *time.Time `json:"last_push_at"`
+	CreatedBy     uint       `json:"created_by"`
+}
+
+// GitOpsApp is one repository path kept in sync with a cluster.
 type GitOpsApp struct {
 	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
 	CreatedAt time.Time `json:"created_at"`
@@ -1036,10 +1073,33 @@ type GitOpsApp struct {
 	// Name is unique and is what the tracking label carries.
 	Name      string `gorm:"uniqueIndex;not null" json:"name"`
 	ClusterID uint   `gorm:"index;not null" json:"cluster_id"`
-	RepoName  string `gorm:"index;not null" json:"repo_name"`
-	Branch    string `gorm:"not null;default:'main'" json:"branch"`
+	// The source is a connected repository (GitOpsRepoID) or, for
+	// applications made when CommitKube created the repository, RepoName.
+	GitOpsRepoID *uint  `gorm:"column:gitops_repo_id;index" json:"gitops_repo_id"`
+	RepoName     string `gorm:"index;not null" json:"repo_name"`
+	Branch       string `gorm:"not null;default:'main'" json:"branch"`
+	// Path is a directory or a single manifest file.
 	Path      string `json:"path"`
 	Namespace string `gorm:"not null" json:"namespace"`
+
+	// SourceType is how Path becomes manifests: directory, kustomize, helm,
+	// or auto (decided from what Path holds on every read).
+	SourceType string `gorm:"default:'auto'" json:"source_type"`
+	// Directory only: comma-separated globs, matched against each file's
+	// path inside Path and against its name.
+	Include string `json:"include"`
+	Exclude string `json:"exclude"`
+	// Helm only. ReleaseName defaults to the application's name;
+	// HelmValueFiles are paths inside the chart, one per line; HelmValues
+	// is YAML applied over them.
+	HelmReleaseName string `json:"helm_release_name"`
+	HelmValueFiles  string `gorm:"type:text" json:"helm_value_files"`
+	HelmValues      string `gorm:"type:text" json:"helm_values"`
+
+	// ClusterScope lets the application manage cluster-scoped objects
+	// (Namespaces, CRDs, ClusterRoles) and objects in other namespaces.
+	// Off, everything must live in Namespace.
+	ClusterScope bool `json:"cluster_scope"`
 
 	// AutoSync applies a new commit as soon as it is seen; SelfHeal also
 	// re-applies when someone changes the live objects by hand; Prune
@@ -1048,8 +1108,10 @@ type GitOpsApp struct {
 	SelfHeal bool `json:"self_heal"`
 	Prune    bool `json:"prune"`
 
-	// The last refresh: the commit it read and what it found.
+	// The last refresh: the commit it read, how it rendered it (what auto
+	// resolved to), and what it found.
 	Revision    string     `json:"revision"`
+	RenderedAs  string     `json:"rendered_as"`
 	SyncStatus  string     `json:"sync_status"`  // Synced | OutOfSync | Unknown
 	Health      string     `json:"health"`       // Healthy | Progressing | Degraded | Missing | Suspended | Unknown
 	Message     string     `json:"message"`      // why Unknown, when it is

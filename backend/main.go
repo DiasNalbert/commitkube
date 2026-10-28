@@ -385,6 +385,19 @@ func main() {
 	app.Post("/api/auth/setup-init", authLimit, handlers.SetupInit)
 	app.Post("/api/auth/setup-confirm", authLimit, handlers.SetupConfirm)
 
+	// Git providers call this on every push. It is public because they hold
+	// no session; the handler verifies each request against the
+	// connection's secret, and the limit keeps a flood from becoming a
+	// stream of clones.
+	webhookLimit := limiter.New(limiter.Config{
+		Max:        120,
+		Expiration: time.Minute,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return c.IP()
+		},
+	})
+	app.Post("/api/gitops/webhook/:id", webhookLimit, handlers.GitopsWebhook)
+
 	api := app.Group("/api", middleware.AuthRequired())
 
 	post(api, "/repositories", handlers.PermSCMWrite, handlers.CreateRepository)
@@ -495,6 +508,15 @@ func main() {
 	post(api, "/gitops/apps/:id/refresh", handlers.PermGitOpsSync, handlers.RefreshGitopsApp)
 	post(api, "/gitops/apps/:id/sync", handlers.PermGitOpsSync, handlers.SyncGitopsApp)
 	get(api, "/gitops/apps/:id/access", handlers.PermK8sRead, handlers.GetGitopsAccess)
+	get(api, "/gitops/repos", handlers.PermK8sRead, handlers.ListGitopsRepos)
+	post(api, "/gitops/repos", handlers.PermGitOpsManage, handlers.CreateGitopsRepo)
+	get(api, "/gitops/repos/:id", handlers.PermK8sRead, handlers.GetGitopsRepo)
+	put(api, "/gitops/repos/:id", handlers.PermGitOpsManage, handlers.UpdateGitopsRepo)
+	del(api, "/gitops/repos/:id", handlers.PermGitOpsManage, handlers.DeleteGitopsRepo)
+	post(api, "/gitops/repos/:id/test", handlers.PermGitOpsManage, handlers.TestGitopsRepoConnection)
+	get(api, "/gitops/repos/:id/branches", handlers.PermGitOpsManage, handlers.GetGitopsRepoBranches)
+	get(api, "/gitops/repos/:id/tree", handlers.PermGitOpsManage, handlers.GetGitopsRepoTree)
+	get(api, "/gitops/repos/:id/webhook", handlers.PermGitOpsManage, handlers.GetGitopsRepoWebhook)
 	get(api, "/kubernetes/pod-security", handlers.PermSecurityRead, handlers.GetPodSecurity)
 	get(api, "/security/posture", handlers.PermSecurityRead, handlers.GetPosture)
 	get(api, "/security/posture/history", handlers.PermSecurityRead, handlers.GetPostureHistory)
@@ -676,6 +698,7 @@ func main() {
 		"/api/auth/logout":        true,
 		"/api/auth/setup-init":    true,
 		"/api/auth/setup-confirm": true,
+		"/api/gitops/webhook/:id": true,
 	}); err != nil {
 		log.Fatalf("route permission audit failed: %v", err)
 	}

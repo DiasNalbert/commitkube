@@ -125,10 +125,6 @@ func TestReadManifests(t *testing.T) {
 	if strings.Join(names, ",") != "Deployment/api,Service/api,ConfigMap/from-list" {
 		t.Fatalf("manifests = %v", names)
 	}
-	kdir := writeRepo(t, map[string]string{"kustomization.yaml": "resources: [a.yaml]\n"})
-	if _, err := readManifests(kdir); err == nil || !strings.Contains(err.Error(), "Kustomize") {
-		t.Fatalf("kustomize should be refused clearly, got %v", err)
-	}
 }
 
 func TestCompareAndSync(t *testing.T) {
@@ -250,17 +246,22 @@ func TestAdmissionRefusalIsValidation(t *testing.T) {
 	}
 }
 
-func TestSourceDirStaysInsideTheRepo(t *testing.T) {
-	root := writeRepo(t, map[string]string{"k8s/a.yaml": "x: 1"})
-	if _, err := sourceDir(root, "../../etc"); err == nil {
-		// Clean("/" + "../../etc") is /etc, joined under root: it must not
-		// exist there, so this fails as missing rather than escaping.
+func TestSourcePathStaysInsideTheRepo(t *testing.T) {
+	root := writeRepo(t, map[string]string{"k8s/a.yaml": "x: 1", "README.md": "hi"})
+	if _, _, err := sourcePath(root, "../../etc"); err == nil {
+		t.Fatal("../../etc resolved")
 	}
-	if d, err := sourceDir(root, "k8s"); err != nil || d != filepath.Join(root, "k8s") {
-		t.Fatalf("k8s: %q %v", d, err)
+	if d, isDir, err := sourcePath(root, "k8s"); err != nil || !isDir || d != filepath.Join(root, "k8s") {
+		t.Fatalf("k8s: %q %v %v", d, isDir, err)
 	}
-	if d, err := sourceDir(root, ""); err != nil || d != root {
+	if d, isDir, err := sourcePath(root, ""); err != nil || !isDir || d != root {
 		t.Fatalf("root: %q %v", d, err)
+	}
+	if d, isDir, err := sourcePath(root, "k8s/a.yaml"); err != nil || isDir || d != filepath.Join(root, "k8s/a.yaml") {
+		t.Fatalf("file: %q %v %v", d, isDir, err)
+	}
+	if _, _, err := sourcePath(root, "README.md"); err == nil {
+		t.Fatal("a non-YAML file was accepted as a source")
 	}
 }
 
