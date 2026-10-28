@@ -30,6 +30,7 @@ func TestClassifyReplicaSet(t *testing.T) {
 	}{
 		{rsOf("api-old", "api", "6", 0), "retired"},
 		{rsOf("api-new", "api", "7", 2), "current"},
+		{rsOf("api-idle", "api", "7", 0), "current"},    // a Deployment scaled to zero: still its revision
 		{rsOf("api-rolling", "api", "6", 1), "current"}, // mid-rollout, still serving
 		{rsOf("orphan", "gone", "3", 1), "standalone"},  // its Deployment was deleted
 		{rsOf("plain", "", "", 1), "standalone"},

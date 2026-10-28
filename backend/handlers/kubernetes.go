@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -319,8 +320,23 @@ func ListK8sResources(c *fiber.Ctx) error {
 				if err != nil {
 					return k8sError(c, err)
 				}
+				// The Deployments decide which ReplicaSet is each one's
+				// current revision. Best effort: without them every owned
+				// ReplicaSet reads as having no role.
+				deploys := map[string]*appsv1.Deployment{}
+				if dl, err := typed.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{}); err == nil {
+					for i := range dl.Items {
+						deploys[dl.Items[i].Namespace+"/"+dl.Items[i].Name] = &dl.Items[i]
+					}
+				}
 				for i := range list.Items {
 					r := &list.Items[i]
+					role := ""
+					if owner := owningDeployment(r); owner == "" {
+						role = "standalone"
+					} else if d := deploys[r.Namespace+"/"+owner]; d != nil {
+						role = roleOf(r, d).Kind
+					}
 					desired := int64(0)
 					if r.Spec.Replicas != nil {
 						desired = int64(*r.Spec.Replicas)
@@ -340,6 +356,7 @@ func ListK8sResources(c *fiber.Ctx) error {
 						Status: status, StatusText: text,
 						Fields: map[string]string{
 							"owner_kind": ownerKind,
+							"role":       role,
 							"desired":    fmt.Sprintf("%d", desired),
 							"current":    fmt.Sprintf("%d", r.Status.Replicas),
 							"ready":      fmt.Sprintf("%d", r.Status.ReadyReplicas),

@@ -32,29 +32,44 @@ type replicaSetRole struct {
 }
 
 func classifyReplicaSet(ctx context.Context, typed kubernetes.Interface, rs *appsv1.ReplicaSet) replicaSetRole {
+	owner := owningDeployment(rs)
+	if owner == "" {
+		return roleOf(rs, nil)
+	}
+	d, err := typed.AppsV1().Deployments(rs.Namespace).Get(ctx, owner, metav1.GetOptions{})
+	if err != nil {
+		return roleOf(rs, nil)
+	}
+	return roleOf(rs, d)
+}
+
+func owningDeployment(rs *appsv1.ReplicaSet) string {
+	for _, o := range rs.OwnerReferences {
+		if o.Kind == "Deployment" {
+			return o.Name
+		}
+	}
+	return ""
+}
+
+// roleOf classifies a ReplicaSet against the Deployment that owns it (nil
+// when none does, or it is gone: then nothing will recreate it). The list
+// and the delete use this same rule, so what the page calls retired is
+// exactly what a delete removes without question.
+func roleOf(rs *appsv1.ReplicaSet, d *appsv1.Deployment) replicaSetRole {
 	role := replicaSetRole{Kind: "standalone"}
 	if rs.Spec.Replicas != nil {
 		role.Replicas = *rs.Spec.Replicas
 	}
-	for _, o := range rs.OwnerReferences {
-		if o.Kind != "Deployment" {
-			continue
-		}
-		role.Deployment = o.Name
-		role.Kind = "retired"
-		d, err := typed.AppsV1().Deployments(rs.Namespace).Get(ctx, o.Name, metav1.GetOptions{})
-		if err != nil {
-			// The Deployment is gone: nothing will recreate this one.
-			role.Kind = "standalone"
-			role.Deployment = ""
-			return role
-		}
-		if rev := rs.Annotations[revisionAnnotation]; rev != "" && rev == d.Annotations[revisionAnnotation] {
-			role.Kind = "current"
-		} else if role.Replicas > 0 {
-			// Mid-rollout: an old revision still running pods.
-			role.Kind = "current"
-		}
+	if d == nil {
+		return role
+	}
+	role.Deployment, role.Kind = d.Name, "retired"
+	if rev := rs.Annotations[revisionAnnotation]; rev != "" && rev == d.Annotations[revisionAnnotation] {
+		role.Kind = "current"
+	} else if role.Replicas > 0 {
+		// Mid-rollout: an old revision still running pods.
+		role.Kind = "current"
 	}
 	return role
 }
@@ -105,6 +120,15 @@ func DeleteReplicaSets(c *fiber.Ctx) error {
 			continue
 		}
 		role := classifyReplicaSet(ctx, typed, rs)
+		// The current revision of a Deployment scaled to zero runs nothing,
+		// but deleting it is not cleanup: the Deployment controller makes
+		// it again at once, under the same name. Never worth doing.
+		if role.Kind == "current" && role.Replicas == 0 {
+			r.Outcome = "skipped"
+			r.Message = fmt.Sprintf("current revision of Deployment %s, which is scaled to zero: Kubernetes would recreate it at once. Delete the Deployment to remove it", role.Deployment)
+			results = append(results, r)
+			continue
+		}
 		running := role.Kind == "current" || (role.Kind == "standalone" && role.Replicas > 0)
 		if running && !req.AllowRunning {
 			r.Outcome = "skipped"
