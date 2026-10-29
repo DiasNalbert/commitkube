@@ -25,7 +25,11 @@ export const REASON_LABEL: Record<string, string> = {
 
 export function describeSuppression(s: Suppression) {
   const scope = s.repo_name ? "this repository" : "all repositories";
-  const pkg = s.pkg ? `package ${s.pkg}` : "any package";
+  // CommitKube's own static-analysis rules are named ck-*, and for them the
+  // package is a fingerprint of the matched code rather than a package.
+  const pkg = s.vuln_id.startsWith("ck-")
+    ? (s.pkg ? "this occurrence" : "every occurrence")
+    : (s.pkg ? `package ${s.pkg}` : "any package");
   const by = s.created_by_email ? ` by ${s.created_by_email}` : "";
   const until = s.expires_at ? ` · until ${new Date(s.expires_at).toLocaleDateString("en-US")}` : "";
   return `${REASON_LABEL[s.reason] ?? s.reason} · ${scope}, ${pkg}${by}${until}${s.note ? ` — ${s.note}` : ""}`;
@@ -35,11 +39,14 @@ export function describeSuppression(s: Suppression) {
  *  things an auditor will ask later: why, how wide, for how long, and who.
  *  Who comes from the session. */
 export default function SuppressForm({
-  repo, vulnId, pkg, onDone, onCancel,
+  repo, vulnId, pkg, weakness = false, onDone, onCancel,
 }: {
   repo: string;
   vulnId: string;
   pkg: string;
+  /** A code weakness: pkg is a fingerprint of the matched code, so the
+   *  narrow decision is "this occurrence" and the wide one "this rule". */
+  weakness?: boolean;
   onDone: () => void;
   onCancel: () => void;
 }) {
@@ -83,7 +90,7 @@ export default function SuppressForm({
     <div className="rounded border border-zinc-700 bg-zinc-900/60 p-3 space-y-2 text-xs">
       <div className="flex flex-wrap items-center gap-3">
         <span className="font-mono text-zinc-300">{vulnId}</span>
-        {pkg && <span className="font-mono text-zinc-500">{pkg}</span>}
+        {pkg && !weakness && <span className="font-mono text-zinc-500">{pkg}</span>}
       </div>
       <div className="flex flex-wrap gap-3 items-end">
         <label className="flex flex-col gap-1">
@@ -103,7 +110,7 @@ export default function SuppressForm({
         {pkg && (
           <label className="flex items-center gap-1.5 text-zinc-400 pb-1.5">
             <input type="checkbox" checked={anyPkg} onChange={e => setAnyPkg(e.target.checked)} />
-            any package
+            {weakness ? "every place this rule matches" : "any package"}
           </label>
         )}
       </div>

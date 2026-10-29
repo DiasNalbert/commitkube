@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/kubecommit/backend/db"
 	"github.com/kubecommit/backend/models"
+	"gorm.io/gorm"
 )
 
 func GetScanHistory(c *fiber.Ctx) error {
@@ -32,8 +33,12 @@ func GetScanHistory(c *fiber.Ctx) error {
 // that changes the stored counts has to call it -- the full scan and the
 // image-only rescan alike -- or the timeline shows a flat line where the
 // numbers actually moved.
+//
+// The static-analysis numbers are read from the open findings rather than
+// passed in: every caller would otherwise have to tally them, and the one
+// that forgot would draw a false drop to zero.
 func recordScanHistory(r models.ScanResult) {
-	db.DB.Create(&models.ScanHistory{
+	h := models.ScanHistory{
 		RepoName:      r.RepoName,
 		Critical:      r.Critical,
 		High:          r.High,
@@ -43,7 +48,21 @@ func recordScanHistory(r models.ScanResult) {
 		ImageHigh:     r.ImageHigh,
 		ImageMedium:   r.ImageMedium,
 		ImageLow:      r.ImageLow,
-	})
+	}
+	var n int64
+	db.DB.Model(&models.ScanResult{}).Where("repo_name = ? AND sast_scanned_at IS NOT NULL", r.RepoName).Count(&n)
+	if n > 0 {
+		var weak []finding
+		for _, f := range openFindings(r.RepoName, FindingDomainCode) {
+			if f.Kind == FindingWeakness {
+				weak = append(weak, f)
+			}
+		}
+		w := countFindings(weak)
+		h.SastScanned = true
+		h.SastCritical, h.SastHigh, h.SastMedium, h.SastLow = w["CRITICAL"], w["HIGH"], w["MEDIUM"], w["LOW"]
+	}
+	db.DB.Create(&h)
 }
 
 // GetScanStatus is what the dashboards poll to stay live: a version that
@@ -103,6 +122,10 @@ func ReconcileScanHistory() {
 			Critical: r.Critical, High: r.High, Medium: r.Medium, Low: r.Low,
 			ImageCritical: r.ImageCritical, ImageHigh: r.ImageHigh,
 			ImageMedium: r.ImageMedium, ImageLow: r.ImageLow,
+			// What drifted is the image half; the static-analysis numbers
+			// stand as the last point had them.
+			SastScanned: h.SastScanned, SastCritical: h.SastCritical, SastHigh: h.SastHigh,
+			SastMedium: h.SastMedium, SastLow: h.SastLow,
 		})
 	}
 	if len(missing) > 0 {
@@ -126,8 +149,11 @@ func (s severityCounts) add(o severityCounts) severityCounts {
 }
 
 func countsFor(h models.ScanHistory, domain string) severityCounts {
-	if domain == "container" {
+	switch domain {
+	case "container":
 		return severityCounts{h.ImageCritical, h.ImageHigh, h.ImageMedium, h.ImageLow}
+	case "sast":
+		return severityCounts{h.SastCritical, h.SastHigh, h.SastMedium, h.SastLow}
 	}
 	return severityCounts{h.Critical, h.High, h.Medium, h.Low}
 }
@@ -173,6 +199,14 @@ type timelineSplit struct {
 	BaselineTo    severityCounts `json:"baseline_to"`
 	AddedRepos    int            `json:"added_repos"`
 	Added         severityCounts `json:"added"`
+	// NewChecks is what static analysis found the first time it ran on a
+	// repository that was already being scanned. The line includes it -- the
+	// findings are real -- but the code did not get worse that day; the
+	// scanner started looking at more. It is kept out of the baseline
+	// comparison, the movers and the changes for the same reason a newly
+	// onboarded repository is.
+	NewChecks     severityCounts `json:"new_checks"`
+	NewCheckRepos int            `json:"new_check_repos"`
 }
 
 // buildScanTimeline turns individual scans into one point per day: the sum,
@@ -211,6 +245,14 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 	points := make([]timelinePoint, 0, buckets)
 	var changes []timelineChange
 	var baseline map[string]severityCounts // as of the first bucket anything was tracked
+	var newChecks severityCounts
+	newCheckRepos := 0
+	sastSeen := map[string]bool{}
+	for _, h := range before {
+		if h.SastScanned {
+			sastSeen[h.RepoName] = true
+		}
+	}
 	i := 0
 	for d := 0; d < buckets; d++ {
 		dayStart := bucketStart(d)
@@ -218,6 +260,22 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 		for i < len(within) && within[i].CreatedAt.Before(dayEnd) {
 			h := within[i]
 			c := countsFor(h, domain)
+			// Static analysis arriving in a repository already tracked: what
+			// it finds is treated as having been there all along, so neither
+			// the change list nor the movers read it as a regression.
+			if domain == "code" && h.SastScanned && !sastSeen[h.RepoName] {
+				sastSeen[h.RepoName] = true
+				if prev, tracked := current[h.RepoName]; tracked {
+					found := severityCounts{h.SastCritical, h.SastHigh, h.SastMedium, h.SastLow}
+					current[h.RepoName] = prev.add(found)
+					first[h.RepoName] = first[h.RepoName].add(found)
+					if b, ok := baseline[h.RepoName]; ok {
+						baseline[h.RepoName] = b.add(found)
+					}
+					newChecks = newChecks.add(found)
+					newCheckRepos++
+				}
+			}
 			if _, seen := first[h.RepoName]; !seen {
 				first[h.RepoName] = c
 			}
@@ -244,7 +302,7 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 		points = append(points, timelinePoint{Date: dayStart.In(loc).Format(label), Repos: len(current), severityCounts: sum})
 	}
 
-	var split timelineSplit
+	split := timelineSplit{NewChecks: newChecks, NewCheckRepos: newCheckRepos}
 	for repo, to := range current {
 		if from, ok := baseline[repo]; ok {
 			split.BaselineRepos++
@@ -293,7 +351,7 @@ func buildScanTimeline(before, within []models.ScanHistory, domain string, start
 // for the same repositories the dashboard shows.
 func GetScanTimeline(c *fiber.Ctx) error {
 	domain := c.Query("domain", "code")
-	if domain != "container" {
+	if domain != "container" && domain != "sast" {
 		domain = "code"
 	}
 	days := c.QueryInt("days", 90)
@@ -326,14 +384,25 @@ func GetScanTimeline(c *fiber.Ctx) error {
 		start = current.Add(-time.Duration((buckets-1)*bucketHours) * time.Hour)
 	}
 
+	// For static analysis only the points that measured it count: a
+	// repository's first one is then its onboarding, exactly as its first
+	// scan is for the other domains, and not a jump up from a zero nobody
+	// measured.
+	measured := func(q *gorm.DB) *gorm.DB {
+		if domain == "sast" {
+			return q.Where("sast_scanned = ?", true)
+		}
+		return q
+	}
 	var before, within []models.ScanHistory
 	if len(repoNames) > 0 {
 		db.DB.Where("id IN (?)",
 			db.DB.Model(&models.ScanHistory{}).Select("MAX(id)").
 				Where("repo_name IN ? AND created_at < ?", repoNames, start).
+				Scopes(measured).
 				Group("repo_name"),
 		).Find(&before)
-		db.DB.Where("repo_name IN ? AND created_at >= ?", repoNames, start).Find(&within)
+		db.DB.Where("repo_name IN ? AND created_at >= ?", repoNames, start).Scopes(measured).Find(&within)
 	}
 
 	points, movers, split, changes := buildScanTimeline(before, within, domain, start, buckets, bucketHours, loc)

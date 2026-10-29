@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { apiFetch } from "@/lib/api";
 import SecurityTimeline from "./SecurityTimeline";
+import WeaknessesPanel from "./WeaknessesPanel";
 import SuppressForm, { describeSuppression, type Suppression } from "./FindingTriage";
 import { exportFindingsCSV, exportFindingsPDF, type ExportContext } from "@/lib/findings-export";
 import { usePermissions } from "@/app/components/usePermissions";
@@ -37,14 +38,21 @@ interface RepoResult {
   image_low: number;
   image_error: string;
   secrets: number;
+  /** Findings from static analysis of the code itself. */
+  weaknesses?: number;
+  /** Why the last static-analysis pass did not run; its earlier findings stay open. */
+  sast_error?: string;
   suppressed: number;
 }
 
 interface Finding {
   target: string;
-  type: string; // vulnerability | misconfiguration | secret
+  type: string; // vulnerability | misconfiguration | secret | weakness
   vuln_id: string;
+  /** For a weakness, a fingerprint of the matched code: it identifies the
+   *  finding for triage and means nothing to a reader, so it is not shown. */
   pkg: string;
+  cwe?: string;
   line?: number;
   version: string;
   fixed: string;
@@ -67,6 +75,10 @@ interface RepoDetail {
   medium: number;
   low: number;
   secrets: number;
+  /** Findings from static analysis of the code itself. */
+  weaknesses?: number;
+  /** Why the last static-analysis pass did not run; its earlier findings stay open. */
+  sast_error?: string;
   suppressed: number;
   new_findings: number;
   resolved_30d: number;
@@ -121,8 +133,23 @@ const ImageSourceTag = ({ source }: { source: string }) => {
 };
 
 const KIND_LABEL: Record<string, string> = {
-  vulnerability: "vuln", misconfiguration: "misconfig", secret: "secret",
+  vulnerability: "vuln", misconfiguration: "misconfig", secret: "secret", weakness: "code",
 };
+
+/** Where a finding is: a file and line for anything found in the source. */
+const findingWhere = (f: Finding) =>
+  (f.type === "secret" || f.type === "weakness") && f.line ? `${f.target}:${f.line}` : f.target;
+
+const WeaknessesBadge = ({ count }: { count: number }) =>
+  count > 0 ? (
+    <span
+      className="inline-flex flex-col items-center px-3 py-1.5 rounded text-sm font-semibold min-w-[56px] bg-sky-100 text-sky-700 border border-sky-300 dark:bg-sky-900/40 dark:text-sky-300 dark:border-sky-500/40"
+      title="Weaknesses in the code itself -- injection, paths and URLs taken from the request -- found by static analysis. Counted in the severities too."
+    >
+      <span className="text-sm font-bold tabular-nums">{count}</span>
+      <span className="text-[9px] font-medium opacity-80">CODE</span>
+    </span>
+  ) : null;
 
 const SecretsBadge = ({ count }: { count: number }) =>
   count > 0 ? (
@@ -159,7 +186,7 @@ export type SecurityDomain = "code" | "container";
 const DOMAIN_COPY: Record<SecurityDomain, { title: string; subtitle: string; empty: string }> = {
   code: {
     title: "Code Security",
-    subtitle: "Vulnerabilities, misconfigurations and secrets found in repository code.",
+    subtitle: "Weaknesses in the code itself, plus vulnerable dependencies, misconfigurations and secrets found in the repository.",
     empty: "No code scan yet. Run a Security Scan from a repository page.",
   },
   container: {
@@ -200,6 +227,9 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
   const [projects, setProjects] = useState<Record<number, Project[]>>({});
   const [selectedWsId, setSelectedWsId] = useState<number | null>(null);
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
+  // The code page has a second view: the static-analysis weaknesses alone,
+  // aggregated across repositories, over the same scope.
+  const [view, setView] = useState<"repos" | "weaknesses">("repos");
 
   const buildParams = useCallback((wsId: number | null, pk: string | null, p: number, s = "") => {
     const params = new URLSearchParams();
@@ -460,6 +490,25 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
         </div>
       )}
 
+      {isCode && (
+        <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800" role="tablist" aria-label="View">
+          {([["repos", "Repositories"], ["weaknesses", "Code weaknesses"]] as const).map(([v, label]) => (
+            <button
+              key={v}
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${view === v ? "border-brand-green text-brand-green" : "border-transparent text-zinc-400 hover:text-zinc-200"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {isCode && view === "weaknesses" ? (
+        <WeaknessesPanel wsId={selectedWsId} projectKey={selectedProjectKey} refreshKey={refreshKey} />
+      ) : (<>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         {(["CRITICAL","HIGH","MEDIUM","LOW"] as const).map(sev => {
           const active = repoSevFilter === sev;
@@ -538,6 +587,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                                 <SevBadge label="MEDIUM"   count={r.medium} />
                                 <SevBadge label="LOW"      count={r.low} />
                                 <SecretsBadge count={r.secrets ?? 0} />
+                                <WeaknessesBadge count={r.weaknesses ?? 0} />
                               </div>
                             ) : r.image_error ? (
                               <span className="text-xs text-amber-500/80 italic max-w-[260px] text-right" title={r.image_error}>
@@ -609,7 +659,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                               className={`px-4 py-2 text-sm font-medium border-b-2 transition -mb-px ${scanTab === "code" ? "border-brand-green text-brand-green" : "border-transparent text-zinc-400 hover:text-zinc-200"}`}
                             >
                               Code Scan
-                              <span className="ml-2 text-xs opacity-70">C:{detail.critical} H:{detail.high} M:{detail.medium} L:{detail.low}{detail.secrets > 0 ? ` · ${detail.secrets} secrets` : ""}</span>
+                              <span className="ml-2 text-xs opacity-70">C:{detail.critical} H:{detail.high} M:{detail.medium} L:{detail.low}{detail.secrets > 0 ? ` · ${detail.secrets} secrets` : ""}{(detail.weaknesses ?? 0) > 0 ? ` · ${detail.weaknesses} in code` : ""}</span>
                             </button>
                             <button
                               onClick={() => { setScanTab("image"); setSeverityFilter("ALL"); setSearch(""); }}
@@ -693,6 +743,10 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                             </div>
                           ) : scanTab === "image" && detail.scanned_image ? (
                             <p className="text-xs text-zinc-500 font-mono mb-3">{detail.scanned_image}</p>
+                          ) : scanTab === "code" && detail.sast_error ? (
+                            <p className="text-xs text-amber-500/80 mb-3" title={detail.sast_error}>
+                              Static analysis did not run on the last scan ({detail.sast_error}). The code weaknesses below are from the scan before it.
+                            </p>
                           ) : null}
 
                           <div className="flex gap-3 flex-wrap items-center">
@@ -718,6 +772,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                                 <option value="vulnerability">Vulnerabilities</option>
                                 <option value="misconfiguration">Misconfigurations</option>
                                 <option value="secret">Secrets</option>
+                                <option value="weakness">Code weaknesses</option>
                               </select>
                             )}
                             <input
@@ -776,7 +831,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                                 <tbody>
                                   {filteredFindings.map(f => {
                                     const key = findingKey(f);
-                                    const where = f.type === "secret" && f.line ? `${f.target}:${f.line}` : f.target;
+                                    const where = findingWhere(f);
                                     return (
                                     <React.Fragment key={key}>
                                     <tr className={`border-b border-zinc-800 hover:bg-zinc-800/30 ${f.suppressed ? "opacity-50" : ""}`}>
@@ -807,7 +862,15 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                                         )}
                                       </td>
                                       <td className="py-2 px-3 font-mono text-xs text-zinc-500 max-w-[180px] truncate" title={where}>{where}</td>
-                                      <td className="py-2 px-3 font-mono text-xs text-zinc-400">{f.pkg || "—"}</td>
+                                      <td className="py-2 px-3 font-mono text-xs text-zinc-400">
+                                        {f.type === "weakness" ? (
+                                          f.cwe ? (
+                                            <a href={`https://cwe.mitre.org/data/definitions/${f.cwe.replace(/^CWE-/, "")}.html`} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">
+                                              {f.cwe}
+                                            </a>
+                                          ) : "—"
+                                        ) : (f.pkg || "—")}
+                                      </td>
                                       <td className="py-2 px-3 font-mono text-xs text-brand-green">{f.fixed || "—"}</td>
                                       <td className="py-2 px-3 text-xs text-zinc-500 whitespace-nowrap" title={`First seen ${new Date(f.first_seen).toLocaleString("en-US")}`}>
                                         {new Date(f.first_seen).toLocaleDateString("en-US")}
@@ -833,6 +896,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
                                             repo={detail.repo_name}
                                             vulnId={f.vuln_id}
                                             pkg={f.pkg}
+                                            weakness={f.type === "weakness"}
                                             onDone={afterTriage}
                                             onCancel={() => setTriaging(null)}
                                           />
@@ -889,6 +953,7 @@ export default function SecurityDashboard({ domain }: { domain: SecurityDomain }
           )}
         </>
       )}
+      </>)}
 
     </div>
   );

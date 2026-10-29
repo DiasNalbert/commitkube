@@ -186,6 +186,18 @@ type ScanResult struct {
 	// card can say "3 secrets" without re-reading the report, because a leaked
 	// key is a different kind of problem from an old library.
 	Secrets int `json:"secrets"`
+	// Weaknesses is how many of the code findings came from static analysis
+	// of the source (Opengrep) rather than from its dependencies or config.
+	// Counted in the severity columns too, kept apart for the same reason as
+	// Secrets.
+	Weaknesses int `json:"weaknesses"`
+	// SastError says why the last static-analysis pass did not run. The
+	// weaknesses it found before are kept open meanwhile: a pass that did
+	// not run is not a pass that came back clean.
+	SastError string `json:"sast_error,omitempty"`
+	// SastScannedAt is when static analysis last ran to completion; nil if it
+	// never has. History before it has no static-analysis numbers to show.
+	SastScannedAt *time.Time `json:"sast_scanned_at,omitempty"`
 	// Suppressed is how many findings, across both halves, a person has
 	// triaged away. They are left out of every severity count above.
 	Suppressed int `json:"suppressed"`
@@ -196,12 +208,14 @@ type ScanResult struct {
 // first-seen date, no time-to-fix, and no way to say "new since yesterday".
 // Identity is the domain, the kind, the target file or layer, the rule or CVE
 // and the package; for a secret the line stands in for the package, so two
-// leaks of the same kind in one file are two findings.
+// leaks of the same kind in one file are two findings. For a weakness found
+// by static analysis the package is a fingerprint of the matched code, and
+// the line is left out of the identity: it moves with every edit above it.
 type ScanFinding struct {
 	ID        uint      `gorm:"primarykey;autoIncrement" json:"id"`
 	RepoName  string    `gorm:"uniqueIndex:idx_finding_ident;index;not null" json:"repo_name"`
 	Domain    string    `gorm:"uniqueIndex:idx_finding_ident;not null" json:"domain"` // code | image
-	Kind      string    `gorm:"uniqueIndex:idx_finding_ident;not null" json:"type"`   // vulnerability | misconfiguration | secret
+	Kind      string    `gorm:"uniqueIndex:idx_finding_ident;not null" json:"type"`   // vulnerability | misconfiguration | secret | weakness
 	Target    string    `gorm:"uniqueIndex:idx_finding_ident" json:"target"`
 	VulnID    string    `gorm:"uniqueIndex:idx_finding_ident;index" json:"vuln_id"`
 	Pkg       string    `gorm:"uniqueIndex:idx_finding_ident" json:"pkg"`
@@ -210,6 +224,7 @@ type ScanFinding struct {
 	Fixed     string    `json:"fixed"`
 	Severity  string    `gorm:"index" json:"severity"`
 	Title     string    `json:"title"`
+	CWE       string    `json:"cwe,omitempty"` // weaknesses only, e.g. CWE-89
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
 	// ResolvedAt is set when a scan no longer reports the finding. The row is
@@ -251,6 +266,16 @@ type ScanHistory struct {
 	ImageHigh     int       `json:"image_high"`
 	ImageMedium   int       `json:"image_medium"`
 	ImageLow      int       `json:"image_low"`
+	// The code weaknesses alone, by severity. They are also inside the code
+	// counts above. SastScanned says these four mean something: points
+	// recorded before the repository's first static-analysis pass carry
+	// zeros that are not a measurement, and the trend must not read them as
+	// a clean slate that then got worse.
+	SastScanned  bool `json:"sast_scanned"`
+	SastCritical int  `json:"sast_critical"`
+	SastHigh     int  `json:"sast_high"`
+	SastMedium   int  `json:"sast_medium"`
+	SastLow      int  `json:"sast_low"`
 }
 
 type RegistryCredential struct {

@@ -22,7 +22,7 @@ dentro das suas aplicações.
 - **Import** de um repositório ou de todos os repositórios de um projeto
 - **Detalhe do repositório**: navegador de código com edição e commit,
   branches, commits, pipelines do Bitbucket (disparar, parar, ver steps e logs),
-  scans e análise por IA
+  e scans
 - **GitOps próprio**, no lugar do ArgoCD:
   - **Repositórios por SSH**: qualquer host Git (GitHub, GitLab, Bitbucket,
     Gitea ou próprio). O CommitKube gera um par de chaves e mostra a pública
@@ -119,6 +119,13 @@ dentro das suas aplicações.
 - **Code Security**: Trivy no código (vulnerabilidades, misconfiguração e
   segredos) com histórico, dashboard e linha do tempo. Segredos entram na
   contagem com arquivo e linha, nunca com o trecho que casou
+- **SAST**: Opengrep com regras próprias do CommitKube (`backend/sast/rules`)
+  para Go, Python, JavaScript/TypeScript, Java e C# — SQL e comando montados
+  com string, path traversal, SSRF e open redirect a partir da requisição,
+  XSS, desserialização insegura, XXE, TLS desligado e criptografia fraca.
+  Cada achado tem CWE, arquivo e linha, e uma identidade que sobrevive a
+  linhas inseridas acima dele. Se o Opengrep falhar, os achados anteriores
+  continuam abertos em vez de aparecerem como corrigidos
 - **Findings com identidade**: cada CVE, misconfiguração ou segredo é uma
   linha que sobrevive ao rescan — quando apareceu, quando sumiu, o que é novo
   desde o último scan e quantos foram resolvidos nos últimos 30 dias
@@ -138,7 +145,6 @@ dentro das suas aplicações.
   para workloads e a versão estreitada da Role para RBAC, conferidos pela
   própria regra antes de aparecer, com o que a mudança pode quebrar e o aviso
   quando o objeto é de um Helm, ArgoCD ou operador. Nada é aplicado pela tela
-- **Review por IA** de um repositório inteiro (Claude, via `ANTHROPIC_API_KEY`)
 - **Credenciais de registry** (genérico, ECR, GCR) cifradas, usadas no scan de
   imagens privadas
 
@@ -222,7 +228,7 @@ e de time, com membros, papéis e acesso por grupo.
 | Vault | WebCrypto (P-256, AES-GCM) + Argon2id (hash-wasm) |
 | Proxy | nginx |
 | Cluster | client-go (typed + dynamic), `metrics.k8s.io`, cadvisor |
-| Scans | Trivy 0.76.1 (versão e checksum fixos no Dockerfile; roda sem acesso às variáveis secretas do CommitKube) |
+| Scans | Trivy 0.76.1 e Opengrep 1.31.0 (versões e checksums fixos no Dockerfile; rodam sem acesso às variáveis secretas do CommitKube) |
 | GitOps | git + OpenSSH, Helm 3, Kustomize 5 (versões e checksums fixos no Dockerfile) |
 | Autenticação | JWT + TOTP |
 | Criptografia em repouso | AES-256-GCM |
@@ -374,8 +380,6 @@ O botão *Test connection* diz qual delas está faltando.
 | `KUBECONFIG` | `~/.kube/config` | Só usado fora do cluster |
 | `DEFAULT_CLUSTER_NAME` | `in-cluster` | Nome do cluster onde o CommitKube roda |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin@commitkube.local` / `admin123` | Root do primeiro boot. **Defina em qualquer deploy real** |
-| `ANTHROPIC_API_KEY` | — | Habilita o review por IA |
-| `ANTHROPIC_REVIEW_MODEL` | `claude-haiku-4-5-20251001` | Modelo do review |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` | — | Fallback de SMTP quando não há configuração salva em Settings |
 | `NEXT_PUBLIC_API_URL` | `/api` | URL da API vista pelo navegador (no build do frontend) |
 

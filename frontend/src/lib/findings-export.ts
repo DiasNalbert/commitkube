@@ -9,6 +9,8 @@ export interface ExportFinding {
   type: string;
   vuln_id: string;
   pkg: string;
+  line?: number;
+  cwe?: string;
   version: string;
   fixed: string;
   severity: string;
@@ -28,6 +30,11 @@ export interface ExportContext {
 }
 
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"];
+
+/** A weakness's package is a fingerprint; the reader wants the file:line and the CWE. */
+const where = (f: ExportFinding) =>
+  (f.type === "secret" || f.type === "weakness") && f.line ? `${f.target}:${f.line}` : f.target;
+const pkgOf = (f: ExportFinding) => (f.type === "weakness" ? f.cwe ?? "" : f.pkg);
 
 const kindLabel = (k: ExportContext["kind"]) => (k === "image" ? "Image scan" : "Code scan");
 
@@ -84,7 +91,7 @@ export function exportFindingsCSV(findings: ExportFinding[], ctx: ExportContext)
   const lines = [header.join(";")];
   for (const f of findings) {
     lines.push([
-      f.severity, f.vuln_id, f.type, f.title, f.target, f.pkg, f.version, f.fixed, referenceURL(f),
+      f.severity, f.vuln_id, f.type, f.title, where(f), pkgOf(f), f.version, f.fixed, referenceURL(f),
     ].map(cell).join(";"));
   }
   download(`${fileStem(ctx)}.csv`, "﻿" + lines.join("\r\n") + "\r\n", "text/csv;charset=utf-8");
@@ -106,9 +113,9 @@ export function exportFindingsPDF(findings: ExportFinding[], ctx: ExportContext)
       <td class="sev ${esc((f.severity || "").toLowerCase())}">${esc(f.severity)}</td>
       <td class="mono">${id}</td>
       <td>${esc(f.title)}</td>
-      <td class="mono">${esc(f.pkg || "—")}${f.version ? `<br><span class="muted">${esc(f.version)}</span>` : ""}</td>
+      <td class="mono">${esc(pkgOf(f) || "—")}${f.version ? `<br><span class="muted">${esc(f.version)}</span>` : ""}</td>
       <td class="mono fixed">${esc(f.fixed || "—")}</td>
-      <td class="mono muted target">${esc(f.target)}</td>
+      <td class="mono muted target">${esc(where(f))}</td>
     </tr>`;
   }).join("");
 

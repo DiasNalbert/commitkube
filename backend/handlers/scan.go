@@ -371,6 +371,18 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 		return fmt.Errorf("failed to parse scan report: %w", err)
 	}
 
+	// Static analysis of the code itself. A pass that fails does not fail
+	// the scan -- the dependency and secret findings are still worth having
+	// -- but it must not close the weaknesses the last pass found either.
+	sastRows, sastErr := runSAST(scanDir)
+	sastErrStr := ""
+	var notScanned []string
+	if sastErr != nil {
+		sastErrStr = sastErr.Error()
+		notScanned = []string{FindingWeakness}
+		fmt.Printf("SAST skipped for %s: %v\n", repoName, sastErr)
+	}
+
 	imageReport, scannedImage, imageSource, imageErr := resolveImageScan(repoName, scanDir, repo.UserID, true)
 	imageErrStr := ""
 	if imageErr != nil {
@@ -383,12 +395,20 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 	// before anything is mailed or stored.
 	now := time.Now()
 	sups := activeSuppressions(repoName)
-	rows := applySuppressions(findingsFromReport(report, FindingDomainCode), sups)
-	counts := countFindings(rows)
-	newCode, err := reconcileFindings(repoName, FindingDomainCode, rows, now)
+	rows := applySuppressions(append(findingsFromReport(report, FindingDomainCode), sastRows...), sups)
+	newCode, err := reconcileFindings(repoName, FindingDomainCode, rows, now, notScanned...)
 	if err != nil {
 		return fmt.Errorf("failed to record findings: %w", err)
 	}
+	if sastErr != nil {
+		// Still open, so still counted and still in the report.
+		for _, f := range openFindings(repoName, FindingDomainCode) {
+			if f.Kind == FindingWeakness {
+				rows = append(rows, f)
+			}
+		}
+	}
+	counts := countFindings(rows)
 	var imageRows []finding
 	newImage := 0
 	if imageErr == nil {
@@ -419,6 +439,11 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 	existing.ImageReport = marshalReport(imageReport)
 	existing.ImageError = imageErrStr
 	existing.Secrets = countKind(rows, FindingSecret)
+	existing.Weaknesses = countKind(rows, FindingWeakness)
+	existing.SastError = sastErrStr
+	if sastErr == nil {
+		existing.SastScannedAt = &now
+	}
 	existing.Suppressed = countSuppressed(rows) + countSuppressed(imageRows)
 	db.DB.Save(&existing)
 
@@ -444,6 +469,7 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 			"low":            counts["LOW"],
 			"image_critical": imageCounts["CRITICAL"],
 			"secrets":        existing.Secrets,
+			"weaknesses":     existing.Weaknesses,
 			"new_findings":   newCode + newImage,
 		},
 	})
@@ -476,7 +502,20 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 		}
 	}
 
-	if user.Email != "" && shouldNotify(manual, hadPrevious, previous, counts, imageCounts) {
+	// The first static-analysis pass of a repository scanned before finds
+	// everything at once: new to the scanner, not new in the code. Compared
+	// as is, it would mail every owner that their findings got worse.
+	notifyCounts := counts
+	if hadPrevious && previous.SastScannedAt == nil {
+		var other []finding
+		for _, f := range rows {
+			if f.Kind != FindingWeakness {
+				other = append(other, f)
+			}
+		}
+		notifyCounts = countFindings(other)
+	}
+	if user.Email != "" && shouldNotify(manual, hadPrevious, previous, notifyCounts, imageCounts) {
 		html := buildScanHTML(repoName, rows, imageRows, scannedImage, imageErrStr)
 		subject := fmt.Sprintf("[CommitKube] Security Scan: %s — Code C:%d H:%d M:%d L:%d",
 			repoName, counts["CRITICAL"], counts["HIGH"], counts["MEDIUM"], counts["LOW"])
@@ -625,8 +664,16 @@ a{color:#58a6ff}
 					id = fmt.Sprintf(`<a href="https://nvd.nist.gov/vuln/detail/%s">%s</a>`, esc(f.VulnID), esc(f.VulnID))
 				}
 				where := esc(f.Pkg)
-				if f.Kind == FindingSecret {
+				switch f.Kind {
+				case FindingSecret:
 					where = fmt.Sprintf("%s · line %d", esc(f.Pkg), f.Line)
+				case FindingWeakness:
+					// The package is a fingerprint, which means nothing to a
+					// reader; the line and the CWE do.
+					where = fmt.Sprintf("line %d", f.Line)
+					if f.CWE != "" {
+						where += " · " + esc(f.CWE)
+					}
 				}
 				sb.WriteString(fmt.Sprintf(`<tr><td class="%s">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
 					esc(f.Severity), esc(f.Severity), id, esc(f.Kind), where, esc(f.Version), esc(f.Fixed), esc(f.Title)))

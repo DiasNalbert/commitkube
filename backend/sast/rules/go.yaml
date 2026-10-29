@@ -1,0 +1,292 @@
+# CommitKube SAST rules for Go. Fixtures: ../testdata/go.go.
+#
+# The taint rules repeat their sources: Opengrep has no shared definitions
+# between rules, and YAML anchors are not something to bet a rule file on.
+rules:
+  - id: ck-go-sql-built-from-strings
+    languages: [go]
+    severity: ERROR
+    message: >-
+      SQL text built with concatenation or fmt.Sprintf reaches a query. If any
+      part of it comes from outside the program this is SQL injection. Pass
+      the values as query parameters (?, $1) instead of formatting them in.
+    metadata:
+      cwe: ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"]
+      category: injection
+    # Taint, not a pattern on the call: the SQL is usually built a few lines
+    # before it is run, and the flow through q := ...; rows, err := db.Query(q)
+    # is what taint tracking is for. The source is the building itself -- an
+    # SQL keyword opening a string that is then concatenated or formatted
+    # with %s/%v. %d is left alone: an integer cannot inject.
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $Q
+          - metavariable-regex:
+              metavariable: $Q
+              regex: '(?is)^(fmt\.Sprintf\(\s*["`]\s*(select|insert|update|delete|with)\b.*%[sv]|["`]\s*(select|insert|update|delete|with)\b[^"`]*["`]\s*\+)'
+    pattern-sinks:
+      - patterns:
+          - pattern: $DB.$M($ARG, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(Query|QueryRow|Exec|Prepare|Raw|Where|Select|Get|NamedExec|NamedQuery)$
+          - focus-metavariable: $ARG
+      - patterns:
+          - pattern: $DB.$M($CTX, $ARG, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(QueryContext|QueryRowContext|ExecContext|PrepareContext|SelectContext|GetContext|NamedExecContext|NamedQueryContext)$
+          - focus-metavariable: $ARG
+
+  - id: ck-go-shell-command
+    languages: [go]
+    severity: ERROR
+    message: >-
+      A command string that is not a constant is run through a shell ($SH -c).
+      Anything in it that comes from outside the program can add commands of
+      its own. Call the program directly with exec.Command(name, args...).
+    metadata:
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"]
+      category: injection
+    patterns:
+      - pattern-either:
+          - pattern: exec.Command("$SH", "-c", $CMD, ...)
+          - pattern: exec.CommandContext($CTX, "$SH", "-c", $CMD, ...)
+      - metavariable-regex:
+          metavariable: $SH
+          regex: ^(/usr)?(/bin/)?(ba|da|k|z)?sh$
+      - pattern-not: exec.Command("$SH", "-c", "...", ...)
+      - pattern-not: exec.CommandContext($CTX, "$SH", "-c", "...", ...)
+
+  - id: ck-go-command-from-request
+    languages: [go]
+    severity: ERROR
+    message: >-
+      Data from the HTTP request reaches exec.Command. Whoever sends the
+      request chooses what runs. Map the input to a fixed set of commands or
+      arguments instead of passing it through.
+    metadata:
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"]
+      category: injection
+    mode: taint
+    pattern-sources:
+      - pattern: ($R *http.Request).URL.Query()
+      - pattern: ($R *http.Request).URL.RawQuery
+      - pattern: ($R *http.Request).URL.Path
+      - pattern: ($R *http.Request).FormValue(...)
+      - pattern: ($R *http.Request).PostFormValue(...)
+      - pattern: ($R *http.Request).PathValue(...)
+      - pattern: ($R *http.Request).Header.Get(...)
+      - pattern: mux.Vars(...)
+      - pattern: ($C *fiber.Ctx).Params(...)
+      - pattern: ($C *fiber.Ctx).Query(...)
+      - pattern: ($C *fiber.Ctx).FormValue(...)
+      - pattern: ($C *fiber.Ctx).Get(...)
+      - pattern: ($C *gin.Context).Param(...)
+      - pattern: ($C *gin.Context).Query(...)
+      - pattern: ($C *gin.Context).DefaultQuery(...)
+      - pattern: ($C *gin.Context).PostForm(...)
+      - pattern: ($C *gin.Context).GetHeader(...)
+      - pattern: ($C echo.Context).Param(...)
+      - pattern: ($C echo.Context).QueryParam(...)
+      - pattern: ($C echo.Context).FormValue(...)
+    pattern-sinks:
+      - pattern: exec.Command(...)
+      - pattern: exec.CommandContext(...)
+
+  - id: ck-go-path-from-request
+    languages: [go]
+    severity: WARNING
+    message: >-
+      A file path built from the HTTP request reaches the filesystem. A value
+      such as ../../etc/passwd walks out of the intended directory. Keep only
+      filepath.Base of the input, or resolve the path and check it is still
+      under the base directory.
+    metadata:
+      cwe: ["CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"]
+      category: path-traversal
+    mode: taint
+    pattern-sources:
+      - pattern: ($R *http.Request).URL.Query()
+      - pattern: ($R *http.Request).URL.RawQuery
+      - pattern: ($R *http.Request).URL.Path
+      - pattern: ($R *http.Request).FormValue(...)
+      - pattern: ($R *http.Request).PostFormValue(...)
+      - pattern: ($R *http.Request).PathValue(...)
+      - pattern: ($R *http.Request).Header.Get(...)
+      - pattern: mux.Vars(...)
+      - pattern: ($C *fiber.Ctx).Params(...)
+      - pattern: ($C *fiber.Ctx).Query(...)
+      - pattern: ($C *fiber.Ctx).FormValue(...)
+      - pattern: ($C *fiber.Ctx).Get(...)
+      - pattern: ($C *gin.Context).Param(...)
+      - pattern: ($C *gin.Context).Query(...)
+      - pattern: ($C *gin.Context).DefaultQuery(...)
+      - pattern: ($C *gin.Context).PostForm(...)
+      - pattern: ($C *gin.Context).GetHeader(...)
+      - pattern: ($C echo.Context).Param(...)
+      - pattern: ($C echo.Context).QueryParam(...)
+      - pattern: ($C echo.Context).FormValue(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.Open($P)
+              - pattern: os.OpenFile($P, ...)
+              - pattern: os.ReadFile($P)
+              - pattern: os.WriteFile($P, ...)
+              - pattern: os.Create($P)
+              - pattern: os.Remove($P)
+              - pattern: os.RemoveAll($P)
+              - pattern: os.ReadDir($P)
+              - pattern: ioutil.ReadFile($P)
+              - pattern: http.ServeFile($W, $REQ, $P)
+              - pattern: ($C *fiber.Ctx).SendFile($P, ...)
+              - pattern: ($C *gin.Context).File($P)
+          - focus-metavariable: $P
+    pattern-sanitizers:
+      - pattern: filepath.Base(...)
+      - pattern: path.Base(...)
+
+  - id: ck-go-ssrf-from-request
+    languages: [go]
+    severity: WARNING
+    message: >-
+      A URL taken from the HTTP request is fetched by the server. Whoever sends
+      the request can make it call internal services or the cloud metadata
+      endpoint. Fetch only hosts from an allow-list.
+    metadata:
+      cwe: ["CWE-918: Server-Side Request Forgery (SSRF)"]
+      category: ssrf
+    mode: taint
+    pattern-sources:
+      - pattern: ($R *http.Request).URL.Query()
+      - pattern: ($R *http.Request).URL.RawQuery
+      - pattern: ($R *http.Request).URL.Path
+      - pattern: ($R *http.Request).FormValue(...)
+      - pattern: ($R *http.Request).PostFormValue(...)
+      - pattern: ($R *http.Request).PathValue(...)
+      - pattern: ($R *http.Request).Header.Get(...)
+      - pattern: mux.Vars(...)
+      - pattern: ($C *fiber.Ctx).Params(...)
+      - pattern: ($C *fiber.Ctx).Query(...)
+      - pattern: ($C *fiber.Ctx).FormValue(...)
+      - pattern: ($C *fiber.Ctx).Get(...)
+      - pattern: ($C *gin.Context).Param(...)
+      - pattern: ($C *gin.Context).Query(...)
+      - pattern: ($C *gin.Context).DefaultQuery(...)
+      - pattern: ($C *gin.Context).PostForm(...)
+      - pattern: ($C *gin.Context).GetHeader(...)
+      - pattern: ($C echo.Context).Param(...)
+      - pattern: ($C echo.Context).QueryParam(...)
+      - pattern: ($C echo.Context).FormValue(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: http.Get($U)
+              - pattern: http.Head($U)
+              - pattern: http.Post($U, ...)
+              - pattern: http.PostForm($U, ...)
+              - pattern: http.NewRequest($M, $U, ...)
+              - pattern: http.NewRequestWithContext($CTX, $M, $U, ...)
+          - focus-metavariable: $U
+    # Input appended after a fixed scheme and host picks a path on that
+    # host, not which host is called.
+    pattern-sanitizers:
+      - patterns:
+          - pattern: '"$PREFIX" + $X'
+          - metavariable-regex:
+              metavariable: $PREFIX
+              regex: ^https?://[^/]+/
+      - patterns:
+          - pattern: fmt.Sprintf("$PREFIX", ...)
+          - metavariable-regex:
+              metavariable: $PREFIX
+              regex: ^https?://[^/%]+/
+
+  - id: ck-go-open-redirect
+    languages: [go]
+    severity: WARNING
+    message: >-
+      The redirect target comes from the HTTP request. A link to this endpoint
+      can send users to any site while looking like it belongs to yours. Only
+      redirect to relative paths or to an allow-list of hosts.
+    metadata:
+      cwe: ["CWE-601: URL Redirection to Untrusted Site ('Open Redirect')"]
+      category: open-redirect
+    mode: taint
+    pattern-sources:
+      - pattern: ($R *http.Request).URL.Query()
+      - pattern: ($R *http.Request).URL.RawQuery
+      - pattern: ($R *http.Request).URL.Path
+      - pattern: ($R *http.Request).FormValue(...)
+      - pattern: ($R *http.Request).PostFormValue(...)
+      - pattern: ($R *http.Request).PathValue(...)
+      - pattern: ($R *http.Request).Header.Get(...)
+      - pattern: mux.Vars(...)
+      - pattern: ($C *fiber.Ctx).Params(...)
+      - pattern: ($C *fiber.Ctx).Query(...)
+      - pattern: ($C *fiber.Ctx).FormValue(...)
+      - pattern: ($C *fiber.Ctx).Get(...)
+      - pattern: ($C *gin.Context).Param(...)
+      - pattern: ($C *gin.Context).Query(...)
+      - pattern: ($C *gin.Context).DefaultQuery(...)
+      - pattern: ($C *gin.Context).PostForm(...)
+      - pattern: ($C *gin.Context).GetHeader(...)
+      - pattern: ($C echo.Context).Param(...)
+      - pattern: ($C echo.Context).QueryParam(...)
+      - pattern: ($C echo.Context).FormValue(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: http.Redirect($W, $REQ, $U, ...)
+              - pattern: ($C *fiber.Ctx).Redirect($U, ...)
+              - pattern: ($C *gin.Context).Redirect($CODE, $U)
+              - pattern: ($C echo.Context).Redirect($CODE, $U)
+          - focus-metavariable: $U
+
+  - id: ck-go-tls-verification-disabled
+    languages: [go]
+    severity: WARNING
+    message: >-
+      InsecureSkipVerify turns off certificate checking, so anyone on the
+      network path can impersonate the server. Trust the server's CA through
+      RootCAs instead.
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      category: crypto
+    pattern-either:
+      - pattern: 'tls.Config{..., InsecureSkipVerify: true, ...}'
+      - pattern: $C.InsecureSkipVerify = true
+
+  - id: ck-go-unescaped-template-content
+    languages: [go]
+    severity: WARNING
+    message: >-
+      template.$F marks a value that is not a constant as safe, so html/template
+      will not escape it. If it holds user input this is cross-site scripting.
+    metadata:
+      cwe: ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"]
+      category: xss
+    patterns:
+      - pattern: template.$F($X)
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(HTML|HTMLAttr|JS|JSStr|URL|CSS|Srcset)$
+      - pattern-not: template.$F("...")
+
+  - id: ck-go-weak-hash
+    languages: [go]
+    severity: INFO
+    message: >-
+      MD5 and SHA-1 are broken for security purposes. If this hash protects
+      passwords, signatures or integrity, use SHA-256 or better (bcrypt or
+      argon2 for passwords). For checksums and cache keys it is fine.
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: crypto
+    pattern-either:
+      - pattern: md5.New()
+      - pattern: md5.Sum(...)
+      - pattern: sha1.New()
+      - pattern: sha1.Sum(...)

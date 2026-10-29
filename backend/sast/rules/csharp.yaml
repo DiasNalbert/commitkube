@@ -1,0 +1,296 @@
+# CommitKube SAST rules for C#. Fixtures: ../testdata/csharp.cs.
+#
+# Request sources are ASP.NET Core: the Request collections and action
+# parameters bound with [FromQuery], [FromRoute], [FromHeader] or [FromForm].
+rules:
+  - id: ck-csharp-sql-built-from-strings
+    languages: [csharp]
+    severity: ERROR
+    message: >-
+      SQL text built with interpolation, string.Format or concatenation
+      reaches a query. If any part of it comes from outside the program this
+      is SQL injection. Use parameters (@id), or FromSqlInterpolated in EF
+      Core, which parameterizes the interpolation for you.
+    metadata:
+      cwe: ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"]
+      category: injection
+    # Taint, so the SQL may be built lines before it runs. The source is the
+    # building itself: an SQL keyword opening an interpolated string with a
+    # hole in it, a string that is concatenated, or string.Format.
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $Q
+          - metavariable-regex:
+              metavariable: $Q
+              regex: '(?is)^((\$@?|@\$)"\s*(select|insert|update|delete|with|merge|exec)\b[^"]*\{|@?"\s*(select|insert|update|delete|with|merge|exec)\b[^"]*"\s*\+|[Ss]tring\.Format\(\s*@?"\s*(select|insert|update|delete|with|merge|exec)\b)'
+    pattern-sinks:
+      - patterns:
+          - pattern: new $CMD($ARG, ...)
+          - metavariable-regex:
+              metavariable: $CMD
+              regex: ^(Sql|Npgsql|MySql|Sqlite|SQLite|Oracle|OleDb|Odbc)Command$
+          - focus-metavariable: $ARG
+      - patterns:
+          - pattern: $C.CommandText = $ARG
+          - focus-metavariable: $ARG
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.$M($ARG, ...)
+              - pattern: $DB.$M<$T>($ARG, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(FromSqlRaw|ExecuteSqlRaw|ExecuteSqlRawAsync|SqlQueryRaw|Query|QueryAsync|QueryFirst|QueryFirstAsync|QueryFirstOrDefault|QueryFirstOrDefaultAsync|QuerySingle|QuerySingleAsync|QuerySingleOrDefault|QuerySingleOrDefaultAsync|QueryMultiple|QueryMultipleAsync|Execute|ExecuteAsync|ExecuteScalar|ExecuteScalarAsync|ExecuteReader|ExecuteReaderAsync)$
+          - focus-metavariable: $ARG
+
+  - id: ck-csharp-command-from-request
+    languages: [csharp]
+    severity: ERROR
+    message: >-
+      Data from the HTTP request reaches a process launch. Whoever sends the
+      request chooses what runs. Map the input to a fixed set of commands or
+      arguments instead of passing it through.
+    metadata:
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"]
+      category: injection
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $R.$A
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(.*\.)?Request$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(Query|QueryString|Form|Headers|Cookies|RouteValues|Path|Body)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., [$ATTR] $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RET $METHOD(..., [$ATTR(...)] $T $P, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^From(Query|Route|Header|Form)$
+          - pattern: $P
+    pattern-sinks:
+      - pattern: Process.Start(...)
+      - pattern: new ProcessStartInfo(...)
+      - patterns:
+          - pattern-either:
+              - pattern: $PSI.FileName = $X
+              - pattern: $PSI.Arguments = $X
+          - focus-metavariable: $X
+
+  - id: ck-csharp-path-from-request
+    languages: [csharp]
+    severity: WARNING
+    message: >-
+      A file path built from the HTTP request reaches the filesystem. A value
+      such as ../../etc/passwd walks out of the intended directory. Keep only
+      Path.GetFileName of the input, or resolve the full path and check it
+      still starts with the base directory.
+    metadata:
+      cwe: ["CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"]
+      category: path-traversal
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $R.$A
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(.*\.)?Request$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(Query|QueryString|Form|Headers|Cookies|RouteValues|Path|Body)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., [$ATTR] $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RET $METHOD(..., [$ATTR(...)] $T $P, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^From(Query|Route|Header|Form)$
+          - pattern: $P
+    pattern-sinks:
+      - patterns:
+          - pattern: File.$M($P, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(ReadAllText|ReadAllTextAsync|ReadAllBytes|ReadAllBytesAsync|ReadAllLines|ReadAllLinesAsync|OpenRead|OpenWrite|Open|Create|Delete|WriteAllText|WriteAllTextAsync|WriteAllBytes|WriteAllBytesAsync)$
+          - focus-metavariable: $P
+      - patterns:
+          - pattern: new FileStream($P, ...)
+          - focus-metavariable: $P
+      - patterns:
+          - pattern-either:
+              - pattern: PhysicalFile($P, ...)
+              - pattern: $C.PhysicalFile($P, ...)
+          - focus-metavariable: $P
+    pattern-sanitizers:
+      - pattern: Path.GetFileName(...)
+
+  - id: ck-csharp-ssrf-from-request
+    languages: [csharp]
+    severity: WARNING
+    message: >-
+      A URL taken from the HTTP request is fetched by the server. Whoever sends
+      the request can make it call internal services or the cloud metadata
+      endpoint. Fetch only hosts from an allow-list.
+    metadata:
+      cwe: ["CWE-918: Server-Side Request Forgery (SSRF)"]
+      category: ssrf
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $R.$A
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(.*\.)?Request$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(Query|QueryString|Form|Headers|Cookies|RouteValues|Path|Body)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., [$ATTR] $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RET $METHOD(..., [$ATTR(...)] $T $P, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^From(Query|Route|Header|Form)$
+          - pattern: $P
+    pattern-sinks:
+      - patterns:
+          - pattern: $CLIENT.$M($U, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(GetAsync|GetStringAsync|GetByteArrayAsync|GetStreamAsync|PostAsync|PutAsync|PatchAsync|DeleteAsync|GetFromJsonAsync|PostAsJsonAsync|PutAsJsonAsync)$
+          - focus-metavariable: $U
+      - patterns:
+          - pattern: WebRequest.Create($U)
+          - focus-metavariable: $U
+    # Input placed after a fixed scheme and host picks a path on that host,
+    # not which host is called.
+    pattern-sanitizers:
+      - patterns:
+          - pattern: $E
+          - metavariable-regex:
+              metavariable: $E
+              regex: '^(\$@?|@\$)?"https?://[^/{"]+/'
+
+  - id: ck-csharp-open-redirect
+    languages: [csharp]
+    severity: WARNING
+    message: >-
+      The redirect target comes from the HTTP request. A link to this endpoint
+      can send users to any site while looking like it belongs to yours. Use
+      LocalRedirect, or check the target with Url.IsLocalUrl first.
+    metadata:
+      cwe: ["CWE-601: URL Redirection to Untrusted Site ('Open Redirect')"]
+      category: open-redirect
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $R.$A
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(.*\.)?Request$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(Query|QueryString|Form|Headers|Cookies|RouteValues)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., [$ATTR] $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RET $METHOD(..., [$ATTR(...)] $T $P, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^From(Query|Route|Header|Form)$
+          - pattern: $P
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Redirect($U)
+              - pattern: RedirectPermanent($U)
+              - pattern: $X.Redirect($U, ...)
+          - focus-metavariable: $U
+
+  - id: ck-csharp-unsafe-deserialization
+    languages: [csharp]
+    severity: WARNING
+    message: >-
+      This deserializer can build arbitrary types, and building them can run
+      code. Reading data that anyone else could have written is remote code
+      execution. Use System.Text.Json into fixed types; with Json.NET keep
+      TypeNameHandling at None.
+    metadata:
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+      category: deserialization
+    pattern-either:
+      - pattern: new BinaryFormatter(...)
+      - pattern: new SoapFormatter(...)
+      - pattern: new NetDataContractSerializer(...)
+      - pattern: new LosFormatter(...)
+      - pattern: new ObjectStateFormatter(...)
+      - patterns:
+          - pattern: TypeNameHandling.$V
+          - metavariable-regex:
+              metavariable: $V
+              regex: ^(All|Auto|Objects|Arrays)$
+
+  - id: ck-csharp-tls-verification-disabled
+    languages: [csharp]
+    severity: WARNING
+    message: >-
+      Certificate checking is turned off, so anyone on the network path can
+      impersonate the server. Trust the server's CA in the machine store, or
+      check the certificate's thumbprint in the callback.
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      category: crypto
+    pattern-either:
+      - pattern: $X.ServerCertificateCustomValidationCallback = ($A, $B, $C, $D) => true
+      - pattern: ServicePointManager.ServerCertificateValidationCallback = ($A, $B, $C, $D) => true
+      - pattern: ServicePointManager.ServerCertificateValidationCallback += ($A, $B, $C, $D) => true
+      - pattern: HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+
+  - id: ck-csharp-weak-cipher
+    languages: [csharp]
+    severity: WARNING
+    message: >-
+      DES, 3DES and RC2 are weak, and ECB leaks patterns in the data. Use
+      AesGcm.
+    metadata:
+      cwe: ["CWE-327: Use of a Broken or Risky Cryptographic Algorithm"]
+      category: crypto
+    pattern-either:
+      - pattern: DES.Create(...)
+      - pattern: TripleDES.Create(...)
+      - pattern: RC2.Create(...)
+      - pattern: new DESCryptoServiceProvider()
+      - pattern: new TripleDESCryptoServiceProvider()
+      - pattern: new RC2CryptoServiceProvider()
+      - pattern: $X.Mode = CipherMode.ECB
+
+  - id: ck-csharp-weak-hash
+    languages: [csharp]
+    severity: INFO
+    message: >-
+      MD5 and SHA-1 are broken for security purposes. If this hash protects
+      passwords, signatures or integrity, use SHA-256 or better (PBKDF2 via
+      Rfc2898DeriveBytes for passwords). For checksums and cache keys it is
+      fine.
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: crypto
+    pattern-either:
+      - pattern: MD5.Create(...)
+      - pattern: SHA1.Create(...)
+      - pattern: MD5.HashData(...)
+      - pattern: SHA1.HashData(...)
+      - pattern: new MD5CryptoServiceProvider()
+      - pattern: new SHA1CryptoServiceProvider()
+      - pattern: new SHA1Managed()

@@ -1,0 +1,275 @@
+# CommitKube SAST rules for Java. Fixtures: ../testdata/java.java.
+#
+# Request sources are the Servlet API and Spring MVC's bound parameters
+# (@RequestParam, @PathVariable, @RequestHeader). A @RequestBody DTO is left
+# out: its fields are reached through getters the rule cannot follow.
+rules:
+  - id: ck-java-sql-built-from-strings
+    languages: [java]
+    severity: ERROR
+    message: >-
+      SQL text built with concatenation or String.format reaches a query. If
+      any part of it comes from outside the program this is SQL injection. Use
+      a PreparedStatement with ? placeholders, or named parameters in JPA.
+    metadata:
+      cwe: ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"]
+      category: injection
+    # Taint, so the SQL may be built lines before it runs. The source is the
+    # building itself: an SQL keyword opening a string that is concatenated
+    # or formatted.
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $Q
+          - metavariable-regex:
+              metavariable: $Q
+              regex: '(?is)^(String\.format\(\s*"\s*(select|insert|update|delete|with|merge|call)\b.*%s|"\s*(select|insert|update|delete|with|merge|call)\b[^"]*"\s*\+|"\s*(select|insert|update|delete|with|merge|call)\b[^"]*"\.formatted\()'
+    pattern-sinks:
+      - patterns:
+          - pattern: $S.$M($ARG, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(executeQuery|executeUpdate|executeLargeUpdate|execute|addBatch|prepareStatement|prepareCall|createQuery|createNativeQuery|createSQLQuery|queryForObject|queryForList|queryForMap|queryForRowSet|query|update|batchUpdate)$
+          - focus-metavariable: $ARG
+
+  - id: ck-java-command-from-request
+    languages: [java]
+    severity: ERROR
+    message: >-
+      Data from the HTTP request reaches a process launch. Whoever sends the
+      request chooses what runs. Map the input to a fixed set of commands or
+      arguments instead of passing it through.
+    metadata:
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"]
+      category: injection
+    mode: taint
+    pattern-sources:
+      - pattern: ($R HttpServletRequest).getParameter(...)
+      - pattern: ($R HttpServletRequest).getParameterValues(...)
+      - pattern: ($R HttpServletRequest).getHeader(...)
+      - pattern: ($R HttpServletRequest).getQueryString()
+      - pattern: ($R HttpServletRequest).getPathInfo()
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN(...) $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN $T $P, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(RequestParam|PathVariable|RequestHeader|CookieValue)$
+          - pattern: $P
+    pattern-sinks:
+      - pattern: Runtime.getRuntime().exec(...)
+      - pattern: ($RT Runtime).exec(...)
+      - pattern: new ProcessBuilder(...)
+      - pattern: ($PB ProcessBuilder).command(...)
+
+  - id: ck-java-path-from-request
+    languages: [java]
+    severity: WARNING
+    message: >-
+      A file path built from the HTTP request reaches the filesystem. A value
+      such as ../../etc/passwd walks out of the intended directory. Keep only
+      the file name (Path.getFileName, FilenameUtils.getName), or normalize
+      the path and check it still starts with the base directory.
+    metadata:
+      cwe: ["CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"]
+      category: path-traversal
+    mode: taint
+    pattern-sources:
+      - pattern: ($R HttpServletRequest).getParameter(...)
+      - pattern: ($R HttpServletRequest).getParameterValues(...)
+      - pattern: ($R HttpServletRequest).getHeader(...)
+      - pattern: ($R HttpServletRequest).getQueryString()
+      - pattern: ($R HttpServletRequest).getPathInfo()
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN(...) $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN $T $P, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(RequestParam|PathVariable|RequestHeader|CookieValue)$
+          - pattern: $P
+    pattern-sinks:
+      - pattern: new File(...)
+      - pattern: new FileInputStream(...)
+      - pattern: new FileOutputStream(...)
+      - pattern: new FileReader(...)
+      - pattern: new FileWriter(...)
+      - pattern: Paths.get(...)
+      - pattern: Path.of(...)
+    pattern-sanitizers:
+      - pattern: FilenameUtils.getName(...)
+      - pattern: ($P Path).getFileName()
+
+  - id: ck-java-ssrf-from-request
+    languages: [java]
+    severity: WARNING
+    message: >-
+      A URL taken from the HTTP request is fetched by the server. Whoever sends
+      the request can make it call internal services or the cloud metadata
+      endpoint. Fetch only hosts from an allow-list.
+    metadata:
+      cwe: ["CWE-918: Server-Side Request Forgery (SSRF)"]
+      category: ssrf
+    mode: taint
+    pattern-sources:
+      - pattern: ($R HttpServletRequest).getParameter(...)
+      - pattern: ($R HttpServletRequest).getParameterValues(...)
+      - pattern: ($R HttpServletRequest).getHeader(...)
+      - pattern: ($R HttpServletRequest).getQueryString()
+      - pattern: ($R HttpServletRequest).getPathInfo()
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN(...) $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN $T $P, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(RequestParam|PathVariable|RequestHeader|CookieValue)$
+          - pattern: $P
+    pattern-sinks:
+      - pattern: new URL(...)
+      - pattern: URI.create(...)
+      - pattern: HttpRequest.newBuilder(...)
+      - pattern: WebClient.create(...)
+      - patterns:
+          - pattern: ($RT RestTemplate).$M($U, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(getForObject|getForEntity|postForObject|postForEntity|postForLocation|put|delete|exchange|headForHeaders)$
+          - focus-metavariable: $U
+    # Input placed after a fixed scheme and host picks a path on that host,
+    # not which host is called.
+    pattern-sanitizers:
+      - patterns:
+          - pattern: $E
+          - metavariable-regex:
+              metavariable: $E
+              regex: '^"https?://[^/"]+/[^"]*"\s*\+'
+
+  - id: ck-java-open-redirect
+    languages: [java]
+    severity: WARNING
+    message: >-
+      The redirect target comes from the HTTP request. A link to this endpoint
+      can send users to any site while looking like it belongs to yours. Only
+      redirect to relative paths or to an allow-list of hosts.
+    metadata:
+      cwe: ["CWE-601: URL Redirection to Untrusted Site ('Open Redirect')"]
+      category: open-redirect
+    mode: taint
+    pattern-sources:
+      - pattern: ($R HttpServletRequest).getParameter(...)
+      - pattern: ($R HttpServletRequest).getHeader(...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN(...) $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RET $METHOD(..., @$ANN $T $P, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(RequestParam|PathVariable|RequestHeader|CookieValue)$
+          - pattern: $P
+    pattern-sinks:
+      - pattern: ($RESP HttpServletResponse).sendRedirect(...)
+      - patterns:
+          - pattern: '"redirect:" + $U'
+          - focus-metavariable: $U
+
+  - id: ck-java-unsafe-deserialization
+    languages: [java]
+    severity: WARNING
+    message: >-
+      This deserializer can build arbitrary classes, and building them can run
+      code. Reading data that anyone else could have written is remote code
+      execution. Use JSON into fixed types, or an ObjectInputFilter that
+      allows only the classes you expect.
+    metadata:
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+      category: deserialization
+    pattern-either:
+      - pattern: new ObjectInputStream(...)
+      - pattern: new XMLDecoder(...)
+      - pattern: ($M ObjectMapper).enableDefaultTyping(...)
+      - pattern: ($M ObjectMapper).activateDefaultTyping(...)
+
+  - id: ck-java-xxe
+    languages: [java]
+    severity: WARNING
+    message: >-
+      This XML parser factory is used without disabling DOCTYPE declarations,
+      so a document can read local files or reach internal hosts through
+      external entities (XXE). Set
+      http://apache.org/xml/features/disallow-doctype-decl to true.
+    metadata:
+      cwe: ["CWE-611: Improper Restriction of XML External Entity Reference"]
+      category: xxe
+    patterns:
+      - pattern-either:
+          - pattern: DocumentBuilderFactory.newInstance()
+          - pattern: SAXParserFactory.newInstance()
+      - pattern-not-inside: |
+          $RET $M(...) {
+            ...
+            $F.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            ...
+          }
+
+  - id: ck-java-tls-verification-disabled
+    languages: [java]
+    severity: WARNING
+    message: >-
+      Certificate or host name checking is turned off, so anyone on the
+      network path can impersonate the server. Trust the server's CA through
+      a TrustStore instead.
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      category: crypto
+    pattern-either:
+      - pattern: |
+          public void checkServerTrusted(...) { }
+      - pattern: |
+          public void checkServerTrusted(...) throws $E { }
+      - pattern: |
+          public boolean verify(String $H, SSLSession $S) { return true; }
+      - pattern: $X.setHostnameVerifier(($H, $S) -> true)
+      - pattern: NoopHostnameVerifier.INSTANCE
+      - pattern: new NoopHostnameVerifier()
+
+  - id: ck-java-weak-cipher
+    languages: [java]
+    severity: WARNING
+    message: >-
+      $ALG is a broken cipher or mode. DES, 3DES, RC2, RC4 and Blowfish are
+      weak, ECB leaks patterns in the data, and "AES" alone means AES/ECB. Use
+      AES/GCM/NoPadding.
+    metadata:
+      cwe: ["CWE-327: Use of a Broken or Risky Cryptographic Algorithm"]
+      category: crypto
+    patterns:
+      - pattern: Cipher.getInstance("$ALG", ...)
+      - metavariable-regex:
+          metavariable: $ALG
+          regex: (?i)^((des|desede|tripledes|rc2|rc4|arcfour|blowfish)(/.*)?|aes|.*/ecb/.*)$
+
+  - id: ck-java-weak-hash
+    languages: [java]
+    severity: INFO
+    message: >-
+      MD5 and SHA-1 are broken for security purposes. If this hash protects
+      passwords, signatures or integrity, use SHA-256 or better (bcrypt or
+      argon2 for passwords). For checksums and cache keys it is fine.
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: crypto
+    patterns:
+      - pattern: MessageDigest.getInstance("$ALG", ...)
+      - metavariable-regex:
+          metavariable: $ALG
+          regex: (?i)^(md2|md5|sha-?1)$

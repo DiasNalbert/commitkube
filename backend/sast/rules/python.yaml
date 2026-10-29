@@ -1,0 +1,307 @@
+# CommitKube SAST rules for Python. Fixtures: ../testdata/python.py.
+#
+# Request sources cover Flask (flask.request), Django and DRF (request.GET,
+# request.data, ...). FastAPI parameters arrive as plain arguments and cannot
+# be told apart from any other argument, so they are not sources.
+rules:
+  - id: ck-python-sql-built-from-strings
+    languages: [python]
+    severity: ERROR
+    message: >-
+      SQL text built with an f-string, % formatting, .format() or
+      concatenation reaches a query. If any part of it comes from outside the
+      program this is SQL injection. Pass the values as query parameters
+      (cursor.execute(sql, params)) instead.
+    metadata:
+      cwe: ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"]
+      category: injection
+    # Taint, so the SQL may be built lines before it runs. The source is the
+    # building itself: an SQL keyword opens the string, and the string is
+    # then filled in by interpolation, % or .format(), or concatenated. A %s
+    # inside the literal on its own is a parameter placeholder.
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $Q
+          - metavariable-regex:
+              metavariable: $Q
+              regex: '(?is)^([rb]?f[rb]?("""|''''''|"|'')\s*(select|insert|update|delete|with)\b.*\{|("""|''''''|"|'')\s*(select|insert|update|delete|with)\b.*("""|''''''|"|'')(\s+%|\s*\+|\.format\())'
+    pattern-sinks:
+      - patterns:
+          - pattern: $CUR.$M($ARG, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(execute|executemany|executescript|exec_driver_sql|raw|read_sql|read_sql_query|text)$
+          - focus-metavariable: $ARG
+      - patterns:
+          - pattern: $F($ARG, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(text|read_sql|read_sql_query)$
+          - focus-metavariable: $ARG
+
+  - id: ck-python-shell-command
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A command string that is not a constant is run through a shell. Anything
+      in it that comes from outside the program can add commands of its own.
+      Pass a list of arguments without shell=True instead.
+    metadata:
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"]
+      category: injection
+    pattern-either:
+      - patterns:
+          - pattern: subprocess.$F($CMD, ..., shell=True, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(run|call|check_call|check_output|Popen)$
+          - pattern-not: subprocess.$F("...", ..., shell=True, ...)
+      - patterns:
+          - pattern-either:
+              - pattern: os.system($CMD)
+              - pattern: os.popen($CMD, ...)
+              - pattern: subprocess.getoutput($CMD)
+              - pattern: subprocess.getstatusoutput($CMD)
+          - pattern-not: os.system("...")
+          - pattern-not: os.popen("...", ...)
+          - pattern-not: subprocess.getoutput("...")
+          - pattern-not: subprocess.getstatusoutput("...")
+
+  - id: ck-python-command-from-request
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Data from the HTTP request reaches a process launch. Whoever sends the
+      request chooses what runs. Map the input to a fixed set of commands or
+      arguments instead of passing it through.
+    metadata:
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"]
+      category: injection
+    mode: taint
+    pattern-sources:
+      - pattern: flask.request.$A
+      - patterns:
+          - pattern: $REQ.$A
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(self\.)?(request|req)$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(GET|POST|FILES|COOKIES|META|headers|query_params|data|body)$
+    pattern-sinks:
+      - pattern: subprocess.$F(...)
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+      - pattern: os.exec$F(...)
+      - pattern: os.spawn$F(...)
+
+  - id: ck-python-path-from-request
+    languages: [python]
+    severity: WARNING
+    message: >-
+      A file path built from the HTTP request reaches the filesystem. A value
+      such as ../../etc/passwd walks out of the intended directory. Use
+      werkzeug.utils.secure_filename or os.path.basename on the input, or
+      flask.send_from_directory, which checks the path for you.
+    metadata:
+      cwe: ["CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"]
+      category: path-traversal
+    mode: taint
+    pattern-sources:
+      - pattern: flask.request.$A
+      - patterns:
+          - pattern: $REQ.$A
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(self\.)?(request|req)$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(GET|POST|FILES|COOKIES|META|headers|query_params|data|body)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: open($P, ...)
+              - pattern: io.open($P, ...)
+              - pattern: os.remove($P)
+              - pattern: os.unlink($P)
+              - pattern: shutil.rmtree($P, ...)
+              - pattern: flask.send_file($P, ...)
+              - pattern: django.http.FileResponse(open($P, ...), ...)
+          - focus-metavariable: $P
+    pattern-sanitizers:
+      - pattern: os.path.basename(...)
+      - pattern: werkzeug.utils.secure_filename(...)
+
+  - id: ck-python-ssrf-from-request
+    languages: [python]
+    severity: WARNING
+    message: >-
+      A URL taken from the HTTP request is fetched by the server. Whoever sends
+      the request can make it call internal services or the cloud metadata
+      endpoint. Fetch only hosts from an allow-list.
+    metadata:
+      cwe: ["CWE-918: Server-Side Request Forgery (SSRF)"]
+      category: ssrf
+    mode: taint
+    pattern-sources:
+      - pattern: flask.request.$A
+      - patterns:
+          - pattern: $REQ.$A
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(self\.)?(request|req)$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(GET|POST|FILES|COOKIES|META|headers|query_params|data|body)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: requests.$M($U, ...)
+              - pattern: httpx.$M($U, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(get|post|put|patch|delete|head|options|stream)$
+          - focus-metavariable: $U
+      - patterns:
+          - pattern: urllib.request.urlopen($U, ...)
+          - focus-metavariable: $U
+    # Input placed after a fixed scheme and host picks a path on that host,
+    # not which host is called.
+    pattern-sanitizers:
+      - patterns:
+          - pattern: $E
+          - metavariable-regex:
+              metavariable: $E
+              regex: '^f?["'']https?://[^/{"'']+/'
+
+  - id: ck-python-open-redirect
+    languages: [python]
+    severity: WARNING
+    message: >-
+      The redirect target comes from the HTTP request. A link to this endpoint
+      can send users to any site while looking like it belongs to yours. Only
+      redirect to relative paths or check the target with
+      django.utils.http.url_has_allowed_host_and_scheme.
+    metadata:
+      cwe: ["CWE-601: URL Redirection to Untrusted Site ('Open Redirect')"]
+      category: open-redirect
+    mode: taint
+    pattern-sources:
+      - pattern: flask.request.$A
+      - patterns:
+          - pattern: $REQ.$A
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(self\.)?(request|req)$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(GET|POST|FILES|COOKIES|META|headers|query_params|data|body)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: flask.redirect($U, ...)
+              - pattern: django.shortcuts.redirect($U, ...)
+              - pattern: django.http.HttpResponseRedirect($U, ...)
+          - focus-metavariable: $U
+
+  - id: ck-python-eval
+    languages: [python]
+    severity: WARNING
+    message: >-
+      eval/exec runs a string that is not a constant as Python code. If the
+      string can carry outside input, that input runs with the program's
+      privileges. Use ast.literal_eval for data, or a lookup table.
+    metadata:
+      cwe: ["CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')"]
+      category: injection
+    patterns:
+      - pattern-either:
+          - pattern: eval($X, ...)
+          - pattern: exec($X, ...)
+      - pattern-not: eval("...", ...)
+      - pattern-not: exec("...", ...)
+
+  - id: ck-python-unsafe-deserialization
+    languages: [python]
+    severity: WARNING
+    message: >-
+      This deserializer can build arbitrary objects, and building them can run
+      code. Loading data that anyone else could have written is remote code
+      execution. Use JSON, or yaml.safe_load for YAML.
+    metadata:
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+      category: deserialization
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+      - pattern: cPickle.load(...)
+      - pattern: cPickle.loads(...)
+      - pattern: dill.load(...)
+      - pattern: dill.loads(...)
+      - pattern: jsonpickle.decode(...)
+      - pattern: yaml.unsafe_load(...)
+      - patterns:
+          - pattern: yaml.load(...)
+          - pattern-not: yaml.load(..., Loader=yaml.SafeLoader, ...)
+          - pattern-not: yaml.load(..., Loader=yaml.CSafeLoader, ...)
+          - pattern-not: yaml.load(..., Loader=SafeLoader, ...)
+          - pattern-not: yaml.load(..., Loader=CSafeLoader, ...)
+          - pattern-not: yaml.load($S, yaml.SafeLoader)
+          - pattern-not: yaml.load($S, yaml.CSafeLoader)
+          - pattern-not: yaml.load($S, SafeLoader)
+          - pattern-not: yaml.load($S, CSafeLoader)
+
+  - id: ck-python-tls-verification-disabled
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Certificate checking is turned off, so anyone on the network path can
+      impersonate the server. Point verify= at the server's CA bundle instead.
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      category: crypto
+    pattern-either:
+      - pattern: requests.$M(..., verify=False, ...)
+      - pattern: httpx.$M(..., verify=False, ...)
+      - pattern: $SESSION.verify = False
+      - pattern: ssl._create_unverified_context(...)
+      - pattern: $CTX.verify_mode = ssl.CERT_NONE
+
+  - id: ck-python-flask-debug
+    languages: [python]
+    severity: WARNING
+    message: >-
+      The Flask debugger is on. Anyone who can reach it can run Python on the
+      server through the interactive traceback. Turn it off outside a
+      developer's machine.
+    metadata:
+      cwe: ["CWE-489: Active Debug Code"]
+      category: configuration
+    patterns:
+      - pattern-inside: |
+          $APP = flask.Flask(...)
+          ...
+      - pattern: $APP.run(..., debug=True, ...)
+
+  - id: ck-python-weak-hash
+    languages: [python]
+    severity: INFO
+    message: >-
+      MD5 and SHA-1 are broken for security purposes. If this hash protects
+      passwords, signatures or integrity, use SHA-256 or better (bcrypt or
+      argon2 for passwords). If it is a checksum or cache key, say so with
+      usedforsecurity=False and this goes away.
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: crypto
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5(...)
+          - pattern: hashlib.sha1(...)
+          - patterns:
+              - pattern: hashlib.new("$ALG", ...)
+              - metavariable-regex:
+                  metavariable: $ALG
+                  regex: (?i)^(md5|sha1)$
+      - pattern-not: hashlib.$F(..., usedforsecurity=False, ...)

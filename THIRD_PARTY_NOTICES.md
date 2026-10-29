@@ -12,6 +12,17 @@ Version 2.0. A copy of the license is at
 <https://www.apache.org/licenses/LICENSE-2.0>. The code was rewritten, not
 copied verbatim, and changes from the original are CommitKube's.
 
+## Opengrep
+
+The container images include the [Opengrep](https://github.com/opengrep/opengrep)
+binary, unmodified, to run static analysis. Opengrep is licensed under the
+GNU Lesser General Public License, version 2.1. Its source is at the link
+above, at the tag pinned in the Dockerfiles.
+
+The rules it runs, in `backend/sast/rules`, are CommitKube's own. None are
+taken from semgrep-rules or opengrep-rules: those carry the Commons Clause,
+which does not allow them in a product sold or hosted for a fee.
+
 ## Fonts
 
 Onest and JetBrains Mono are bundled from the `@fontsource-variable/onest`

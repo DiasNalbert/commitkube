@@ -25,6 +25,10 @@ const (
 	FindingVulnerability    = "vulnerability"
 	FindingMisconfiguration = "misconfiguration"
 	FindingSecret           = "secret"
+	// FindingWeakness is a flaw in the code itself -- an injection, a path
+	// built from the request -- found by static analysis (Opengrep), as
+	// opposed to a known CVE in something the code depends on.
+	FindingWeakness = "weakness"
 )
 
 // finding is one row of a report, before it is stored or counted.
@@ -39,6 +43,7 @@ type finding struct {
 	Fixed    string `json:"fixed"`
 	Severity string `json:"severity"`
 	Title    string `json:"title"`
+	CWE      string `json:"cwe,omitempty"`
 
 	// Set by applySuppressions.
 	Suppressed  bool                    `json:"suppressed"`
@@ -52,7 +57,21 @@ type identity struct {
 }
 
 func (f finding) identity() identity {
-	return identity{f.Domain, f.Kind, f.Target, f.VulnID, f.Pkg, f.Line}
+	line := f.Line
+	if f.Kind == FindingWeakness {
+		// The fingerprint in Pkg already places it; the line moves with
+		// every edit above it, and a moved weakness is not a new one.
+		line = 0
+	}
+	return identity{f.Domain, f.Kind, f.Target, f.VulnID, f.Pkg, line}
+}
+
+// findingFromRow is the inverse of what reconcileFindings stores.
+func findingFromRow(r models.ScanFinding) finding {
+	return finding{
+		Domain: r.Domain, Kind: r.Kind, Target: r.Target, VulnID: r.VulnID, Pkg: r.Pkg,
+		Line: r.Line, Version: r.Version, Fixed: r.Fixed, Severity: r.Severity, Title: r.Title, CWE: r.CWE,
+	}
 }
 
 // findingsFromReport flattens a Trivy report into rows. Misconfigurations that
@@ -199,7 +218,15 @@ func applySuppressions(rows []finding, sups []models.ScanSuppression) []finding 
 //
 // It returns how many of the rows are being seen for the first time -- the
 // "new since the last scan" number that a report should lead with.
-func reconcileFindings(repoName, domain string, rows []finding, at time.Time) (newCount int, err error) {
+//
+// notScanned names kinds this pass did not look for -- static analysis that
+// failed to run, say. Their open rows are left exactly as they are: closing
+// them would report as fixed what nobody checked.
+func reconcileFindings(repoName, domain string, rows []finding, at time.Time, notScanned ...string) (newCount int, err error) {
+	skip := make(map[string]bool, len(notScanned))
+	for _, k := range notScanned {
+		skip[k] = true
+	}
 	// One read of every row this repository and domain ever had, then bulk
 	// writes. A row at a time was two queries per finding: an image with two
 	// thousand CVEs across a few hundred repositories is millions of queries,
@@ -211,8 +238,7 @@ func reconcileFindings(repoName, domain string, rows []finding, at time.Time) (n
 		}
 		byID := make(map[identity]*models.ScanFinding, len(existing))
 		for i := range existing {
-			f := &existing[i]
-			byID[identity{f.Domain, f.Kind, f.Target, f.VulnID, f.Pkg, f.Line}] = f
+			byID[findingFromRow(existing[i]).identity()] = &existing[i]
 		}
 
 		var touched []uint // still open, nothing but last_seen moves
@@ -231,7 +257,7 @@ func reconcileFindings(repoName, domain string, rows []finding, at time.Time) (n
 				created = append(created, models.ScanFinding{
 					RepoName: repoName, Domain: r.Domain, Kind: r.Kind, Target: r.Target,
 					VulnID: r.VulnID, Pkg: r.Pkg, Line: r.Line, Version: r.Version,
-					Fixed: r.Fixed, Severity: r.Severity, Title: r.Title,
+					Fixed: r.Fixed, Severity: r.Severity, Title: r.Title, CWE: r.CWE,
 					FirstSeen: at, LastSeen: at,
 				})
 				newCount++
@@ -239,17 +265,20 @@ func reconcileFindings(repoName, domain string, rows []finding, at time.Time) (n
 				// It came back: a new problem, not the old one resumed. The
 				// row is reopened in place so the unique index holds.
 				if err := tx.Model(&models.ScanFinding{}).Where("id = ?", cur.ID).Updates(map[string]any{
-					"resolved_at": nil, "first_seen": at, "last_seen": at,
-					"severity": r.Severity, "fixed": r.Fixed, "version": r.Version, "title": r.Title,
+					"resolved_at": nil, "first_seen": at, "last_seen": at, "line": r.Line,
+					"severity": r.Severity, "fixed": r.Fixed, "version": r.Version, "title": r.Title, "cwe": r.CWE,
 				}).Error; err != nil {
 					return err
 				}
 				newCount++
-			case cur.Severity != r.Severity || cur.Fixed != r.Fixed || cur.Version != r.Version || cur.Title != r.Title:
+			case cur.Severity != r.Severity || cur.Fixed != r.Fixed || cur.Version != r.Version || cur.Title != r.Title ||
+				cur.Line != r.Line || cur.CWE != r.CWE:
 				// Severity and the fixed version move as the database learns
-				// more; the identity does not.
+				// more, and a weakness's line as the code around it is
+				// edited; the identity does not.
 				if err := tx.Model(&models.ScanFinding{}).Where("id = ?", cur.ID).Updates(map[string]any{
-					"last_seen": at, "severity": r.Severity, "fixed": r.Fixed, "version": r.Version, "title": r.Title,
+					"last_seen": at, "line": r.Line, "severity": r.Severity, "fixed": r.Fixed, "version": r.Version,
+					"title": r.Title, "cwe": r.CWE,
 				}).Error; err != nil {
 					return err
 				}
@@ -260,7 +289,7 @@ func reconcileFindings(repoName, domain string, rows []finding, at time.Time) (n
 
 		var gone []uint
 		for id, f := range byID {
-			if f.ResolvedAt == nil && !seen[id] {
+			if f.ResolvedAt == nil && !seen[id] && !skip[f.Kind] {
 				gone = append(gone, f.ID)
 			}
 		}
@@ -306,10 +335,7 @@ func openFindings(repoName, domain string) []finding {
 	db.DB.Where("repo_name = ? AND domain = ? AND resolved_at IS NULL", repoName, domain).Find(&rows)
 	out := make([]finding, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, finding{
-			Domain: r.Domain, Kind: r.Kind, Target: r.Target, VulnID: r.VulnID, Pkg: r.Pkg,
-			Line: r.Line, Version: r.Version, Fixed: r.Fixed, Severity: r.Severity, Title: r.Title,
-		})
+		out = append(out, findingFromRow(r))
 	}
 	out = applySuppressions(out, activeSuppressions(repoName))
 	sortFindings(out)
@@ -361,10 +387,7 @@ func detailFindings(repoName, domain string) []detailFinding {
 	plain := make([]finding, 0, len(rows))
 	byID := make(map[identity]models.ScanFinding, len(rows))
 	for _, r := range rows {
-		f := finding{
-			Domain: r.Domain, Kind: r.Kind, Target: r.Target, VulnID: r.VulnID, Pkg: r.Pkg,
-			Line: r.Line, Version: r.Version, Fixed: r.Fixed, Severity: r.Severity, Title: r.Title,
-		}
+		f := findingFromRow(r)
 		plain = append(plain, f)
 		byID[f.identity()] = r
 	}
@@ -398,6 +421,7 @@ func recountRepo(repoName string) {
 		"critical": c["CRITICAL"], "high": c["HIGH"], "medium": c["MEDIUM"], "low": c["LOW"],
 		"image_critical": i["CRITICAL"], "image_high": i["HIGH"], "image_medium": i["MEDIUM"], "image_low": i["LOW"],
 		"secrets":    countKind(code, FindingSecret),
+		"weaknesses": countKind(code, FindingWeakness),
 		"suppressed": countSuppressed(code) + countSuppressed(image),
 	}
 	// Not Save: that would move UpdatedAt, which the dashboards read as

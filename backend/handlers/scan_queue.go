@@ -110,19 +110,31 @@ func trivyCacheArgs() []string {
 // v0.69.4 release (CVE-2026-33634) was built to steal exactly what the
 // process running it could see.
 func trivyEnv(extra ...string) []string {
-	keep := []string{"PATH=", "HOME=", "TMPDIR=", "TRIVY_", "HTTP_PROXY=", "HTTPS_PROXY=", "NO_PROXY=",
+	return append(keepEnv("PATH=", "HOME=", "TMPDIR=", "TRIVY_", "HTTP_PROXY=", "HTTPS_PROXY=", "NO_PROXY=",
 		"http_proxy=", "https_proxy=", "no_proxy=", "SSL_CERT_", "DOCKER_CONFIG=", "DOCKER_HOST=",
-		"AWS_", "GOOGLE_APPLICATION_CREDENTIALS=", "AZURE_"}
+		"AWS_", "GOOGLE_APPLICATION_CREDENTIALS=", "AZURE_"), extra...)
+}
+
+// sastEnv is the same idea for Opengrep, which needs even less: its rules
+// are on disk and it pulls no images, so no proxies and no cloud
+// credentials. The SEMGREP_ settings it still reads under its old name turn
+// off the version check and metrics, the only network calls it would make.
+func sastEnv() []string {
+	return append(keepEnv("PATH=", "HOME=", "TMPDIR="),
+		"SEMGREP_ENABLE_VERSION_CHECK=0", "SEMGREP_SEND_METRICS=off")
+}
+
+func keepEnv(prefixes ...string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
-		for _, p := range keep {
+		for _, p := range prefixes {
 			if strings.HasPrefix(kv, p) {
 				env = append(env, kv)
 				break
 			}
 		}
 	}
-	return append(env, extra...)
+	return env
 }
 
 // EnqueueScan schedules a scan, collapsing duplicates: a repository already

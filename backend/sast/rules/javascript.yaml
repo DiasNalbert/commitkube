@@ -1,0 +1,291 @@
+# CommitKube SAST rules for JavaScript and TypeScript. Fixtures:
+# ../testdata/javascript.js.
+#
+# Request sources are Express and Koa style: the request object is called
+# req or request, as it is in nearly every handler, and asking for that name
+# is what keeps a fetch Response's .body from counting as user input.
+rules:
+  - id: ck-js-sql-built-from-strings
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      SQL text built with a template literal or concatenation reaches a query.
+      If any part of it comes from outside the program this is SQL injection.
+      Pass the values as query parameters, or use a tagged template such as
+      Prisma's $queryRaw`...`, which parameterizes for you.
+    metadata:
+      cwe: ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"]
+      category: injection
+    # Taint, so the SQL may be built lines before it runs. The source is the
+    # building itself: an SQL keyword opening a template literal with an
+    # interpolation in it, or a string that is then concatenated.
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $Q
+          - metavariable-regex:
+              metavariable: $Q
+              regex: '(?is)^(`\s*(select|insert|update|delete|with)\b[^`]*\$\{|["'']\s*(select|insert|update|delete|with)\b.*["'']\s*\+)'
+    pattern-sinks:
+      - patterns:
+          - pattern: $DB.$M($ARG, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(\$?(query|execute|raw|queryRawUnsafe|executeRawUnsafe|unsafe)|whereRaw|orderByRaw|havingRaw|joinRaw)$
+          - focus-metavariable: $ARG
+
+  - id: ck-js-shell-command
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      child_process.$F runs its argument through a shell, and the argument is
+      not a constant. Anything in it that comes from outside the program can
+      add commands of its own. Use execFile or spawn with an argument array.
+    metadata:
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"]
+      category: injection
+    patterns:
+      # A bare exec() is the destructured child_process one; called on
+      # something it is child_process only under the names it usually goes
+      # by, which is what keeps regex.exec(str) out.
+      - pattern-either:
+          - patterns:
+              - pattern: $F($CMD, ...)
+              - metavariable-regex:
+                  metavariable: $F
+                  regex: ^(exec|execSync)$
+          - patterns:
+              - pattern: $CP.$F($CMD, ...)
+              - metavariable-regex:
+                  metavariable: $F
+                  regex: ^(exec|execSync)$
+              - metavariable-regex:
+                  metavariable: $CP
+                  regex: ^(child_process|childProcess|cp|proc|require\(["'](node:)?child_process["']\))$
+      - metavariable-regex:
+          metavariable: $CMD
+          regex: '(?s)^(?!["'']|`[^`$]*`$)'
+
+  - id: ck-js-command-from-request
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Data from the HTTP request reaches a process launch. Whoever sends the
+      request chooses what runs. Map the input to a fixed set of commands or
+      arguments instead of passing it through.
+    metadata:
+      cwe: ["CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"]
+      category: injection
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $REQ.$A
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(query|body|params|headers|cookies|url|originalUrl|path)$
+      - pattern: $R.nextUrl.searchParams
+    pattern-sinks:
+      - patterns:
+          - pattern: $F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(exec|execSync|execFile|execFileSync|spawn|spawnSync)$
+      - patterns:
+          - pattern: $CP.$F(...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(exec|execSync|execFile|execFileSync|spawn|spawnSync)$
+          - metavariable-regex:
+              metavariable: $CP
+              regex: ^(child_process|childProcess|cp|proc|require\(["'](node:)?child_process["']\))$
+
+  - id: ck-js-path-from-request
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      A file path built from the HTTP request reaches the filesystem. A value
+      such as ../../etc/passwd walks out of the intended directory. Keep only
+      path.basename of the input, or pass a root option to res.sendFile.
+    metadata:
+      cwe: ["CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"]
+      category: path-traversal
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $REQ.$A
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(query|body|params|headers|cookies|url|originalUrl|path)$
+      - pattern: $R.nextUrl.searchParams
+    pattern-sinks:
+      - patterns:
+          - pattern: $FS.$M($P, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(readFile|readFileSync|createReadStream|writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|unlink|unlinkSync|rm|rmSync|readdir|readdirSync)$
+          - focus-metavariable: $P
+      - patterns:
+          - pattern-either:
+              - pattern: $RES.sendFile($P, ...)
+              - pattern: $RES.download($P, ...)
+          - pattern-not: '$RES.sendFile($P, {..., root: $ROOT, ...}, ...)'
+          - pattern-not: '$RES.download($P, $NAME, {..., root: $ROOT, ...}, ...)'
+          - focus-metavariable: $P
+    pattern-sanitizers:
+      - pattern: path.basename(...)
+
+  - id: ck-js-ssrf-from-request
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      A URL taken from the HTTP request is fetched by the server. Whoever sends
+      the request can make it call internal services or the cloud metadata
+      endpoint. Fetch only hosts from an allow-list.
+    metadata:
+      cwe: ["CWE-918: Server-Side Request Forgery (SSRF)"]
+      category: ssrf
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $REQ.$A
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(query|body|params|headers|cookies|url|originalUrl|path)$
+      - pattern: $R.nextUrl.searchParams
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: fetch($U, ...)
+              - pattern: axios($U, ...)
+              - pattern: got($U, ...)
+              - pattern: http.get($U, ...)
+              - pattern: https.get($U, ...)
+              - pattern: http.request($U, ...)
+              - pattern: https.request($U, ...)
+              - patterns:
+                  - pattern-either:
+                      - pattern: axios.$M($U, ...)
+                      - pattern: got.$M($U, ...)
+                  - metavariable-regex:
+                      metavariable: $M
+                      regex: ^(get|post|put|patch|delete|head|options)$
+          - focus-metavariable: $U
+    # Input placed after a fixed scheme and host picks a path on that host,
+    # not which host is called.
+    pattern-sanitizers:
+      - patterns:
+          - pattern: $E
+          - metavariable-regex:
+              metavariable: $E
+              regex: '^(`https?://[^/$`]+/|["'']https?://[^/"'']+/)'
+
+  - id: ck-js-open-redirect
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      The redirect target comes from the HTTP request. A link to this endpoint
+      can send users to any site while looking like it belongs to yours. Only
+      redirect to relative paths or to an allow-list of hosts.
+    metadata:
+      cwe: ["CWE-601: URL Redirection to Untrusted Site ('Open Redirect')"]
+      category: open-redirect
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $REQ.$A
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(query|body|params|headers|cookies|url|originalUrl|path)$
+      - pattern: $R.nextUrl.searchParams
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $RES.redirect($U)
+              - pattern: $RES.redirect($CODE, $U)
+              - pattern: NextResponse.redirect($U, ...)
+          - focus-metavariable: $U
+
+  - id: ck-js-html-injection
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      HTML that is not a constant is written into the page without escaping.
+      If it holds user input this is cross-site scripting. Set textContent, or
+      pass the HTML through DOMPurify.sanitize first.
+    metadata:
+      cwe: ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"]
+      category: xss
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $X
+          - pattern: $EL.outerHTML = $X
+          - pattern: $EL.insertAdjacentHTML($POS, $X)
+          - pattern: document.write($X)
+          - pattern: '<$T dangerouslySetInnerHTML={{__html: $X}} />'
+      # Not a string literal, not a template with nothing interpolated, and
+      # not already sanitized.
+      - metavariable-regex:
+          metavariable: $X
+          regex: '(?s)^(?!["'']|`[^`$]*`$|(DOMPurify\.)?sanitize(Html)?\(|xss\()'
+
+  - id: ck-js-eval
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      A string that is not a constant is run as code. If the string can carry
+      outside input, that input runs with the program's privileges. Use
+      JSON.parse for data, or a lookup table.
+    metadata:
+      cwe: ["CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')"]
+      category: injection
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: new Function(..., $X)
+          - pattern: Function(..., $X)
+      - metavariable-regex:
+          metavariable: $X
+          regex: '(?s)^(?!["'']|`[^`$]*`$)'
+
+  - id: ck-js-tls-verification-disabled
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Certificate checking is turned off, so anyone on the network path can
+      impersonate the server. Trust the server's CA through the ca option
+      instead.
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      category: crypto
+    pattern-either:
+      - pattern: '{..., rejectUnauthorized: false, ...}'
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = 0
+
+  - id: ck-js-weak-hash
+    languages: [javascript, typescript]
+    severity: INFO
+    message: >-
+      MD5 and SHA-1 are broken for security purposes. If this hash protects
+      passwords, signatures or integrity, use SHA-256 or better (bcrypt or
+      argon2 for passwords). For checksums and cache keys it is fine.
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: crypto
+    patterns:
+      - pattern: $C.createHash("$ALG")
+      - metavariable-regex:
+          metavariable: $ALG
+          regex: (?i)^(md5|sha1|sha-1)$

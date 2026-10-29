@@ -104,50 +104,6 @@ export default function RepositoryDetail() {
   const [scanResult, setScanResult] = useState<{ message: string; critical: number; high: number; medium: number; low: number } | null>(null);
   const [scanError, setScanError] = useState("");
 
-  interface AnalyzeFinding {
-    severity: string;
-    file?: string;
-    line?: number;
-    title: string;
-    description: string;
-    snippet?: string;
-    fix?: string;
-  }
-  interface AnalyzeResult { security: AnalyzeFinding[]; performance: AnalyzeFinding[]; best_practices: AnalyzeFinding[]; }
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analyzeResult, setAnalyzeResult] = useState<AnalyzeResult | null>(null);
-  const [analyzeError, setAnalyzeError] = useState("");
-  const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
-  const [highlightLine, setHighlightLine] = useState<number | null>(null);
-
-  const runAnalyze = async () => {
-    setAnalyzing(true);
-    setAnalyzeResult(null);
-    setAnalyzeError("");
-    try {
-      const res = await apiFetch(`/repositories/${repoName}/analyze`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ branch: selectedBranch }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Analysis failed");
-      setAnalyzeResult(data);
-    } catch (err) {
-      setAnalyzeError((err instanceof Error ? err.message : String(err)));
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  const openInEditor = (file: string, line?: number) => {
-    setHighlightLine(line ?? null);
-    setTab("files");
-    setPathHistory([]);
-    setCurrentPath(file);
-    loadSrc(file, selectedBranch);
-  };
-
   const runScan = async () => {
     setScanning(true);
     setScanResult(null);
@@ -183,7 +139,6 @@ export default function RepositoryDetail() {
     setEditing(false);
     setCommitError("");
     setCommitSuccess("");
-    setHighlightLine(null);
     const branchParam = (branch ?? selectedBranch) ? `&branch=${encodeURIComponent(branch ?? selectedBranch)}` : "";
     try {
       const res = await apiFetch(`/repositories/${repoName}/src?path=${encodeURIComponent(path)}${branchParam}`);
@@ -378,13 +333,6 @@ export default function RepositoryDetail() {
   };
 
   useEffect(() => {
-    if (highlightLine && fileContent) {
-      const el = document.getElementById(`L${highlightLine}`);
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [highlightLine, fileContent]);
-
-  useEffect(() => {
     apiFetch("/workspaces")
       .then(r => r.json())
       .then((ws: { has_app_pass?: boolean }[]) => setUserHasKeys(Array.isArray(ws) && ws.some(w => w.has_app_pass)))
@@ -436,13 +384,6 @@ export default function RepositoryDetail() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={runAnalyze}
-            disabled={analyzing}
-            className="text-sm px-4 py-2 border border-brand-gold/50 text-brand-gold hover:bg-brand-gold/10 rounded transition disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {analyzing ? "Analyzing..." : "Code Analyze"}
-          </button>
-          <button
             onClick={runScan}
             disabled={scanning}
             className="btn-primary text-sm px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -473,104 +414,6 @@ export default function RepositoryDetail() {
           </div>
         </div>
       )}
-
-      {analyzeError && (
-        <div className="p-3 rounded border border-red-500/40 bg-red-500/10 text-red-400 text-sm">
-          ❌ {analyzeError}
-        </div>
-      )}
-
-      {analyzeResult && (() => {
-        const total = analyzeResult.security.length + analyzeResult.performance.length + analyzeResult.best_practices.length;
-        const sevColor = (s: string) => {
-          switch (s?.toLowerCase()) {
-            case "high":   return "text-red-400 bg-red-500/10 border-red-500/30";
-            case "medium": return "text-yellow-400 bg-yellow-500/10 border-yellow-500/30";
-            default:       return "text-blue-400 bg-blue-500/10 border-blue-500/30";
-          }
-        };
-        const FindingCard = ({ f, id }: { f: AnalyzeFinding; id: string }) => {
-          const isOpen = expandedFinding === id;
-          return (
-            <div className="rounded border border-zinc-700 bg-zinc-900 overflow-hidden">
-              <button
-                className="w-full text-left p-3 hover:bg-zinc-800/60 transition flex items-start gap-2 flex-wrap"
-                onClick={() => setExpandedFinding(isOpen ? null : id)}
-              >
-                <span className={`text-[10px] px-1.5 py-0.5 rounded border font-semibold uppercase shrink-0 mt-0.5 ${sevColor(f.severity)}`}>
-                  {f.severity}
-                </span>
-                {f.file && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-400 font-mono shrink-0">
-                    {f.file}{f.line ? `:${f.line}` : ""}
-                  </span>
-                )}
-                <span className="text-sm font-medium text-zinc-200 flex-1">{f.title}</span>
-                <span className="text-zinc-500 text-xs shrink-0">{isOpen ? "▲" : "▼"}</span>
-              </button>
-              {isOpen && (
-                <div className="border-t border-zinc-800 p-3 space-y-3">
-                  <p className="text-xs text-zinc-400 leading-relaxed">{f.description}</p>
-                  {f.snippet && (
-                    <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-red-400 mb-1">Current code</p>
-                      <pre className="bg-red-950/30 border border-red-500/20 rounded p-3 text-xs font-mono text-red-200 overflow-auto whitespace-pre-wrap">{f.snippet}</pre>
-                    </div>
-                  )}
-                  {f.fix && (
-                    <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-brand-green mb-1">Suggested fix</p>
-                      <pre className="bg-green-950/30 border border-brand-green/20 rounded p-3 text-xs font-mono text-green-200 overflow-auto whitespace-pre-wrap">{f.fix}</pre>
-                    </div>
-                  )}
-                  {f.file && (
-                    <button
-                      onClick={() => openInEditor(f.file!, f.line)}
-                      className="text-xs px-3 py-1.5 rounded border border-brand-gold/40 text-brand-gold hover:bg-brand-gold/10 transition"
-                    >
-                      Open in editor {f.line ? `→ line ${f.line}` : ""}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        };
-        const Section = ({ label, icon, findings, prefix }: { label: string; icon: string; findings: AnalyzeFinding[]; prefix: string }) =>
-          findings.length === 0 ? null : (
-            <div>
-              <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2 flex items-center gap-2">
-                <span>{icon}</span>{label}
-                <span className="text-zinc-600 font-normal normal-case">({findings.length})</span>
-              </h4>
-              <div className="space-y-2">
-                {findings.map((f, i) => <FindingCard key={i} f={f} id={`${prefix}-${i}`} />)}
-              </div>
-            </div>
-          );
-        return (
-          <div className="glass-card p-5 space-y-4 border-l-4 border-l-brand-gold">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-brand-gold flex items-center gap-2">
-                Code Analyze
-                <span className="text-xs text-zinc-500 font-normal">{total} finding{total !== 1 ? "s" : ""}</span>
-              </h3>
-              <button onClick={() => { setAnalyzeResult(null); setExpandedFinding(null); }} className="text-xs text-zinc-500 hover:text-zinc-300 transition">✕ Close</button>
-            </div>
-            {total === 0 ? (
-              <div className="p-4 rounded border border-brand-green/30 bg-brand-green/5 text-brand-green text-sm text-center">
-                ✅ No issues found — the codebase looks good!
-              </div>
-            ) : (
-              <div className="space-y-5">
-                <Section label="Security" icon="🔒" findings={analyzeResult.security} prefix="sec" />
-                <Section label="Performance" icon="⚡" findings={analyzeResult.performance} prefix="perf" />
-                <Section label="Best Practices" icon="📋" findings={analyzeResult.best_practices} prefix="bp" />
-              </div>
-            )}
-          </div>
-        );
-      })()}
 
       <div className="flex gap-1 border-b border-zinc-800">
         <button
@@ -752,26 +595,22 @@ export default function RepositoryDetail() {
                   <div className="bg-zinc-950 border border-zinc-800 rounded text-xs font-mono overflow-auto max-h-[70vh]">
                     {fileContent.split("\n").map((ln, idx) => {
                       const lineNum = idx + 1;
-                      const isHighlighted = highlightLine === lineNum;
                       return (
                         <div
                           key={idx}
                           id={`L${lineNum}`}
-                          className={`flex min-w-0 ${isHighlighted ? "bg-yellow-500/20 ring-1 ring-inset ring-yellow-500/40" : "hover:bg-zinc-900"}`}
+                          className="flex min-w-0 hover:bg-zinc-900"
                         >
                           <span className="select-none text-zinc-600 text-right w-12 shrink-0 px-2 py-0.5 border-r border-zinc-800">
                             {lineNum}
                           </span>
-                          <span className={`px-3 py-0.5 whitespace-pre flex-1 min-w-0 ${isHighlighted ? "text-yellow-200" : "text-brand-green"}`}>
+                          <span className="px-3 py-0.5 whitespace-pre flex-1 min-w-0 text-brand-green">
                             {ln}
                           </span>
                         </div>
                       );
                     })}
                   </div>
-                  {highlightLine && (
-                    <p className="text-xs text-yellow-400/70 mt-1">Line {highlightLine} highlighted from Code Analyze finding</p>
-                  )}
                 </>
               ) : (
                 <div className="space-y-3">

@@ -9,7 +9,9 @@ type Sev = "critical" | "high" | "medium" | "low";
 interface Counts { critical: number; high: number; medium: number; low: number }
 interface Point extends Counts { date: string; repos: number }
 interface Mover { repo: string; from: Counts; to: Counts; delta: Counts }
-interface Split { baseline_repos: number; baseline_from: Counts; baseline_to: Counts; added_repos: number; added: Counts }
+interface Split { baseline_repos: number; baseline_from: Counts; baseline_to: Counts; added_repos: number; added: Counts;
+  /** Found by static analysis the first time it ran on repositories already tracked. Optional: only the code domain has it. */
+  new_checks?: Counts; new_check_repos?: number }
 interface Change { repo: string; at: string; from: Counts; to: Counts; delta: Counts }
 interface Timeline {
   points: Point[]; improved: Mover[]; regressed: Mover[]; scans: number; split?: Split;
@@ -58,7 +60,8 @@ const FromTo = ({ from, to }: { from: number; to: number }) => (
  *  medium findings outnumber critical ones by an order of magnitude or more,
  *  and on a shared axis the line that matters most would be flat. */
 export default function SecurityTimeline({ domain, wsId, projectKey, refreshKey = 0 }: {
-  domain: SecurityDomain; wsId: number | null; projectKey: string | null;
+  /** "sast" is the code weaknesses alone, for the weaknesses view. */
+  domain: SecurityDomain | "sast"; wsId: number | null; projectKey: string | null;
   /** Bumped by the dashboard when a scan finished; refetches without a spinner. */
   refreshKey?: number;
 }) {
@@ -164,6 +167,11 @@ export default function SecurityTimeline({ domain, wsId, projectKey, refreshKey 
                     {split.added_repos > 0 && (
                       <div className="text-zinc-500" title={`Brought in by the ${split.added_repos} repositories first scanned in this period`}>
                         +{split.added[s.key].toLocaleString()} from {split.added_repos} new repos
+                      </div>
+                    )}
+                    {(split.new_check_repos ?? 0) > 0 && (split.new_checks?.[s.key] ?? 0) > 0 && (
+                      <div className="text-zinc-500" title={`Found by static analysis the first time it ran on ${split.new_check_repos} repositories that were already scanned. New coverage, not the code getting worse.`}>
+                        +{split.new_checks![s.key].toLocaleString()} from static analysis starting
                       </div>
                     )}
                   </div>
