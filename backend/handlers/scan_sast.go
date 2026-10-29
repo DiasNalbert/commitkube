@@ -42,6 +42,12 @@ const (
 // text must not reach the database, the API or the email.
 type opengrepReport struct {
 	Results []opengrepResult `json:"results"`
+	Errors  []struct {
+		Type    json.RawMessage `json:"type"` // a string or a [name, details] pair
+		Level   string          `json:"level"`
+		Message string          `json:"message"`
+		Path    string          `json:"path"`
+	} `json:"errors"`
 }
 
 type opengrepResult struct {
@@ -95,13 +101,43 @@ func runSAST(dir string) ([]finding, error) {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("opengrep did not finish within %s", sastPassTimeout)
 		}
-		return nil, fmt.Errorf("opengrep failed: %s", strings.TrimSpace(lastLines(string(out), 5)))
+		return nil, fmt.Errorf("opengrep failed (%v): %s", err, opengrepFailure(reportFile, out))
 	}
 	raw, err := os.ReadFile(reportFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read opengrep report: %w", err)
 	}
 	return findingsFromOpengrep(raw, dir)
+}
+
+// opengrepFailure says why a pass failed. With --quiet the reason is not on
+// stderr but in the report's errors -- an invalid rule, a crash -- so read
+// those first and fall back to whatever the process printed.
+func opengrepFailure(reportFile string, out []byte) string {
+	var report opengrepReport
+	if raw, err := os.ReadFile(reportFile); err == nil && json.Unmarshal(raw, &report) == nil {
+		var msgs []string
+		for _, e := range report.Errors {
+			if e.Level != "error" && e.Level != "" {
+				continue
+			}
+			msg := strings.TrimSpace(e.Message)
+			if e.Path != "" {
+				msg = e.Path + ": " + msg
+			}
+			msgs = append(msgs, msg)
+			if len(msgs) == 3 {
+				break
+			}
+		}
+		if len(msgs) > 0 {
+			return strings.Join(msgs, "; ")
+		}
+	}
+	if text := strings.TrimSpace(lastLines(string(out), 5)); text != "" {
+		return text
+	}
+	return "no output"
 }
 
 // findingsFromOpengrep turns a report into rows. Each row's package is a
@@ -116,10 +152,19 @@ func findingsFromOpengrep(raw []byte, root string) ([]finding, error) {
 	}
 	lines := sourceLines{root: root, files: map[string][]string{}}
 	occurrences := map[string]int{}
+	seen := map[string]bool{}
 	out := make([]finding, 0, len(report.Results))
 	for _, r := range report.Results {
 		rule := ruleName(r.CheckID)
 		path := reportPath(r.Path, root)
+		// A taint rule reports one result per path into the sink, so SQL
+		// built from three pieces comes back three times on one line. That
+		// is one thing to fix.
+		at := fmt.Sprintf("%s\x00%s\x00%d", rule, path, r.Start.Line)
+		if seen[at] {
+			continue
+		}
+		seen[at] = true
 		fp := weaknessFingerprint(rule, path, lines.at(path, r.Start.Line))
 		// The same code twice in one file is two findings; the second gets
 		// a suffix so the two do not collapse into one.

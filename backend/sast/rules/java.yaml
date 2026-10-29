@@ -44,11 +44,18 @@ rules:
       category: injection
     mode: taint
     pattern-sources:
-      - pattern: ($R HttpServletRequest).getParameter(...)
-      - pattern: ($R HttpServletRequest).getParameterValues(...)
-      - pattern: ($R HttpServletRequest).getHeader(...)
-      - pattern: ($R HttpServletRequest).getQueryString()
-      - pattern: ($R HttpServletRequest).getPathInfo()
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., HttpServletRequest $R, ...) { ... }
+              - pattern-inside: |
+                  void $METHOD(..., HttpServletRequest $R, ...) { ... }
+          - pattern-either:
+              - pattern: $R.getParameter(...)
+              - pattern: $R.getParameterValues(...)
+              - pattern: $R.getHeader(...)
+              - pattern: $R.getQueryString()
+              - pattern: $R.getPathInfo()
       - patterns:
           - pattern-either:
               - pattern-inside: |
@@ -60,10 +67,13 @@ rules:
               regex: ^(RequestParam|PathVariable|RequestHeader|CookieValue)$
           - pattern: $P
     pattern-sinks:
-      - pattern: Runtime.getRuntime().exec(...)
-      - pattern: ($RT Runtime).exec(...)
-      - pattern: new ProcessBuilder(...)
-      - pattern: ($PB ProcessBuilder).command(...)
+      - patterns:
+          - pattern-either:
+              - pattern: Runtime.getRuntime().exec($X, ...)
+              - pattern: ($RT Runtime).exec($X, ...)
+              - pattern: new ProcessBuilder(..., $X, ...)
+              - pattern: ($PB ProcessBuilder).command(..., $X, ...)
+          - focus-metavariable: $X
 
   - id: ck-java-path-from-request
     languages: [java]
@@ -78,11 +88,18 @@ rules:
       category: path-traversal
     mode: taint
     pattern-sources:
-      - pattern: ($R HttpServletRequest).getParameter(...)
-      - pattern: ($R HttpServletRequest).getParameterValues(...)
-      - pattern: ($R HttpServletRequest).getHeader(...)
-      - pattern: ($R HttpServletRequest).getQueryString()
-      - pattern: ($R HttpServletRequest).getPathInfo()
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., HttpServletRequest $R, ...) { ... }
+              - pattern-inside: |
+                  void $METHOD(..., HttpServletRequest $R, ...) { ... }
+          - pattern-either:
+              - pattern: $R.getParameter(...)
+              - pattern: $R.getParameterValues(...)
+              - pattern: $R.getHeader(...)
+              - pattern: $R.getQueryString()
+              - pattern: $R.getPathInfo()
       - patterns:
           - pattern-either:
               - pattern-inside: |
@@ -117,11 +134,18 @@ rules:
       category: ssrf
     mode: taint
     pattern-sources:
-      - pattern: ($R HttpServletRequest).getParameter(...)
-      - pattern: ($R HttpServletRequest).getParameterValues(...)
-      - pattern: ($R HttpServletRequest).getHeader(...)
-      - pattern: ($R HttpServletRequest).getQueryString()
-      - pattern: ($R HttpServletRequest).getPathInfo()
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., HttpServletRequest $R, ...) { ... }
+              - pattern-inside: |
+                  void $METHOD(..., HttpServletRequest $R, ...) { ... }
+          - pattern-either:
+              - pattern: $R.getParameter(...)
+              - pattern: $R.getParameterValues(...)
+              - pattern: $R.getHeader(...)
+              - pattern: $R.getQueryString()
+              - pattern: $R.getPathInfo()
       - patterns:
           - pattern-either:
               - pattern-inside: |
@@ -164,8 +188,15 @@ rules:
       category: open-redirect
     mode: taint
     pattern-sources:
-      - pattern: ($R HttpServletRequest).getParameter(...)
-      - pattern: ($R HttpServletRequest).getHeader(...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $METHOD(..., HttpServletRequest $R, ...) { ... }
+              - pattern-inside: |
+                  void $METHOD(..., HttpServletRequest $R, ...) { ... }
+          - pattern-either:
+              - pattern: $R.getParameter(...)
+              - pattern: $R.getHeader(...)
       - patterns:
           - pattern-either:
               - pattern-inside: |
@@ -177,7 +208,9 @@ rules:
               regex: ^(RequestParam|PathVariable|RequestHeader|CookieValue)$
           - pattern: $P
     pattern-sinks:
-      - pattern: ($RESP HttpServletResponse).sendRedirect(...)
+      - patterns:
+          - pattern: $RESP.sendRedirect($U)
+          - focus-metavariable: $U
       - patterns:
           - pattern: '"redirect:" + $U'
           - focus-metavariable: $U

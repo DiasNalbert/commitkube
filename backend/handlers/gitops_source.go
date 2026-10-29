@@ -242,10 +242,23 @@ func explainGitError(out string, err error) string {
 	case strings.Contains(out, "Repository not found"), strings.Contains(out, "does not appear to be a git repository"), strings.Contains(out, "not found"):
 		return "the server has no repository at that path, or the key cannot see it: " + lastLine(out)
 	}
-	if out == "" {
+	// ssh failures end in git's own boilerplate ("Please make sure you have
+	// the correct access rights and the repository exists."); the reason is
+	// the line above it.
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "fatal: Could not read from remote repository") ||
+			strings.HasPrefix(l, "Please make sure you have the correct access rights") ||
+			l == "and the repository exists." {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	if len(lines) == 0 {
 		return err.Error()
 	}
-	return lastLine(out)
+	return lines[len(lines)-1]
 }
 
 func lastLine(s string) string {

@@ -64,7 +64,7 @@ rules:
                   regex: ^(child_process|childProcess|cp|proc|require\(["'](node:)?child_process["']\))$
       - metavariable-regex:
           metavariable: $CMD
-          regex: '(?s)^(?!["'']|`[^`$]*`$)'
+          regex: '(?s)^(?!"[^"]*"$|''[^'']*''$|`[^`$]*`$)'
 
   - id: ck-js-command-from-request
     languages: [javascript, typescript]
@@ -238,7 +238,7 @@ rules:
       # not already sanitized.
       - metavariable-regex:
           metavariable: $X
-          regex: '(?s)^(?!["'']|`[^`$]*`$|(DOMPurify\.)?sanitize(Html)?\(|xss\()'
+          regex: '(?s)^(?!"[^"]*"$|''[^'']*''$|`[^`$]*`$|(DOMPurify\.)?sanitize(Html)?\(|xss\()'
 
   - id: ck-js-eval
     languages: [javascript, typescript]
@@ -257,7 +257,7 @@ rules:
           - pattern: Function(..., $X)
       - metavariable-regex:
           metavariable: $X
-          regex: '(?s)^(?!["'']|`[^`$]*`$)'
+          regex: '(?s)^(?!"[^"]*"$|''[^'']*''$|`[^`$]*`$)'
 
   - id: ck-js-tls-verification-disabled
     languages: [javascript, typescript]

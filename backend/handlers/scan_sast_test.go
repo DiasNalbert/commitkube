@@ -174,3 +174,38 @@ func TestSastSeverity(t *testing.T) {
 		}
 	}
 }
+
+// With --quiet, Opengrep's reason for failing is in the report, not on
+// stderr; an empty "opengrep failed:" tells nobody anything.
+func TestOpengrepFailureReadsReportErrors(t *testing.T) {
+	report := filepath.Join(t.TempDir(), "r.json")
+	os.WriteFile(report, []byte(`{"results":[],"errors":[{"type":"Rule parse error","level":"error","message":"invalid pattern"}]}`), 0o600)
+	if got := opengrepFailure(report, nil); got != "invalid pattern" {
+		t.Errorf("got %q", got)
+	}
+	if got := opengrepFailure(filepath.Join(t.TempDir(), "missing.json"), nil); got != "no output" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExplainGitErrorSkipsBoilerplate(t *testing.T) {
+	out := "ERROR: Repository access denied. access via a deployment key is read-only.\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n"
+	if got := explainGitError(out, nil); got != "ERROR: Repository access denied. access via a deployment key is read-only." {
+		t.Errorf("got %q", got)
+	}
+}
+
+// A taint rule reports each path into a sink separately; on one line that is
+// one finding, not three.
+func TestSameLineTaintPathsAreOneFinding(t *testing.T) {
+	root := t.TempDir()
+	writeRepoFile(t, root, "a.go", "db.Query(\"SELECT \" + a + b)\n")
+	r := `{"check_id":"ck-go-sql-built-from-strings","path":"a.go","start":{"line":1},"extra":{"severity":"ERROR"}}`
+	rows, err := findingsFromOpengrep([]byte(`{"results":[`+r+`,`+r+`,`+r+`]}`), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+}

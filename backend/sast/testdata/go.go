@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/labstack/echo/v4"
 )
 
 func sqlCases(db *sql.DB, id string, n int) {
@@ -105,4 +106,19 @@ func hashCases(b []byte) {
 
 	// ok: ck-go-weak-hash
 	sha256.Sum256(b)
+}
+
+func echoHandler(c echo.Context) error {
+	// ruleid: ck-go-command-from-request
+	exec.Command(c.QueryParam("tool")).Run()
+	// ruleid: ck-go-path-from-request
+	os.Open(c.Param("name"))
+	return nil
+}
+
+func echoRoutes(e *echo.Echo) {
+	e.GET("/run", func(c echo.Context) error {
+		// ruleid: ck-go-command-from-request
+		return exec.Command(c.FormValue("tool")).Run()
+	})
 }

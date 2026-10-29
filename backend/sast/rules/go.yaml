@@ -1,5 +1,9 @@
 # CommitKube SAST rules for Go. Fixtures: ../testdata/go.go.
 #
+# Request data is matched through the handler's signature, not with typed
+# metavariables: Opengrep reads ($R *http.Request).X as a multiplication and
+# rejects ($C echo.Context) outright, so neither ever matched.
+#
 # The taint rules repeat their sources: Opengrep has no shared definitions
 # between rules, and YAML anchors are not something to bet a rule file on.
 rules:
@@ -71,26 +75,86 @@ rules:
       category: injection
     mode: taint
     pattern-sources:
-      - pattern: ($R *http.Request).URL.Query()
-      - pattern: ($R *http.Request).URL.RawQuery
-      - pattern: ($R *http.Request).URL.Path
-      - pattern: ($R *http.Request).FormValue(...)
-      - pattern: ($R *http.Request).PostFormValue(...)
-      - pattern: ($R *http.Request).PathValue(...)
-      - pattern: ($R *http.Request).Header.Get(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $R *http.Request, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func(..., $R *http.Request, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $R *http.Request, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $R.URL.Query()
+            - pattern: $R.URL.RawQuery
+            - pattern: $R.URL.Path
+            - pattern: $R.FormValue(...)
+            - pattern: $R.PostFormValue(...)
+            - pattern: $R.PathValue(...)
+            - pattern: $R.Header.Get(...)
       - pattern: mux.Vars(...)
-      - pattern: ($C *fiber.Ctx).Params(...)
-      - pattern: ($C *fiber.Ctx).Query(...)
-      - pattern: ($C *fiber.Ctx).FormValue(...)
-      - pattern: ($C *fiber.Ctx).Get(...)
-      - pattern: ($C *gin.Context).Param(...)
-      - pattern: ($C *gin.Context).Query(...)
-      - pattern: ($C *gin.Context).DefaultQuery(...)
-      - pattern: ($C *gin.Context).PostForm(...)
-      - pattern: ($C *gin.Context).GetHeader(...)
-      - pattern: ($C echo.Context).Param(...)
-      - pattern: ($C echo.Context).QueryParam(...)
-      - pattern: ($C echo.Context).FormValue(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C *fiber.Ctx, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func(..., $C *fiber.Ctx, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Params(...)
+            - pattern: $C.Query(...)
+            - pattern: $C.FormValue(...)
+            - pattern: $C.Get(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C *gin.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func(..., $C *gin.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *gin.Context, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Param(...)
+            - pattern: $C.Query(...)
+            - pattern: $C.DefaultQuery(...)
+            - pattern: $C.PostForm(...)
+            - pattern: $C.GetHeader(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C echo.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func(..., $C echo.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C echo.Context, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Param(...)
+            - pattern: $C.QueryParam(...)
+            - pattern: $C.FormValue(...)
     pattern-sinks:
       - pattern: exec.Command(...)
       - pattern: exec.CommandContext(...)
@@ -108,26 +172,86 @@ rules:
       category: path-traversal
     mode: taint
     pattern-sources:
-      - pattern: ($R *http.Request).URL.Query()
-      - pattern: ($R *http.Request).URL.RawQuery
-      - pattern: ($R *http.Request).URL.Path
-      - pattern: ($R *http.Request).FormValue(...)
-      - pattern: ($R *http.Request).PostFormValue(...)
-      - pattern: ($R *http.Request).PathValue(...)
-      - pattern: ($R *http.Request).Header.Get(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $R *http.Request, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func(..., $R *http.Request, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $R *http.Request, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $R.URL.Query()
+            - pattern: $R.URL.RawQuery
+            - pattern: $R.URL.Path
+            - pattern: $R.FormValue(...)
+            - pattern: $R.PostFormValue(...)
+            - pattern: $R.PathValue(...)
+            - pattern: $R.Header.Get(...)
       - pattern: mux.Vars(...)
-      - pattern: ($C *fiber.Ctx).Params(...)
-      - pattern: ($C *fiber.Ctx).Query(...)
-      - pattern: ($C *fiber.Ctx).FormValue(...)
-      - pattern: ($C *fiber.Ctx).Get(...)
-      - pattern: ($C *gin.Context).Param(...)
-      - pattern: ($C *gin.Context).Query(...)
-      - pattern: ($C *gin.Context).DefaultQuery(...)
-      - pattern: ($C *gin.Context).PostForm(...)
-      - pattern: ($C *gin.Context).GetHeader(...)
-      - pattern: ($C echo.Context).Param(...)
-      - pattern: ($C echo.Context).QueryParam(...)
-      - pattern: ($C echo.Context).FormValue(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C *fiber.Ctx, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func(..., $C *fiber.Ctx, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Params(...)
+            - pattern: $C.Query(...)
+            - pattern: $C.FormValue(...)
+            - pattern: $C.Get(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C *gin.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func(..., $C *gin.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *gin.Context, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Param(...)
+            - pattern: $C.Query(...)
+            - pattern: $C.DefaultQuery(...)
+            - pattern: $C.PostForm(...)
+            - pattern: $C.GetHeader(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C echo.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func(..., $C echo.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C echo.Context, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Param(...)
+            - pattern: $C.QueryParam(...)
+            - pattern: $C.FormValue(...)
     pattern-sinks:
       - patterns:
           - pattern-either:
@@ -141,8 +265,36 @@ rules:
               - pattern: os.ReadDir($P)
               - pattern: ioutil.ReadFile($P)
               - pattern: http.ServeFile($W, $REQ, $P)
-              - pattern: ($C *fiber.Ctx).SendFile($P, ...)
-              - pattern: ($C *gin.Context).File($P)
+              - patterns:
+                - pattern-either:
+                    - pattern-inside: |
+                        func $F(..., $C *fiber.Ctx, ...) { ... }
+                    - pattern-inside: |
+                        func $F(..., $C *fiber.Ctx, ...) $RET { ... }
+                    - pattern-inside: |
+                        func(..., $C *fiber.Ctx, ...) { ... }
+                    - pattern-inside: |
+                        func(..., $C *fiber.Ctx, ...) $RET { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) $RET { ... }
+                - pattern: $C.SendFile($P, ...)
+              - patterns:
+                - pattern-either:
+                    - pattern-inside: |
+                        func $F(..., $C *gin.Context, ...) { ... }
+                    - pattern-inside: |
+                        func $F(..., $C *gin.Context, ...) $RET { ... }
+                    - pattern-inside: |
+                        func(..., $C *gin.Context, ...) { ... }
+                    - pattern-inside: |
+                        func(..., $C *gin.Context, ...) $RET { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C *gin.Context, ...) { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C *gin.Context, ...) $RET { ... }
+                - pattern: $C.File($P)
           - focus-metavariable: $P
     pattern-sanitizers:
       - pattern: filepath.Base(...)
@@ -160,26 +312,86 @@ rules:
       category: ssrf
     mode: taint
     pattern-sources:
-      - pattern: ($R *http.Request).URL.Query()
-      - pattern: ($R *http.Request).URL.RawQuery
-      - pattern: ($R *http.Request).URL.Path
-      - pattern: ($R *http.Request).FormValue(...)
-      - pattern: ($R *http.Request).PostFormValue(...)
-      - pattern: ($R *http.Request).PathValue(...)
-      - pattern: ($R *http.Request).Header.Get(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $R *http.Request, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func(..., $R *http.Request, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $R *http.Request, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $R.URL.Query()
+            - pattern: $R.URL.RawQuery
+            - pattern: $R.URL.Path
+            - pattern: $R.FormValue(...)
+            - pattern: $R.PostFormValue(...)
+            - pattern: $R.PathValue(...)
+            - pattern: $R.Header.Get(...)
       - pattern: mux.Vars(...)
-      - pattern: ($C *fiber.Ctx).Params(...)
-      - pattern: ($C *fiber.Ctx).Query(...)
-      - pattern: ($C *fiber.Ctx).FormValue(...)
-      - pattern: ($C *fiber.Ctx).Get(...)
-      - pattern: ($C *gin.Context).Param(...)
-      - pattern: ($C *gin.Context).Query(...)
-      - pattern: ($C *gin.Context).DefaultQuery(...)
-      - pattern: ($C *gin.Context).PostForm(...)
-      - pattern: ($C *gin.Context).GetHeader(...)
-      - pattern: ($C echo.Context).Param(...)
-      - pattern: ($C echo.Context).QueryParam(...)
-      - pattern: ($C echo.Context).FormValue(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C *fiber.Ctx, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func(..., $C *fiber.Ctx, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Params(...)
+            - pattern: $C.Query(...)
+            - pattern: $C.FormValue(...)
+            - pattern: $C.Get(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C *gin.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func(..., $C *gin.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *gin.Context, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Param(...)
+            - pattern: $C.Query(...)
+            - pattern: $C.DefaultQuery(...)
+            - pattern: $C.PostForm(...)
+            - pattern: $C.GetHeader(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C echo.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func(..., $C echo.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C echo.Context, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Param(...)
+            - pattern: $C.QueryParam(...)
+            - pattern: $C.FormValue(...)
     pattern-sinks:
       - patterns:
           - pattern-either:
@@ -216,33 +428,135 @@ rules:
       category: open-redirect
     mode: taint
     pattern-sources:
-      - pattern: ($R *http.Request).URL.Query()
-      - pattern: ($R *http.Request).URL.RawQuery
-      - pattern: ($R *http.Request).URL.Path
-      - pattern: ($R *http.Request).FormValue(...)
-      - pattern: ($R *http.Request).PostFormValue(...)
-      - pattern: ($R *http.Request).PathValue(...)
-      - pattern: ($R *http.Request).Header.Get(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $R *http.Request, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func(..., $R *http.Request, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $R *http.Request, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $R *http.Request, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $R.URL.Query()
+            - pattern: $R.URL.RawQuery
+            - pattern: $R.URL.Path
+            - pattern: $R.FormValue(...)
+            - pattern: $R.PostFormValue(...)
+            - pattern: $R.PathValue(...)
+            - pattern: $R.Header.Get(...)
       - pattern: mux.Vars(...)
-      - pattern: ($C *fiber.Ctx).Params(...)
-      - pattern: ($C *fiber.Ctx).Query(...)
-      - pattern: ($C *fiber.Ctx).FormValue(...)
-      - pattern: ($C *fiber.Ctx).Get(...)
-      - pattern: ($C *gin.Context).Param(...)
-      - pattern: ($C *gin.Context).Query(...)
-      - pattern: ($C *gin.Context).DefaultQuery(...)
-      - pattern: ($C *gin.Context).PostForm(...)
-      - pattern: ($C *gin.Context).GetHeader(...)
-      - pattern: ($C echo.Context).Param(...)
-      - pattern: ($C echo.Context).QueryParam(...)
-      - pattern: ($C echo.Context).FormValue(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C *fiber.Ctx, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func(..., $C *fiber.Ctx, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Params(...)
+            - pattern: $C.Query(...)
+            - pattern: $C.FormValue(...)
+            - pattern: $C.Get(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C *gin.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func(..., $C *gin.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *gin.Context, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C *gin.Context, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Param(...)
+            - pattern: $C.Query(...)
+            - pattern: $C.DefaultQuery(...)
+            - pattern: $C.PostForm(...)
+            - pattern: $C.GetHeader(...)
+      - patterns:
+        - pattern-either:
+            - pattern-inside: |
+                func $F(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func $F(..., $C echo.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func(..., $C echo.Context, ...) $RET { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C echo.Context, ...) { ... }
+            - pattern-inside: |
+                func ($RECV $RT) $F(..., $C echo.Context, ...) $RET { ... }
+        - pattern-either:
+            - pattern: $C.Param(...)
+            - pattern: $C.QueryParam(...)
+            - pattern: $C.FormValue(...)
     pattern-sinks:
       - patterns:
           - pattern-either:
               - pattern: http.Redirect($W, $REQ, $U, ...)
-              - pattern: ($C *fiber.Ctx).Redirect($U, ...)
-              - pattern: ($C *gin.Context).Redirect($CODE, $U)
-              - pattern: ($C echo.Context).Redirect($CODE, $U)
+              - patterns:
+                - pattern-either:
+                    - pattern-inside: |
+                        func $F(..., $C *fiber.Ctx, ...) { ... }
+                    - pattern-inside: |
+                        func $F(..., $C *fiber.Ctx, ...) $RET { ... }
+                    - pattern-inside: |
+                        func(..., $C *fiber.Ctx, ...) { ... }
+                    - pattern-inside: |
+                        func(..., $C *fiber.Ctx, ...) $RET { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C *fiber.Ctx, ...) $RET { ... }
+                - pattern: $C.Redirect($U, ...)
+              - patterns:
+                - pattern-either:
+                    - pattern-inside: |
+                        func $F(..., $C *gin.Context, ...) { ... }
+                    - pattern-inside: |
+                        func $F(..., $C *gin.Context, ...) $RET { ... }
+                    - pattern-inside: |
+                        func(..., $C *gin.Context, ...) { ... }
+                    - pattern-inside: |
+                        func(..., $C *gin.Context, ...) $RET { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C *gin.Context, ...) { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C *gin.Context, ...) $RET { ... }
+                - pattern: $C.Redirect($CODE, $U)
+              - patterns:
+                - pattern-either:
+                    - pattern-inside: |
+                        func $F(..., $C echo.Context, ...) { ... }
+                    - pattern-inside: |
+                        func $F(..., $C echo.Context, ...) $RET { ... }
+                    - pattern-inside: |
+                        func(..., $C echo.Context, ...) { ... }
+                    - pattern-inside: |
+                        func(..., $C echo.Context, ...) $RET { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C echo.Context, ...) { ... }
+                    - pattern-inside: |
+                        func ($RECV $RT) $F(..., $C echo.Context, ...) $RET { ... }
+                - pattern: $C.Redirect($CODE, $U)
           - focus-metavariable: $U
 
   - id: ck-go-tls-verification-disabled

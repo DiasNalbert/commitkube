@@ -298,16 +298,34 @@ func shouldNotify(manual, hadPrevious bool, previous models.ScanResult, counts, 
 		imageCounts["HIGH"] > previous.ImageHigh
 }
 
-// manual says a person asked for this scan and is waiting for the report;
-// scheduled passes leave it false and only mail when something got worse.
+// scanMail is what happened to a scan's email, so the person who pressed the
+// button is told the truth instead of always "report sent".
+type scanMail struct {
+	To  string
+	Err error
+}
+
+// runScanAndSave is a scheduled pass: the repository's owner is mailed, and
+// only when something got worse.
 func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
+	return runScan(repoName, sshKeyOverride, manual, nil, &scanMail{})
+}
+
+// runScan does the work. requester is the person who asked for the scan and
+// is waiting for the report; it is mailed to them rather than to the
+// repository's owner, who may be someone else or an account with no address.
+func runScan(repoName string, sshKeyOverride string, manual bool, requester *models.User, mail *scanMail) error {
 	var repo models.Repository
 	if err := db.DB.Where("name = ?", repoName).First(&repo).Error; err != nil {
 		return fmt.Errorf("repo not found: %w", err)
 	}
 
 	var user models.User
-	db.DB.First(&user, repo.UserID)
+	if requester != nil {
+		user = *requester
+	} else {
+		db.DB.First(&user, repo.UserID)
+	}
 
 	ws, err := resolveWorkspace(repo.UserID, repo.WorkspaceID)
 	if err != nil {
@@ -515,13 +533,22 @@ func runScanAndSave(repoName string, sshKeyOverride string, manual bool) error {
 		}
 		notifyCounts = countFindings(other)
 	}
-	if user.Email != "" && shouldNotify(manual, hadPrevious, previous, notifyCounts, imageCounts) {
+	if !shouldNotify(manual, hadPrevious, previous, notifyCounts, imageCounts) {
+		return nil
+	}
+	mail.To = user.Email
+	if user.Email == "" {
+		mail.Err = fmt.Errorf("user %d has no email address", user.ID)
+	} else {
 		html := buildScanHTML(repoName, rows, imageRows, scannedImage, imageErrStr)
 		subject := fmt.Sprintf("[CommitKube] Security Scan: %s — Code C:%d H:%d M:%d L:%d",
 			repoName, counts["CRITICAL"], counts["HIGH"], counts["MEDIUM"], counts["LOW"])
-		if err := sendScanEmail(user.Email, subject, html); err != nil {
-			fmt.Printf("Scan email failed for %s: %v\n", repoName, err)
-		}
+		mail.Err = sendScanEmail(user.Email, subject, html)
+	}
+	if mail.Err != nil {
+		fmt.Printf("Scan email for %s not sent: %v\n", repoName, mail.Err)
+	} else {
+		fmt.Printf("Scan email for %s sent to %s\n", repoName, user.Email)
 	}
 
 	return nil
@@ -536,8 +563,13 @@ func RunTrivyScan(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
 	}
 
-	if err := runScanAndSave(repoName, "", true); err != nil {
+	var mail scanMail
+	if err := runScan(repoName, "", true, &user, &mail); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	message := fmt.Sprintf("Scan completed. Report sent to %s", mail.To)
+	if mail.Err != nil {
+		message = fmt.Sprintf("Scan completed, but the report email was not sent: %v", mail.Err)
 	}
 
 	var result models.ScanResult
@@ -545,7 +577,7 @@ func RunTrivyScan(c *fiber.Ctx) error {
 	db.LogAudit(userID, "run_scan", "repository", repoName, fmt.Sprintf(`{"critical":%d,"high":%d,"medium":%d,"low":%d}`, result.Critical, result.High, result.Medium, result.Low), c.IP())
 
 	return c.JSON(fiber.Map{
-		"message":  fmt.Sprintf("Scan completed. Report sent to %s", user.Email),
+		"message":  message,
 		"critical": result.Critical,
 		"high":     result.High,
 		"medium":   result.Medium,
